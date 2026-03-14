@@ -10,6 +10,13 @@ UNIVERSE_FILE = os.path.join("data_sources", "stock_universe.csv")
 
 def load_assets():
     df = pd.read_csv(UNIVERSE_FILE)
+
+    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
+    df["name"] = df["name"].astype(str).str.strip()
+
+    df = df.drop_duplicates(subset=["ticker"], keep="first")
+    df = df[df["ticker"] != ""]
+
     return df.to_dict(orient="records")
 
 
@@ -137,11 +144,22 @@ def main():
     df[df["lead_status"] == "watch"].to_csv(watch_path, index=False)
     df[df["lead_status"] == "reject"].to_csv(reject_path, index=False)
 
+    pass_count = len(df[df["lead_status"] == "pass"])
+    watch_count = len(df[df["lead_status"] == "watch"])
+    reject_count = len(df[df["lead_status"] == "reject"])
+    total_count = len(df)
+
     print("\nUniverse Agent finished.")
     print(f"Saved full snapshot to: {snapshot_path}")
     print(f"Saved top leads to: {pass_path}")
     print(f"Saved watchlist to: {watch_path}")
     print(f"Saved rejects to: {reject_path}")
+
+    print("\nRun summary:")
+    print(f"Total assets scanned: {total_count}")
+    print(f"Pass: {pass_count}")
+    print(f"Watch: {watch_count}")
+    print(f"Reject: {reject_count}")
 
     print("\nPreview:")
     print(df)
