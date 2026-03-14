@@ -1,0 +1,2 @@
+ticker,name,latest_close,ma20,ma50,return_20d_pct,return_60d_pct,volatility_20d_pct,above_ma20,above_ma50,ma20_above_ma50,positive_20d_return,positive_60d_return,acceptable_volatility,score,lead_status,checked_at
+NFLX,Netflix,95.31,88.83,86.97,25.64,1.64,3.56,True,True,True,True,True,True,6,pass,2026-03-14T17:07:08.678174+00:00

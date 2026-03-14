@@ -1,9 +1,4 @@
 ticker,name,latest_close,ma20,ma50,return_20d_pct,return_60d_pct,volatility_20d_pct,above_ma20,above_ma50,ma20_above_ma50,positive_20d_return,positive_60d_return,acceptable_volatility,score,lead_status,checked_at
-NFLX,Netflix,95.31,88.83,86.97,25.64,1.64,3.56,True,True,True,True,True,True,6,pass,2026-03-14T17:07:08.678174+00:00
-INTC,Intel,45.77,45.49,46.01,-1.53,22.02,3.39,True,False,False,False,True,True,3,watch,2026-03-14T17:07:09.105028+00:00
-AAPL,Apple,250.12,262.75,262.58,-4.44,-8.67,1.58,False,False,True,False,False,True,2,watch,2026-03-14T17:07:05.791645+00:00
-AMZN,Amazon,207.67,209.29,223.31,4.04,-6.68,1.61,False,False,False,True,False,True,2,watch,2026-03-14T17:07:07.250526+00:00
-NVDA,Nvidia,180.25,184.95,185.45,-3.57,2.25,2.25,False,False,False,False,True,True,2,watch,2026-03-14T17:07:06.524727+00:00
 AMD,Advanced Micro Devices,193.39,201.23,216.13,-6.09,-6.84,3.38,False,False,False,False,False,True,1,reject,2026-03-14T17:07:08.290193+00:00
 GOOGL,Alphabet,302.28,306.03,318.75,-2.11,-1.86,1.47,False,False,False,False,False,True,1,reject,2026-03-14T17:07:07.937878+00:00
 META,Meta,613.71,647.41,654.26,-5.56,-5.22,1.67,False,False,False,False,False,True,1,reject,2026-03-14T17:07:07.592647+00:00
