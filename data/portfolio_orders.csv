@@ -1,3 +1,3 @@
 ticker,name,sector,market_regime,adjusted_setup_score,adjusted_setup_status,risk_decision,risk_notes,headline_count,categories_found,has_news,risk_budget_pct,stop_loss_pct,raw_position_size_pct,scaled_target_allocation_pct,portfolio_action,portfolio_checked_at
-COST,Costco,Consumer Staples,risk_off,4,watch,approved,clear,10,other,True,0.3,3.84,7.81,13.11,buy,2026-03-15T12:46:21.581468+00:00
-CVX,Chevron,Energy,risk_off,4,watch,approved,clear,10,other,True,0.3,4.24,7.08,11.89,buy,2026-03-15T12:46:21.581468+00:00
+CVX,Chevron,Energy,risk_off,4,watch,approved,clear,10,other,True,0.3,4.24,7.08,11.62,buy,2026-03-15T17:26:01.443983+00:00
+VZ,Verizon,Communication Services,risk_off,4,watch,approved,clear,10,other,True,0.3,3.68,8.15,13.38,buy,2026-03-15T17:26:01.443983+00:00

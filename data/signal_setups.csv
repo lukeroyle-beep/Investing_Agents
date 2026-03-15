@@ -1,54 +1,54 @@
 ticker,name,latest_close,ma20,high_20,high_50,latest_volume,avg_volume_20,volume_ratio,rsi_14,atr_14,atr_pct,within_2pct_of_20d_high,within_5pct_of_50d_high,above_ma20,elevated_volume,rsi_bullish,atr_reasonable,confirmed_breakout,breakout_ready,pre_breakout,breakout_type,setup_score,setup_status,checked_at,market_regime,adjusted_setup_score,adjusted_setup_status
-COST,Costco,1008.43,999.05,1018.48,1018.48,1467989,1988099,0.74,58.1,19.34,1.92,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T12:45:51.720033+00:00,risk_off,4,watch
-CVX,Chevron,196.82,187.3,196.97,196.97,10593636,11862891,0.89,70.53,4.18,2.12,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T12:45:52.155223+00:00,risk_off,4,watch
-NET,Cloudflare,212.45,188.66,213.0,213.0,2297292,4231999,0.54,91.34,9.44,4.45,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T12:45:52.901138+00:00,risk_off,4,watch
-VZ,Verizon,51.38,49.99,51.38,51.38,21769068,25977188,0.84,65.12,0.95,1.84,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T12:45:55.248245+00:00,risk_off,4,watch
-XOM,Exxon Mobil,156.12,150.57,156.12,156.12,17491781,20947169,0.84,60.82,4.07,2.61,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T12:45:55.743944+00:00,risk_off,4,watch
-CRWD,CrowdStrike,441.78,406.12,442.03,478.91,2223614,5268055,0.42,91.26,18.66,4.22,True,False,True,False,True,True,False,True,False,breakout_ready,4,watch,2026-03-15T12:45:58.838736+00:00,risk_off,3,watch
-MU,Micron Technology,426.13,408.84,429.0,437.8,39072307,31640525,1.23,51.3,25.53,5.99,True,True,True,True,False,False,False,True,True,breakout_ready,4,watch,2026-03-15T12:45:52.551933+00:00,risk_off,3,watch
-NFLX,Netflix,95.31,88.83,99.17,99.17,29808277,53586018,0.56,83.25,3.44,3.61,False,True,True,False,True,True,False,False,True,pre_breakout,4,watch,2026-03-15T12:45:53.269486+00:00,risk_off,3,watch
-PANW,Palo Alto Networks,167.01,156.76,168.12,193.9,6255403,12644790,0.49,85.43,5.8,3.47,True,False,True,False,True,True,False,True,False,breakout_ready,4,watch,2026-03-15T12:46:06.735330+00:00,risk_off,3,watch
-SBUX,Starbucks,99.15,97.66,101.44,101.44,9398316,8058210,1.17,68.6,2.56,2.58,False,True,True,False,True,True,False,False,True,pre_breakout,4,watch,2026-03-15T12:45:54.599198+00:00,risk_off,3,watch
-BKNG,Booking Holdings,4241.26,4221.94,4602.78,5479.61,224933,587306,0.38,64.13,169.75,4.0,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T12:46:04.161004+00:00,risk_off,2,weak
-CRM,Salesforce,192.83,192.37,202.11,266.12,14651159,14536102,1.01,61.73,8.83,4.58,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T12:46:04.557661+00:00,risk_off,2,weak
-NOC,Northrop Grumman,733.71,731.61,768.02,768.02,376799,881994,0.43,52.54,22.07,3.01,False,True,True,False,False,True,False,False,True,pre_breakout,3,watch,2026-03-15T12:45:53.739396+00:00,risk_off,2,weak
-PLTR,Palantir,150.95,142.79,157.16,181.68,42212989,53111329,0.79,74.2,6.55,4.34,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T12:46:07.119886+00:00,risk_off,2,weak
-RTX,RTX,204.52,204.19,212.16,212.16,4799811,7128470,0.67,52.62,6.13,3.0,False,True,True,False,False,True,False,False,True,pre_breakout,3,watch,2026-03-15T12:45:54.217437+00:00,risk_off,2,weak
-BA,Boeing,209.89,227.43,244.04,252.15,8894960,6609203,1.35,34.34,7.58,3.61,False,False,False,True,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:11.024505+00:00,risk_off,1,weak
-BRK-B,Berkshire Hathaway,490.03,495.03,504.95,508.09,2237759,4873727,0.46,46.98,9.08,1.85,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:11.377148+00:00,risk_off,1,weak
-COIN,Coinbase,195.53,182.9,208.93,255.86,11934853,14349267,0.83,68.01,13.3,6.8,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:12.116845+00:00,risk_off,1,weak
-DDOG,Datadog,124.52,118.59,128.56,141.45,3938602,5513110,0.71,72.12,6.52,5.24,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:12.506537+00:00,risk_off,1,weak
-DOCU,DocuSign,47.05,45.85,48.69,69.8,3357493,5216834,0.64,71.97,2.37,5.04,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:04.972954+00:00,risk_off,1,weak
-HIMS,Hims & Hers Health,24.77,17.86,25.88,35.46,40505168,47886273,0.85,74.65,2.45,9.89,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:05.427560+00:00,risk_off,1,weak
-INTC,Intel,45.77,45.49,47.98,54.32,67145310,76694455,0.88,55.21,2.52,5.52,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:05.947380+00:00,risk_off,1,weak
-JNJ,Johnson & Johnson,241.52,243.8,248.56,248.56,6414884,8852499,0.72,43.92,4.44,1.84,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:01.322258+00:00,risk_off,1,weak
-KO,Coca-Cola,77.34,78.5,81.0,81.0,9399025,17318131,0.54,31.87,1.3,1.68,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:01.832929+00:00,risk_off,1,weak
-LMT,Lockheed Martin,646.0,655.71,676.7,676.7,1069042,1672072,0.64,45.89,20.01,3.1,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:45:57.034215+00:00,risk_off,1,weak
-MCD,McDonald's,326.46,329.2,339.17,339.17,2378402,3258745,0.73,40.84,5.28,1.62,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:02.352717+00:00,risk_off,1,weak
-ORCL,Oracle,155.11,152.13,163.12,204.68,26211568,29330303,0.89,63.56,8.43,5.43,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:13.841300+00:00,risk_off,1,weak
-PFE,Pfizer,26.58,27.04,27.65,27.73,34227655,37881847,0.9,43.51,0.6,2.27,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:03.322964+00:00,risk_off,1,weak
-PYPL,PayPal,44.9,44.69,47.64,59.63,13935863,26399233,0.53,53.68,1.91,4.26,False,False,True,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:07.522469+00:00,risk_off,1,weak
-SNOW,Snowflake,178.66,173.62,182.84,234.53,3908472,6866368,0.57,67.9,9.36,5.24,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T12:46:08.256464+00:00,risk_off,1,weak
-T,AT&T,27.72,28.1,28.98,28.98,27595358,39042347,0.71,42.48,0.67,2.41,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:46:03.765678+00:00,risk_off,1,weak
-UBER,Uber,73.33,73.61,76.65,87.59,16374117,19990120,0.82,58.59,2.59,3.53,False,False,False,False,True,True,False,False,False,weak,2,weak,2026-03-15T12:46:15.022699+00:00,risk_off,1,weak
-WMT,Walmart,126.52,126.13,133.89,133.89,15179562,24060548,0.63,51.82,2.84,2.24,False,False,True,False,False,True,False,False,False,weak,2,weak,2026-03-15T12:45:57.513932+00:00,risk_off,1,weak
-AAPL,Apple,250.12,262.75,274.23,277.86,34193754,41281102,0.83,29.91,6.05,2.42,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:09.087928+00:00,risk_off,0,weak
-ABBV,AbbVie,219.68,228.89,236.19,236.19,3295384,6399564,0.51,35.98,5.81,2.65,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:09.497235+00:00,risk_off,0,weak
-ABNB,Airbnb,126.3,130.05,136.97,140.07,2767705,5344455,0.52,54.94,5.01,3.97,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:09.890360+00:00,risk_off,0,weak
-AMAT,Applied Materials,341.53,359.44,394.95,394.95,5329313,7608120,0.7,39.25,17.23,5.05,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T12:45:56.175117+00:00,risk_off,0,weak
-AMZN,Amazon,207.67,209.29,218.94,247.38,34201623,49454261,0.69,53.35,5.62,2.71,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:10.286022+00:00,risk_off,0,weak
-ARM,Arm Holdings,115.75,123.33,131.74,131.74,2249932,3752661,0.6,40.52,5.84,5.05,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T12:46:10.603161+00:00,risk_off,0,weak
-CAT,Caterpillar,693.99,735.77,774.2,775.0,2040681,2917734,0.7,34.07,29.5,4.25,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:45:58.002145+00:00,risk_off,0,weak
-CELH,Celsius Holdings,44.57,46.68,54.12,56.69,3841804,6609955,0.58,39.46,2.87,6.44,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T12:46:11.729758+00:00,risk_off,0,weak
-CMCSA,Comcast,30.16,31.19,32.09,32.48,18966560,26028213,0.73,35.39,0.86,2.84,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:45:58.441312+00:00,risk_off,0,weak
-CSCO,Cisco,78.33,78.41,80.87,86.78,19076679,23270253,0.82,52.16,1.92,2.45,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:45:56.579166+00:00,risk_off,0,weak
-DE,Deere,577.5,613.99,662.49,662.49,1228436,1863951,0.66,19.65,16.6,2.87,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:45:59.347504+00:00,risk_off,0,weak
-GE,GE Aerospace,299.69,330.16,345.24,345.24,5734120,5090121,1.13,26.45,12.18,4.06,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:13.000680+00:00,risk_off,0,weak
-HON,Honeywell,234.5,240.48,248.04,248.04,3117360,3734058,0.83,41.29,5.87,2.5,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:45:59.815419+00:00,risk_off,0,weak
-MAR,Marriott International,313.81,337.91,359.25,359.25,1082154,1719402,0.63,29.05,10.46,3.33,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:06.366181+00:00,risk_off,0,weak
-NVDA,Nvidia,180.25,184.95,195.55,195.55,156420571,191510198,0.82,39.33,6.29,3.49,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:13.410379+00:00,risk_off,0,weak
-PEP,PepsiCo,159.88,163.15,168.24,168.98,4602668,6739813,0.68,32.79,3.07,1.92,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:02.830300+00:00,risk_off,0,weak
-ROKU,Roku,91.65,94.0,100.74,114.68,2950890,4140724,0.71,60.36,4.8,5.24,False,False,False,False,True,False,False,False,False,weak,1,weak,2026-03-15T12:46:14.235415+00:00,risk_off,0,weak
-SHOP,Shopify,122.96,123.82,134.79,168.45,7726395,11658004,0.66,55.67,7.04,5.72,False,False,False,False,True,False,False,False,False,weak,1,weak,2026-03-15T12:46:14.620202+00:00,risk_off,0,weak
-SMCI,Super Micro Computer,30.75,31.55,33.6,34.38,18184525,24664621,0.74,50.18,1.73,5.61,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T12:46:07.855474+00:00,risk_off,0,weak
-TXN,Texas Instruments,190.78,208.2,226.16,226.56,3685449,6583777,0.56,15.8,6.46,3.39,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T12:46:08.681882+00:00,risk_off,0,weak
+COST,Costco,1008.43,999.05,1018.48,1018.48,1469672,1988183,0.74,58.1,19.34,1.92,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T17:25:36.514308+00:00,risk_off,4,watch
+CVX,Chevron,196.82,187.3,196.97,196.97,10593636,11862891,0.89,70.53,4.18,2.12,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T17:25:36.968824+00:00,risk_off,4,watch
+NET,Cloudflare,212.45,188.66,213.0,213.0,2297292,4231999,0.54,91.34,9.44,4.45,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T17:25:37.684614+00:00,risk_off,4,watch
+VZ,Verizon,51.38,49.99,51.38,51.38,21769068,25977188,0.84,65.12,0.95,1.84,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T17:25:39.821117+00:00,risk_off,4,watch
+XOM,Exxon Mobil,156.12,150.57,156.12,156.12,17491781,20947169,0.84,60.82,4.07,2.61,True,True,True,False,True,True,False,True,True,breakout_ready,5,actionable,2026-03-15T17:25:40.260153+00:00,risk_off,4,watch
+CRWD,CrowdStrike,441.78,406.12,442.03,478.91,2227117,5268230,0.42,91.26,18.66,4.22,True,False,True,False,True,True,False,True,False,breakout_ready,4,watch,2026-03-15T17:25:43.017954+00:00,risk_off,3,watch
+MU,Micron Technology,426.13,408.84,429.0,437.8,39260990,31649959,1.24,51.3,25.53,5.99,True,True,True,True,False,False,False,True,True,breakout_ready,4,watch,2026-03-15T17:25:37.381935+00:00,risk_off,3,watch
+NFLX,Netflix,95.31,88.83,99.17,99.17,29876659,53589437,0.56,83.25,3.44,3.61,False,True,True,False,True,True,False,False,True,pre_breakout,4,watch,2026-03-15T17:25:38.020221+00:00,risk_off,3,watch
+PANW,Palo Alto Networks,167.01,156.76,168.12,193.9,6258637,12644951,0.49,85.43,5.8,3.47,True,False,True,False,True,True,False,True,False,breakout_ready,4,watch,2026-03-15T17:25:48.884061+00:00,risk_off,3,watch
+SBUX,Starbucks,99.15,97.66,101.44,101.44,9400434,8058316,1.17,68.6,2.56,2.58,False,True,True,False,True,True,False,False,True,pre_breakout,4,watch,2026-03-15T17:25:39.296577+00:00,risk_off,3,watch
+BKNG,Booking Holdings,4241.26,4221.94,4602.78,5479.61,229086,587514,0.39,64.13,169.75,4.0,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T17:25:46.814603+00:00,risk_off,2,weak
+CRM,Salesforce,192.83,192.37,202.11,266.12,14651159,14536102,1.01,61.73,8.83,4.58,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T17:25:47.146663+00:00,risk_off,2,weak
+NOC,Northrop Grumman,733.71,731.61,768.02,768.02,376799,881994,0.43,52.54,22.07,3.01,False,True,True,False,False,True,False,False,True,pre_breakout,3,watch,2026-03-15T17:25:38.370756+00:00,risk_off,2,weak
+PLTR,Palantir,150.95,142.79,157.16,181.68,42460572,53123708,0.8,74.2,6.55,4.34,False,False,True,False,True,True,False,False,False,weak,3,watch,2026-03-15T17:25:49.198545+00:00,risk_off,2,weak
+RTX,RTX,204.52,204.19,212.16,212.16,4799811,7128470,0.67,52.62,6.13,3.0,False,True,True,False,False,True,False,False,True,pre_breakout,3,watch,2026-03-15T17:25:38.957119+00:00,risk_off,2,weak
+BA,Boeing,209.89,227.43,244.04,252.15,8894960,6609203,1.35,34.34,7.58,3.61,False,False,False,True,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:52.947196+00:00,risk_off,1,weak
+BRK-B,Berkshire Hathaway,490.03,495.03,504.95,508.09,2237759,4873727,0.46,46.98,9.08,1.85,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:53.301192+00:00,risk_off,1,weak
+COIN,Coinbase,195.53,182.9,208.93,255.86,12137120,14359381,0.85,68.01,13.3,6.8,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:53.975814+00:00,risk_off,1,weak
+DDOG,Datadog,124.52,118.59,128.56,141.45,3993044,5515832,0.72,72.12,6.52,5.24,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:54.293848+00:00,risk_off,1,weak
+DOCU,DocuSign,47.05,45.85,48.69,69.8,3357493,5216834,0.64,71.97,2.37,5.04,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:47.471820+00:00,risk_off,1,weak
+HIMS,Hims & Hers Health,24.77,17.86,25.88,35.46,40505168,47886273,0.85,74.65,2.45,9.89,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:47.810573+00:00,risk_off,1,weak
+INTC,Intel,45.77,45.49,47.98,54.32,67145310,76694455,0.88,55.21,2.52,5.52,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:48.176347+00:00,risk_off,1,weak
+JNJ,Johnson & Johnson,241.52,243.8,248.56,248.56,6414884,8852499,0.72,43.92,4.44,1.84,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:44.406708+00:00,risk_off,1,weak
+KO,Coca-Cola,77.34,78.5,81.0,81.0,9399025,17318131,0.54,31.87,1.3,1.68,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:44.822552+00:00,risk_off,1,weak
+LMT,Lockheed Martin,646.0,655.71,676.7,676.7,1069042,1672072,0.64,45.89,20.01,3.1,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:41.464332+00:00,risk_off,1,weak
+MCD,McDonald's,326.46,329.2,339.17,339.17,2378402,3258745,0.73,40.84,5.28,1.62,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:45.217898+00:00,risk_off,1,weak
+ORCL,Oracle,155.11,152.13,163.12,204.68,26211568,29330303,0.89,63.56,8.43,5.43,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:55.448246+00:00,risk_off,1,weak
+PFE,Pfizer,26.58,27.04,27.65,27.73,34227655,37881847,0.9,43.51,0.6,2.27,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:46.077597+00:00,risk_off,1,weak
+PYPL,PayPal,44.9,44.69,47.64,59.63,13962455,26400562,0.53,53.68,1.91,4.26,False,False,True,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:49.536954+00:00,risk_off,1,weak
+SNOW,Snowflake,178.66,173.62,182.84,234.53,3908472,6866368,0.57,67.9,9.36,5.24,False,False,True,False,True,False,False,False,False,weak,2,weak,2026-03-15T17:25:50.230143+00:00,risk_off,1,weak
+T,AT&T,27.72,28.1,28.98,28.98,27595358,39042347,0.71,42.48,0.67,2.41,False,True,False,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:46.470482+00:00,risk_off,1,weak
+UBER,Uber,73.33,73.61,76.65,87.59,16374117,19990120,0.82,58.59,2.59,3.53,False,False,False,False,True,True,False,False,False,weak,2,weak,2026-03-15T17:25:56.553752+00:00,risk_off,1,weak
+WMT,Walmart,126.52,126.13,133.89,133.89,15194094,24061274,0.63,51.82,2.84,2.24,False,False,True,False,False,True,False,False,False,weak,2,weak,2026-03-15T17:25:41.854808+00:00,risk_off,1,weak
+AAPL,Apple,250.12,262.75,274.23,277.86,36929988,41417914,0.89,29.91,6.05,2.42,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:51.155724+00:00,risk_off,0,weak
+ABBV,AbbVie,219.68,228.89,236.19,236.19,3295384,6399564,0.51,35.98,5.81,2.65,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:51.492152+00:00,risk_off,0,weak
+ABNB,Airbnb,126.3,130.05,136.97,140.07,3001002,5356120,0.56,54.94,5.01,3.97,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:51.853012+00:00,risk_off,0,weak
+AMAT,Applied Materials,341.53,359.44,394.95,394.95,5329313,7608120,0.7,39.25,17.23,5.05,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T17:25:40.642173+00:00,risk_off,0,weak
+AMZN,Amazon,207.67,209.29,218.94,247.38,35662137,49527286,0.72,53.35,5.62,2.71,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:52.195648+00:00,risk_off,0,weak
+ARM,Arm Holdings,115.75,123.33,131.74,131.74,2462517,3763290,0.65,40.52,5.84,5.05,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T17:25:52.534462+00:00,risk_off,0,weak
+CAT,Caterpillar,693.99,735.77,774.2,775.0,2040681,2917734,0.7,34.07,29.5,4.25,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:42.286840+00:00,risk_off,0,weak
+CELH,Celsius Holdings,44.57,46.68,54.12,56.69,3924039,6614066,0.59,39.46,2.87,6.44,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T17:25:53.647793+00:00,risk_off,0,weak
+CMCSA,Comcast,30.16,31.19,32.09,32.48,18966560,26028213,0.73,35.39,0.86,2.84,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:42.668339+00:00,risk_off,0,weak
+CSCO,Cisco,78.33,78.41,80.87,86.78,19080391,23270439,0.82,52.16,1.92,2.45,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:41.030914+00:00,risk_off,0,weak
+DE,Deere,577.5,613.99,662.49,662.49,1228436,1863951,0.66,19.65,16.6,2.87,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:43.546073+00:00,risk_off,0,weak
+GE,GE Aerospace,299.69,330.16,345.24,345.24,5734120,5090121,1.13,26.45,12.18,4.06,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:54.732603+00:00,risk_off,0,weak
+HON,Honeywell,234.5,240.48,248.04,248.04,3117360,3734058,0.83,41.29,5.87,2.5,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:43.993449+00:00,risk_off,0,weak
+MAR,Marriott International,313.81,337.91,359.25,359.25,1082177,1719403,0.63,29.05,10.46,3.33,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:48.556566+00:00,risk_off,0,weak
+NVDA,Nvidia,180.25,184.95,195.55,195.55,160988424,191738591,0.84,39.33,6.29,3.49,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:55.096220+00:00,risk_off,0,weak
+PEP,PepsiCo,159.88,163.15,168.24,168.98,4676821,6743521,0.69,32.79,3.07,1.92,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:45.630733+00:00,risk_off,0,weak
+ROKU,Roku,91.65,94.0,100.74,114.68,2961225,4141241,0.72,60.36,4.8,5.24,False,False,False,False,True,False,False,False,False,weak,1,weak,2026-03-15T17:25:55.860241+00:00,risk_off,0,weak
+SHOP,Shopify,122.96,123.82,134.79,168.45,7840362,11663703,0.67,55.67,7.04,5.72,False,False,False,False,True,False,False,False,False,weak,1,weak,2026-03-15T17:25:56.196133+00:00,risk_off,0,weak
+SMCI,Super Micro Computer,30.75,31.55,33.6,34.38,18279112,24669350,0.74,50.18,1.73,5.61,False,False,False,False,False,False,False,False,False,weak,0,weak,2026-03-15T17:25:49.871589+00:00,risk_off,0,weak
+TXN,Texas Instruments,190.78,208.2,226.16,226.56,3685449,6583777,0.56,15.8,6.46,3.39,False,False,False,False,False,True,False,False,False,weak,1,weak,2026-03-15T17:25:50.643681+00:00,risk_off,0,weak
