@@ -1,0 +1,11 @@
+ticker,name,headline_count,categories_found,has_news,checked_at
+COST,Costco,10,other,True,2026-03-15T09:13:11.944349+00:00
+CRWD,CrowdStrike,10,other,True,2026-03-15T09:13:11.944349+00:00
+CVX,Chevron,10,other,True,2026-03-15T09:13:11.944349+00:00
+MU,Micron Technology,10,other,True,2026-03-15T09:13:11.944349+00:00
+NET,Cloudflare,10,other,True,2026-03-15T09:13:11.944349+00:00
+NFLX,Netflix,10,other,True,2026-03-15T09:13:11.944349+00:00
+PANW,Palo Alto Networks,10,other,True,2026-03-15T09:13:11.944349+00:00
+SBUX,Starbucks,10,other,True,2026-03-15T09:13:11.944349+00:00
+VZ,Verizon,10,other,True,2026-03-15T09:13:11.944349+00:00
+XOM,Exxon Mobil,10,other,True,2026-03-15T09:13:11.944349+00:00
