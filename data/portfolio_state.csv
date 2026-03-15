@@ -1,0 +1,2 @@
+position_id,ticker,side,status,entry_date,entry_price,quantity,capital_allocated,stop_loss,take_profit,current_price,market_value,pnl_abs,pnl_pct,regime_at_entry,sector,signal_score,highest_price_since_entry,lowest_price_since_entry,exit_reason,last_updated_at
+1,COST,long,open,2026-03-15,1008.43,10,10084.3,950,,1008.43,10084.3,0,0,risk_off,Consumer Staples,4,1008.43,1008.43,,2026-03-15T17:26:00.990399+00:00

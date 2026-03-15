@@ -7,6 +7,7 @@ import pandas as pd
 FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
 MACRO_REGIME_FILE = os.path.join("data", "macro_regime.csv")
 NEWS_FLAGS_FILE = os.path.join("data", "news_flags.csv")
+PORTFOLIO_STATE_FILE = os.path.join("data", "portfolio_state.csv")
 
 PORTFOLIO_CANDIDATES_FILE = os.path.join("data", "portfolio_candidates.csv")
 PORTFOLIO_ORDERS_FILE = os.path.join("data", "portfolio_orders.csv")
@@ -89,6 +90,26 @@ def load_news_flags():
         return pd.DataFrame()
 
     return df
+
+
+def load_open_tickers():
+    if not os.path.exists(PORTFOLIO_STATE_FILE):
+        return set()
+
+    df = pd.read_csv(PORTFOLIO_STATE_FILE)
+
+    if df.empty:
+        return set()
+
+    if "ticker" not in df.columns or "status" not in df.columns:
+        return set()
+
+    open_df = df[df["status"].astype(str).str.strip().str.lower() == "open"].copy()
+
+    if open_df.empty:
+        return set()
+
+    return set(open_df["ticker"].astype(str).str.strip().str.upper().tolist())
 
 
 def get_regime_settings(market_regime):
@@ -184,6 +205,7 @@ def main():
     regime_settings = get_regime_settings(market_regime)
 
     news_flags_df = load_news_flags()
+    open_tickers = load_open_tickers()
 
     candidates_df = shortlist_df.copy()
     candidates_df = candidates_df[
@@ -192,6 +214,13 @@ def main():
 
     if candidates_df.empty:
         print("No portfolio candidates available after shortlist filtering.")
+        return
+
+    candidates_df["ticker"] = candidates_df["ticker"].astype(str).str.strip().str.upper()
+    candidates_df = candidates_df[~candidates_df["ticker"].isin(open_tickers)].copy()
+
+    if candidates_df.empty:
+        print("No portfolio candidates available after excluding open positions.")
         return
 
     candidates_df["risk_priority"] = candidates_df["risk_decision"].apply(risk_priority_value)
@@ -203,6 +232,9 @@ def main():
     ).reset_index(drop=True)
 
     if not news_flags_df.empty and "ticker" in news_flags_df.columns:
+        news_flags_df = news_flags_df.copy()
+        news_flags_df["ticker"] = news_flags_df["ticker"].astype(str).str.strip().str.upper()
+
         candidates_df = candidates_df.merge(
             news_flags_df[["ticker", "headline_count", "categories_found", "has_news"]],
             on="ticker",
@@ -309,6 +341,7 @@ def main():
     print(f"Capital deployment percent: {capital_deployment_pct}")
     print(f"Risk budget per position percent: {risk_budget_per_position_pct}")
     print(f"Max positions per sector: {max_positions_per_sector}")
+    print(f"Open tickers excluded: {len(open_tickers)}")
     print(f"Total eligible candidates: {len(candidates_df)}")
     print(f"Selected positions: {len(selected_df)}")
 
