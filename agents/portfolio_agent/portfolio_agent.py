@@ -13,6 +13,48 @@ PORTFOLIO_ORDERS_FILE = os.path.join("data", "portfolio_orders.csv")
 PORTFOLIO_POSITIONS_FILE = os.path.join("data", "portfolio_positions.csv")
 
 
+SECTOR_MAP = {
+    "AAPL": "Technology",
+    "ABBV": "Healthcare",
+    "ABNB": "Consumer Discretionary",
+    "AMAT": "Technology",
+    "AMZN": "Consumer Discretionary",
+    "ARM": "Technology",
+    "BA": "Industrials",
+    "BKNG": "Consumer Discretionary",
+    "BRK-B": "Financials",
+    "COST": "Consumer Staples",
+    "CRM": "Technology",
+    "CRWD": "Technology",
+    "CVX": "Energy",
+    "DDOG": "Technology",
+    "DOCU": "Technology",
+    "HIMS": "Healthcare",
+    "INTC": "Technology",
+    "JNJ": "Healthcare",
+    "KO": "Consumer Staples",
+    "LMT": "Industrials",
+    "MCD": "Consumer Discretionary",
+    "MU": "Technology",
+    "NET": "Technology",
+    "NFLX": "Communication Services",
+    "NOC": "Industrials",
+    "ORCL": "Technology",
+    "PANW": "Technology",
+    "PFE": "Healthcare",
+    "PLTR": "Technology",
+    "PYPL": "Financials",
+    "RTX": "Industrials",
+    "SBUX": "Consumer Discretionary",
+    "SNOW": "Technology",
+    "T": "Communication Services",
+    "UBER": "Consumer Discretionary",
+    "VZ": "Communication Services",
+    "WMT": "Consumer Staples",
+    "XOM": "Energy",
+}
+
+
 def load_final_shortlist():
     if not os.path.exists(FINAL_SHORTLIST_FILE):
         return pd.DataFrame()
@@ -55,18 +97,21 @@ def get_regime_settings(market_regime):
             "max_positions": 5,
             "capital_deployment_pct": 100.0,
             "risk_budget_per_position_pct": 1.0,
+            "max_positions_per_sector": 2,
         }
     if market_regime == "neutral":
         return {
             "max_positions": 3,
             "capital_deployment_pct": 60.0,
             "risk_budget_per_position_pct": 0.6,
+            "max_positions_per_sector": 1,
         }
 
     return {
         "max_positions": 2,
         "capital_deployment_pct": 25.0,
         "risk_budget_per_position_pct": 0.3,
+        "max_positions_per_sector": 1,
     }
 
 
@@ -98,6 +143,36 @@ def calculate_position_risk_fields(row, risk_budget_pct):
     }
 
 
+def assign_sector(ticker):
+    ticker = str(ticker).strip().upper()
+    return SECTOR_MAP.get(ticker, "Unknown")
+
+
+def apply_sector_limits(candidates_df, max_positions, max_positions_per_sector):
+    selected_rows = []
+    sector_counts = {}
+
+    for _, row in candidates_df.iterrows():
+        sector = row["sector"]
+
+        if sector not in sector_counts:
+            sector_counts[sector] = 0
+
+        if sector_counts[sector] >= max_positions_per_sector:
+            continue
+
+        selected_rows.append(row)
+        sector_counts[sector] += 1
+
+        if len(selected_rows) >= max_positions:
+            break
+
+    if not selected_rows:
+        return pd.DataFrame()
+
+    return pd.DataFrame(selected_rows).reset_index(drop=True)
+
+
 def main():
     shortlist_df = load_final_shortlist()
 
@@ -120,6 +195,7 @@ def main():
         return
 
     candidates_df["risk_priority"] = candidates_df["risk_decision"].apply(risk_priority_value)
+    candidates_df["sector"] = candidates_df["ticker"].apply(assign_sector)
 
     candidates_df = candidates_df.sort_values(
         by=["adjusted_setup_score", "risk_priority", "ticker"],
@@ -140,8 +216,13 @@ def main():
     max_positions = regime_settings["max_positions"]
     capital_deployment_pct = regime_settings["capital_deployment_pct"]
     risk_budget_per_position_pct = regime_settings["risk_budget_per_position_pct"]
+    max_positions_per_sector = regime_settings["max_positions_per_sector"]
 
-    selected_df = candidates_df.head(max_positions).copy()
+    selected_df = apply_sector_limits(
+        candidates_df=candidates_df,
+        max_positions=max_positions,
+        max_positions_per_sector=max_positions_per_sector,
+    )
 
     if selected_df.empty:
         print("No positions selected for the portfolio.")
@@ -173,6 +254,7 @@ def main():
         [
             "ticker",
             "name",
+            "sector",
             "market_regime",
             "adjusted_setup_score",
             "adjusted_setup_status",
@@ -194,6 +276,7 @@ def main():
         [
             "ticker",
             "name",
+            "sector",
             "market_regime",
             "adjusted_setup_score",
             "risk_decision",
@@ -225,6 +308,7 @@ def main():
     print(f"Max positions allowed: {max_positions}")
     print(f"Capital deployment percent: {capital_deployment_pct}")
     print(f"Risk budget per position percent: {risk_budget_per_position_pct}")
+    print(f"Max positions per sector: {max_positions_per_sector}")
     print(f"Total eligible candidates: {len(candidates_df)}")
     print(f"Selected positions: {len(selected_df)}")
 

@@ -1,15 +1,15 @@
 ticker,name,latest_close,ma20,ma50,return_20d_pct,return_60d_pct,volatility_20d_pct,above_ma20,above_ma50,ma20_above_ma50,positive_20d_return,positive_60d_return,acceptable_volatility,score,lead_status,checked_at
-COST,Costco,1008.43,999.05,969.71,0.96,17.34,1.21,True,True,True,True,True,True,6,pass,2026-03-15T09:12:32.567989+00:00
-CVX,Chevron,196.82,187.3,175.49,8.96,32.67,1.29,True,True,True,True,True,True,6,pass,2026-03-15T09:12:26.686177+00:00
-MU,Micron Technology,426.13,408.84,387.87,2.94,79.5,3.94,True,True,True,True,True,True,6,pass,2026-03-15T09:12:16.531408+00:00
-NET,Cloudflare,212.45,188.66,185.65,14.73,8.01,3.96,True,True,True,True,True,True,6,pass,2026-03-15T09:12:42.284669+00:00
-NFLX,Netflix,95.31,88.83,86.97,25.64,1.64,3.56,True,True,True,True,True,True,6,pass,2026-03-15T09:12:12.897093+00:00
-NOC,Northrop Grumman,733.71,731.61,685.73,5.9,27.83,2.1,True,True,True,True,True,True,6,pass,2026-03-15T09:12:29.551339+00:00
-RTX,RTX,204.52,204.19,198.61,2.02,12.68,1.88,True,True,True,True,True,True,6,pass,2026-03-15T09:12:29.959603+00:00
-SBUX,Starbucks,99.15,97.66,94.55,3.13,16.85,1.34,True,True,True,True,True,True,6,pass,2026-03-15T09:12:34.468314+00:00
-VZ,Verizon,51.38,49.99,45.18,3.88,28.12,1.12,True,True,True,True,True,True,6,pass,2026-03-15T09:12:31.471377+00:00
-XOM,Exxon Mobil,156.12,150.57,140.75,4.13,33.46,1.62,True,True,True,True,True,True,6,pass,2026-03-15T09:12:26.307461+00:00
-AMAT,Applied Materials,341.53,359.44,331.1,4.13,30.88,3.62,False,True,True,True,True,True,5,pass,2026-03-15T09:12:16.185960+00:00
-CSCO,Cisco,78.33,78.41,78.03,4.44,0.64,1.51,False,True,True,True,True,True,5,pass,2026-03-15T09:12:15.065145+00:00
-LMT,Lockheed Martin,646.0,655.71,608.99,1.88,34.06,1.73,False,True,True,True,True,True,5,pass,2026-03-15T09:12:29.177377+00:00
-WMT,Walmart,126.52,126.13,122.58,-5.33,8.33,1.69,True,True,True,False,True,True,5,pass,2026-03-15T09:12:32.951368+00:00
+COST,Costco,1008.43,999.05,969.71,0.96,17.34,1.21,True,True,True,True,True,True,6,pass,2026-03-15T12:45:32.825207+00:00
+CVX,Chevron,196.82,187.3,175.49,8.96,32.67,1.29,True,True,True,True,True,True,6,pass,2026-03-15T12:45:26.034094+00:00
+MU,Micron Technology,426.13,408.84,387.87,2.94,79.5,3.94,True,True,True,True,True,True,6,pass,2026-03-15T12:45:14.902329+00:00
+NET,Cloudflare,212.45,188.66,185.65,14.73,8.01,3.96,True,True,True,True,True,True,6,pass,2026-03-15T12:45:44.052932+00:00
+NFLX,Netflix,95.31,88.83,86.97,25.64,1.64,3.56,True,True,True,True,True,True,6,pass,2026-03-15T12:45:10.375830+00:00
+NOC,Northrop Grumman,733.71,731.61,685.73,5.9,27.83,2.1,True,True,True,True,True,True,6,pass,2026-03-15T12:45:29.358004+00:00
+RTX,RTX,204.52,204.19,198.61,2.02,12.68,1.88,True,True,True,True,True,True,6,pass,2026-03-15T12:45:29.799952+00:00
+SBUX,Starbucks,99.15,97.66,94.55,3.13,16.85,1.34,True,True,True,True,True,True,6,pass,2026-03-15T12:45:35.396250+00:00
+VZ,Verizon,51.38,49.99,45.18,3.88,28.12,1.12,True,True,True,True,True,True,6,pass,2026-03-15T12:45:31.532408+00:00
+XOM,Exxon Mobil,156.12,150.57,140.75,4.13,33.46,1.62,True,True,True,True,True,True,6,pass,2026-03-15T12:45:25.564225+00:00
+AMAT,Applied Materials,341.53,359.44,331.1,4.13,30.88,3.62,False,True,True,True,True,True,5,pass,2026-03-15T12:45:14.468345+00:00
+CSCO,Cisco,78.33,78.41,78.03,4.44,0.64,1.51,False,True,True,True,True,True,5,pass,2026-03-15T12:45:12.764517+00:00
+LMT,Lockheed Martin,646.0,655.71,608.99,1.88,34.06,1.73,False,True,True,True,True,True,5,pass,2026-03-15T12:45:28.945029+00:00
+WMT,Walmart,126.52,126.13,122.58,-5.33,8.33,1.69,True,True,True,False,True,True,5,pass,2026-03-15T12:45:33.282978+00:00

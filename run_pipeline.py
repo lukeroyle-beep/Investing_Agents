@@ -32,6 +32,8 @@ def main():
         ("Risk Agent", PROJECT_ROOT / "agents" / "risk_agent" / "risk_agent.py"),
         ("Journal Agent", PROJECT_ROOT / "agents" / "journal_agent" / "journal_agent.py"),
         ("News Agent", PROJECT_ROOT / "agents" / "news_agent" / "news_agent.py"),
+        ("Portfolio Agent", PROJECT_ROOT / "agents" / "portfolio_agent" / "portfolio_agent.py"),
+        ("Execution Agent", PROJECT_ROOT / "agents" / "execution_agent" / "execution_agent.py"),
     ]
 
     for step_name, script_path in steps:
@@ -43,7 +45,12 @@ def main():
         run_step(step_name, script_path)
 
     print("\nPipeline finished successfully.")
-    print("Key output file: data/final_shortlist.csv")
+    print("Key output files:")
+    print(" - data/final_shortlist.csv")
+    print(" - data/trade_journal.csv")
+    print(" - data/news_flags.csv")
+    print(" - data/portfolio_orders.csv")
+    print(" - data/execution_orders.csv")
 
 
 if __name__ == "__main__":

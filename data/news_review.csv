@@ -1,101 +1,101 @@
 ticker,name,headline,publisher,link,published_at,news_category,checked_at
-COST,Costco,,,,,other,2026-03-15T09:13:10.470457+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470516+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470542+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470561+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470579+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470597+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470615+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470638+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470655+00:00
-COST,Costco,,,,,other,2026-03-15T09:13:10.470672+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743138+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743235+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743265+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743290+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743314+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743339+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743364+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743389+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743414+00:00
-CVX,Chevron,,,,,other,2026-03-15T09:13:10.743438+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908695+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908791+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908849+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908887+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908927+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.908967+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.909008+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.909046+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.909085+00:00
-VZ,Verizon,,,,,other,2026-03-15T09:13:10.909126+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047442+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047476+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047490+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047503+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047514+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047526+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047539+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047550+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047563+00:00
-XOM,Exxon Mobil,,,,,other,2026-03-15T09:13:11.047575+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177565+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177630+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177659+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177685+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177709+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177736+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177761+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177786+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177811+00:00
-MU,Micron Technology,,,,,other,2026-03-15T09:13:11.177929+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318696+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318756+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318785+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318810+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318835+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318860+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318884+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318911+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318936+00:00
-NFLX,Netflix,,,,,other,2026-03-15T09:13:11.318960+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.449862+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.449917+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.449940+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.449959+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.449987+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.450006+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.450026+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.450045+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.450065+00:00
-PANW,Palo Alto Networks,,,,,other,2026-03-15T09:13:11.450084+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683435+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683489+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683511+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683531+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683550+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683570+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683589+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683608+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683627+00:00
-SBUX,Starbucks,,,,,other,2026-03-15T09:13:11.683646+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.795992+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796185+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796212+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796237+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796259+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796282+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796305+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796328+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796346+00:00
-NET,Cloudflare,,,,,other,2026-03-15T09:13:11.796366+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926484+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926575+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926620+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926658+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926697+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926738+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926779+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926919+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.926962+00:00
-CRWD,CrowdStrike,,,,,other,2026-03-15T09:13:11.927034+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191339+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191460+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191515+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191555+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191768+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191817+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191867+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191905+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191943+00:00
+COST,Costco,,,,,other,2026-03-15T12:46:19.191980+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309284+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309365+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309399+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309432+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309463+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309494+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309523+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309553+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309582+00:00
+CVX,Chevron,,,,,other,2026-03-15T12:46:19.309613+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422279+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422379+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422440+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422481+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422531+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422591+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422654+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422713+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422771+00:00
+VZ,Verizon,,,,,other,2026-03-15T12:46:19.422833+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527237+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527284+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527304+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527321+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527339+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527357+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527377+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527394+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527411+00:00
+XOM,Exxon Mobil,,,,,other,2026-03-15T12:46:19.527428+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627366+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627462+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627506+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627545+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627584+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627623+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627661+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627699+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627736+00:00
+MU,Micron Technology,,,,,other,2026-03-15T12:46:19.627776+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747644+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747742+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747786+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747825+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747864+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747900+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.747956+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.748022+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.748080+00:00
+NFLX,Netflix,,,,,other,2026-03-15T12:46:19.748141+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102411+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102513+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102555+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102594+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102665+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102709+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102749+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102789+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102827+00:00
+PANW,Palo Alto Networks,,,,,other,2026-03-15T12:46:20.102866+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220417+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220516+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220561+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220603+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220641+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220678+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220718+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220757+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.220970+00:00
+SBUX,Starbucks,,,,,other,2026-03-15T12:46:20.221010+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.420573+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.420698+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421009+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421091+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421162+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421231+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421294+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421361+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421430+00:00
+NET,Cloudflare,,,,,other,2026-03-15T12:46:20.421498+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537111+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537202+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537244+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537283+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537320+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537358+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537395+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537432+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537469+00:00
+CRWD,CrowdStrike,,,,,other,2026-03-15T12:46:20.537506+00:00
