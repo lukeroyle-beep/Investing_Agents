@@ -2,3 +2,15 @@
 __pycache__/
 *.pyc
 logs/
+# Python virtual environments
+venv/
+.venv/
+activate.ps1
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
