@@ -1,3 +1,4 @@
-timestamp,ticker,action,price,quantity,fees,notes
-2026-03-16T10:45:00Z,COST,buy,702.25,5,0,Manual test trade
-2026-03-18T14:02:00Z,COST,sell,725.10,2,0,Partial take profit
+fill_id,filled_at,ticker,side,quantity,fill_price,stop_loss,take_profit,regime_at_entry,sector,signal_score,capital_allocated
+FILL001,2026-03-16T12:00:00+00:00,COST,buy,1,700,650,780,risk_off,Consumer Staples,8.5,700
+FILL002,2026-03-16T13:00:00+00:00,COST,buy,1,720,660,800,risk_off,Consumer Staples,8.7,720
+FILL003,2026-03-16T14:00:00+00:00,COST,sell,1,750,,,,,,
