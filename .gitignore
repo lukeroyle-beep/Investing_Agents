@@ -1,7 +1,3 @@
-.venv/
-__pycache__/
-*.pyc
-logs/
 # Python virtual environments
 venv/
 .venv/
@@ -14,3 +10,21 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Environment files
+.env
+.env.*
+
+# Editor and IDE (Integrated Development Environment) files
+.vscode/
+.idea/
+
+# Test and tool cache
+.pytest_cache/
+.mypy_cache/
+
+# Logs
+*.log
+
+# Runtime data outputs
+data/runtime/
