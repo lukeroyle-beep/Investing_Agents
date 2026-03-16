@@ -59,3 +59,25 @@ def safe_str(value: Any, default: str = "") -> str:
 
 def parse_bool(value: Any) -> bool:
     return safe_str(value).lower() in {"true", "1", "yes", "y"}
+
+import pandas as pd
+
+
+def read_csv(path):
+    """
+    Safe CSV reader.
+    Returns empty DataFrame if file does not exist.
+    """
+
+    try:
+        return pd.read_csv(path)
+    except FileNotFoundError:
+        return pd.DataFrame()
+
+
+def write_csv(df, path):
+    """
+    Standardised CSV writer used by agents.
+    """
+
+    df.to_csv(path, index=False)
