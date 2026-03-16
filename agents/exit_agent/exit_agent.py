@@ -1,161 +1,183 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+import os
+from datetime import datetime, UTC
 
 import pandas as pd
 
-from shared.io_utils import (
-    load_yaml,
-    normalise_columns,
-    parse_bool,
-    read_csv_required,
-    safe_float,
-    safe_str,
-    write_csv,
-)
-from shared.paths import config_path, data_path
+
+INPUT_PORTFOLIO_MONITOR_FILE = os.path.join("data", "portfolio_monitor.csv")
+OUTPUT_EXIT_ADVICE_FILE = os.path.join("data", "exit_advice.csv")
+
+
+REQUIRED_COLUMNS = [
+    "position_id",
+    "ticker",
+    "side",
+    "status",
+    "entry_date",
+    "entry_price",
+    "quantity",
+    "capital_allocated",
+    "stop_loss",
+    "take_profit",
+    "current_price",
+    "market_value",
+    "pnl_abs",
+    "pnl_pct",
+    "regime_at_entry",
+    "sector",
+    "signal_score",
+    "highest_price_since_entry",
+    "lowest_price_since_entry",
+    "exit_reason",
+    "last_updated_at",
+]
+
+
+NUMERIC_COLUMNS = [
+    "entry_price",
+    "quantity",
+    "capital_allocated",
+    "stop_loss",
+    "take_profit",
+    "current_price",
+    "market_value",
+    "pnl_abs",
+    "pnl_pct",
+    "signal_score",
+    "highest_price_since_entry",
+    "lowest_price_since_entry",
+]
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-def build_alert_lookup(alerts: pd.DataFrame) -> dict[str, dict[str, Any]]:
-    lookup: dict[str, dict[str, Any]] = {}
+def load_portfolio_monitor() -> pd.DataFrame:
+    if not os.path.exists(INPUT_PORTFOLIO_MONITOR_FILE):
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-    if alerts.empty or "ticker" not in alerts.columns:
-        return lookup
+    df = pd.read_csv(INPUT_PORTFOLIO_MONITOR_FILE)
 
-    for _, row in alerts.iterrows():
-        ticker = safe_str(row.get("ticker")).upper()
-        if not ticker:
-            continue
-        lookup[ticker] = {col: row.get(col) for col in alerts.columns}
+    if df.empty:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-    return lookup
+    for column in REQUIRED_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
 
+    df = df[REQUIRED_COLUMNS].copy()
 
-def choose_exit_action(
-    current_price: float,
-    stop_loss: float,
-    take_profit: float,
-    unrealised_pnl: float,
-    alert_row: dict[str, Any] | None
-) -> tuple[str, str, str]:
-    if current_price > 0 and take_profit > 0 and current_price >= take_profit:
-        return "take_profit", "high", "Current price is at or above take profit"
+    for column in NUMERIC_COLUMNS:
+        df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    if current_price > 0 and stop_loss > 0 and current_price <= stop_loss:
-        return "close", "high", "Current price is at or below stop loss"
+    text_columns = [c for c in REQUIRED_COLUMNS if c not in NUMERIC_COLUMNS]
+    for column in text_columns:
+        df[column] = df[column].astype("object")
 
-    if alert_row:
-        exit_required = parse_bool(alert_row.get("exit_required", False))
-        alert_type = safe_str(alert_row.get("alert_type")).lower()
-        alert_message = safe_str(alert_row.get("alert_message"))
-        severity = safe_str(alert_row.get("severity")).lower()
+    df["ticker"] = df["ticker"].fillna("").astype(str).str.strip().str.upper()
+    df["side"] = df["side"].fillna("").astype(str).str.strip().str.lower()
+    df["status"] = df["status"].fillna("").astype(str).str.strip().str.lower()
+    df["exit_reason"] = df["exit_reason"].fillna("").astype(str).str.strip().str.lower()
 
-        if exit_required:
-            return "review_immediately", "high", alert_message or "Position alert requires exit review"
-
-        if alert_type in {"take_profit", "target_hit"}:
-            return "take_profit", "high", alert_message or "Position alert indicates take profit"
-
-        if alert_type in {"stop_loss", "stop_hit"}:
-            return "close", "high", alert_message or "Position alert indicates stop loss"
-
-        if alert_type in {"trail_stop", "raise_stop"}:
-            return "raise_stop", "medium", alert_message or "Position alert indicates stop should be raised"
-
-        if severity in {"high", "critical"}:
-            return "review_immediately", "high", alert_message or "High-severity position alert"
-
-    if unrealised_pnl > 0:
-        return "hold", "low", "Position is open and within normal range"
-
-    return "hold", "low", "No exit condition triggered"
+    return df
 
 
-def run() -> None:
-    governance = load_yaml(config_path("governance.yaml"))
+def decide_exit_action(row: pd.Series) -> tuple[str, str]:
+    status = row["status"]
+    exit_reason = row["exit_reason"]
+    side = row["side"]
+    current_price = row["current_price"]
+    take_profit = row["take_profit"]
+    stop_loss = row["stop_loss"]
+    highest_price = row["highest_price_since_entry"]
+    lowest_price = row["lowest_price_since_entry"]
 
-    if governance.get("execution_mode") != "advisory_only":
-        raise ValueError("Governance breach: execution_mode must be advisory_only")
+    if status == "exit_required":
+        if exit_reason == "take_profit_triggered":
+            return "take_profit", "Take profit level has been reached."
+        if exit_reason == "stop_loss_triggered":
+            return "close", "Stop loss level has been triggered."
+        return "review_immediately", "Exit required but exit reason is unclear."
 
-    portfolio_state = read_csv_required(data_path("portfolio_state.csv"))
-    position_alerts = read_csv_required(data_path("position_alerts.csv"))
+    if pd.notna(current_price) and pd.notna(take_profit):
+        if side == "long" and current_price >= take_profit:
+            return "take_profit", "Current price is at or above take profit."
+        if side == "short" and current_price <= take_profit:
+            return "take_profit", "Current price is at or below take profit."
 
-    portfolio_state = normalise_columns(portfolio_state)
-    position_alerts = normalise_columns(position_alerts)
+    if pd.notna(current_price) and pd.notna(stop_loss):
+        if side == "long" and current_price <= stop_loss:
+            return "close", "Current price is at or below stop loss."
+        if side == "short" and current_price >= stop_loss:
+            return "close", "Current price is at or above stop loss."
 
-    required_portfolio_cols = {"ticker"}
-    if not required_portfolio_cols.issubset(set(portfolio_state.columns)):
-        raise ValueError("portfolio_state.csv must contain at least: ticker")
+    if side == "long" and pd.notna(highest_price) and pd.notna(stop_loss) and pd.notna(current_price):
+        if current_price > stop_loss and highest_price > current_price:
+            return "raise_stop", "Consider raising stop loss to protect gains."
 
-    alert_lookup = build_alert_lookup(position_alerts)
+    if side == "short" and pd.notna(lowest_price) and pd.notna(stop_loss) and pd.notna(current_price):
+        if current_price < stop_loss and lowest_price < current_price:
+            return "raise_stop", "Consider lowering stop loss to protect gains."
 
-    output_rows: list[dict[str, Any]] = []
+    return "hold", "No exit condition triggered."
 
-    for _, row in portfolio_state.iterrows():
-        ticker = safe_str(row.get("ticker")).upper()
-        if not ticker:
-            continue
 
-        status = safe_str(row.get("status")).lower()
-        quantity = safe_float(row.get("quantity"))
-        current_price = safe_float(row.get("current_price"))
-        avg_price = safe_float(row.get("average_price"))
-        unrealised_pnl = safe_float(row.get("unrealised_pnl"))
+def build_exit_advice(df: pd.DataFrame) -> pd.DataFrame:
+    output_rows: list[dict] = []
 
-        if status != "open" or quantity <= 0:
-            continue
-
-        stop_loss = safe_float(row.get("stop_loss"))
-        take_profit = safe_float(row.get("take_profit"))
-
-        if stop_loss <= 0 and avg_price > 0:
-            default_stop_loss_pct = safe_float(governance.get("default_stop_loss_pct", 5.0))
-            stop_loss = round(avg_price * (1 - default_stop_loss_pct / 100.0), 4)
-
-        if take_profit <= 0 and avg_price > 0:
-            default_take_profit_pct = safe_float(governance.get("default_take_profit_pct", 12.0))
-            take_profit = round(avg_price * (1 + default_take_profit_pct / 100.0), 4)
-
-        alert_row = alert_lookup.get(ticker)
-
-        exit_action, urgency, exit_reason = choose_exit_action(
-            current_price=current_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            unrealised_pnl=unrealised_pnl,
-            alert_row=alert_row,
+    if df.empty:
+        return pd.DataFrame(
+            columns=[
+                "position_id",
+                "ticker",
+                "exit_action",
+                "reason",
+                "status",
+                "exit_reason",
+                "current_price",
+                "stop_loss",
+                "take_profit",
+                "pnl_abs",
+                "pnl_pct",
+                "generated_at",
+            ]
         )
 
-        suggested_exit_price = current_price if current_price > 0 else 0.0
-        suggested_stop_update = ""
-        suggested_take_profit_update = ""
+    for _, row in df.iterrows():
+        ticker = row["ticker"]
+        if not ticker:
+            continue
 
-        if exit_action == "raise_stop" and current_price > 0:
-            suggested_stop_update = round(current_price * 0.98, 4)
+        exit_action, reason = decide_exit_action(row)
 
         output_rows.append(
             {
+                "position_id": row["position_id"],
                 "ticker": ticker,
-                "current_position": quantity,
                 "exit_action": exit_action,
-                "exit_reason": exit_reason,
-                "suggested_exit_price": round(suggested_exit_price, 4) if suggested_exit_price else 0.0,
-                "suggested_stop_update": suggested_stop_update,
-                "suggested_take_profit_update": suggested_take_profit_update,
-                "urgency": urgency,
-                "manual_review_required": True,
-                "exit_generated_at": utc_now_iso(),
+                "reason": reason,
+                "status": row["status"],
+                "exit_reason": row["exit_reason"],
+                "current_price": row["current_price"],
+                "stop_loss": row["stop_loss"],
+                "take_profit": row["take_profit"],
+                "pnl_abs": row["pnl_abs"],
+                "pnl_pct": row["pnl_pct"],
+                "generated_at": utc_now_iso(),
             }
         )
 
-    out_df = pd.DataFrame(output_rows)
-    out_path = data_path("exit_advice.csv")
-    write_csv(out_df, out_path)
+    return pd.DataFrame(output_rows)
+
+
+def run() -> None:
+    portfolio_df = load_portfolio_monitor()
+    out_df = build_exit_advice(portfolio_df)
+    out_path = OUTPUT_EXIT_ADVICE_FILE
+    out_df.to_csv(out_path, index=False)
 
     hold_count = int((out_df["exit_action"] == "hold").sum()) if not out_df.empty else 0
     take_profit_count = int((out_df["exit_action"] == "take_profit").sum()) if not out_df.empty else 0
