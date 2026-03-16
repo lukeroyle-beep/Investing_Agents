@@ -1,60 +1,24 @@
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
-import yaml
 
-
-ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT / "data"
-CONFIG_DIR = ROOT / "config"
+from shared.io_utils import (
+    load_yaml,
+    normalise_columns,
+    parse_bool,
+    read_csv_required,
+    safe_float,
+    safe_str,
+    write_csv,
+)
+from shared.paths import config_path, data_path
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def load_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing config file: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Config at {path} must be a mapping.")
-    return data
-
-
-def read_csv_required(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing required CSV file: {path}")
-    return pd.read_csv(path)
-
-
-def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    return df
-
-
-def safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if pd.isna(value):
-            return default
-        return float(value)
-    except Exception:
-        return default
-
-
-def safe_str(value: Any, default: str = "") -> str:
-    if pd.isna(value):
-        return default
-    return str(value).strip()
-
-
-def parse_bool(value: Any) -> bool:
-    return safe_str(value).lower() in {"true", "1", "yes", "y"}
 
 
 def build_alert_lookup(alerts: pd.DataFrame) -> dict[str, dict[str, Any]]:
@@ -79,11 +43,6 @@ def choose_exit_action(
     unrealised_pnl: float,
     alert_row: dict[str, Any] | None
 ) -> tuple[str, str, str]:
-    """
-    Returns:
-    exit_action, urgency, exit_reason
-    """
-
     if current_price > 0 and take_profit > 0 and current_price >= take_profit:
         return "take_profit", "high", "Current price is at or above take profit"
 
@@ -118,13 +77,13 @@ def choose_exit_action(
 
 
 def run() -> None:
-    governance = load_yaml(CONFIG_DIR / "governance.yaml")
+    governance = load_yaml(config_path("governance.yaml"))
 
     if governance.get("execution_mode") != "advisory_only":
         raise ValueError("Governance breach: execution_mode must be advisory_only")
 
-    portfolio_state = read_csv_required(DATA_DIR / "portfolio_state.csv")
-    position_alerts = read_csv_required(DATA_DIR / "position_alerts.csv")
+    portfolio_state = read_csv_required(data_path("portfolio_state.csv"))
+    position_alerts = read_csv_required(data_path("position_alerts.csv"))
 
     portfolio_state = normalise_columns(portfolio_state)
     position_alerts = normalise_columns(position_alerts)
@@ -195,9 +154,8 @@ def run() -> None:
         )
 
     out_df = pd.DataFrame(output_rows)
-
-    out_path = DATA_DIR / "exit_advice.csv"
-    out_df.to_csv(out_path, index=False)
+    out_path = data_path("exit_advice.csv")
+    write_csv(out_df, out_path)
 
     hold_count = int((out_df["exit_action"] == "hold").sum()) if not out_df.empty else 0
     take_profit_count = int((out_df["exit_action"] == "take_profit").sum()) if not out_df.empty else 0

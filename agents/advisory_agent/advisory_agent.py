@@ -1,56 +1,23 @@
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
-import yaml
 
-
-ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT / "data"
-CONFIG_DIR = ROOT / "config"
+from shared.io_utils import (
+    load_yaml,
+    normalise_columns,
+    read_csv_optional,
+    read_csv_required,
+    safe_float,
+    write_csv,
+)
+from shared.paths import config_path, data_path
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def load_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing config file: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Config at {path} must be a mapping.")
-    return data
-
-
-def read_csv_required(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise FileNotFoundError(f"Missing required CSV file: {path}")
-    return pd.read_csv(path)
-
-
-def read_csv_optional(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
-    if path.exists():
-        return pd.read_csv(path)
-    return pd.DataFrame(columns=columns or [])
-
-
-def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [str(c).strip().lower() for c in df.columns]
-    return df
-
-
-def safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        if pd.isna(value):
-            return default
-        return float(value)
-    except Exception:
-        return default
 
 
 def build_entry_zone(entry_price: float, buffer_pct: float) -> tuple[float, float]:
@@ -112,7 +79,7 @@ def determine_open_position_block(ticker: str, portfolio_state: pd.DataFrame, go
 
 
 def run() -> None:
-    governance = load_yaml(CONFIG_DIR / "governance.yaml")
+    governance = load_yaml(config_path("governance.yaml"))
 
     if governance.get("execution_mode") != "advisory_only":
         raise ValueError("Governance breach: execution_mode must be advisory_only")
@@ -120,9 +87,9 @@ def run() -> None:
     if bool(governance.get("allow_order_submission", False)):
         raise ValueError("Governance breach: allow_order_submission must be false")
 
-    recommendations = read_csv_required(DATA_DIR / "portfolio_recommendations.csv")
-    portfolio_state = read_csv_optional(DATA_DIR / "portfolio_state.csv")
-    news_review = read_csv_optional(DATA_DIR / "news_review.csv")
+    recommendations = read_csv_required(data_path("portfolio_recommendations.csv"))
+    portfolio_state = read_csv_optional(data_path("portfolio_state.csv"))
+    news_review = read_csv_optional(data_path("news_review.csv"))
 
     recommendations = normalise_columns(recommendations)
     portfolio_state = normalise_columns(portfolio_state)
@@ -242,9 +209,8 @@ def run() -> None:
         )
 
     out_df = pd.DataFrame(output_rows)
-
-    out_path = DATA_DIR / "trade_advice.csv"
-    out_df.to_csv(out_path, index=False)
+    out_path = data_path("trade_advice.csv")
+    write_csv(out_df, out_path)
 
     ready_count = int((out_df["advice_status"] == "ready_for_manual_review").sum()) if not out_df.empty else 0
     hold_count = int((out_df["advice_status"] == "hold_for_review").sum()) if not out_df.empty else 0
