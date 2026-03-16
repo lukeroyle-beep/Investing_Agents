@@ -1,0 +1,11 @@
+run_id,event_type,ticker,position_id,status,detail,generated_at
+RUN_20260316T181718Z,position_snapshot,COST,POS001,open,Position snapshot captured.,2026-03-16T17:14:20.108961+00:00
+RUN_20260316T181718Z,exit_recommendation,COST,POS001,exit_required,Take profit level has been reached.,2026-03-16T17:14:20.108961+00:00
+RUN_20260316T181718Z,position_snapshot,COST,POS001,open,Position snapshot captured.,2026-03-16T17:19:56.063736+00:00
+RUN_20260316T181718Z,exit_recommendation,COST,POS001,exit_required,Take profit level has been reached.,2026-03-16T17:19:56.063736+00:00
+RUN_20260316T181718Z,position_snapshot,COST,POS001,open,Position snapshot captured.,2026-03-16T17:24:07.871181+00:00
+RUN_20260316T181718Z,exit_recommendation,COST,POS001,exit_required,Take profit level has been reached.,2026-03-16T17:24:07.871181+00:00
+RUN_20260316T181718Z,position_snapshot,COST,POS001,open,Position snapshot captured.,2026-03-16T17:30:29.003481+00:00
+RUN_20260316T181718Z,exit_recommendation,COST,POS001,exit_required,Take profit level has been reached.,2026-03-16T17:30:29.003481+00:00
+RUN_20260316T181718Z,position_snapshot,COST,POS001,open,Position snapshot captured.,2026-03-16T18:18:19.465632+00:00
+RUN_20260316T181718Z,exit_recommendation,COST,POS001,exit_required,Take profit level has been reached.,2026-03-16T18:18:19.465632+00:00

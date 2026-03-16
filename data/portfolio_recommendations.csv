@@ -1,0 +1,4 @@
+ticker,direction,asset_type,entry_price,position_size_pct,capital_allocated,stop_loss_price,take_profit_price,recommendation_status,recommendation_notes
+MSFT,long,equity,420,5,500,399,470,approved,Trend intact and risk acceptable
+NVDA,long,equity,880,5,500,830,980,approved,Strong momentum but watch volatility
+TSLA,long,equity,170,5,500,160,195,candidate,Needs manual review on news

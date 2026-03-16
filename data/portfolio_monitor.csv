@@ -1,0 +1,2 @@
+position_id,ticker,side,status,entry_date,entry_price,quantity,capital_allocated,stop_loss,take_profit,current_price,market_value,pnl_abs,pnl_pct,regime_at_entry,sector,signal_score,highest_price_since_entry,lowest_price_since_entry,exit_reason,last_updated_at,run_id
+POS001,COST,long,exit_required,2026-03-16T12:00:00+00:00,,1.0,710.0,660.0,800.0,1001.7,1001.7,,,risk_off,Consumer Staples,8.7,1001.7,700.0,take_profit_triggered,2026-03-16T18:26:14.604192+00:00,RUN_20260316T182511Z

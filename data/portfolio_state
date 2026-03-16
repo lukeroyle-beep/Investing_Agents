@@ -1,0 +1,1 @@
+position_id,ticker,side,status,quantity,average_entry_price,entry_date,capital_allocated,stop_loss,take_profit,regime_at_entry,sector,signal_score,highest_price_since_entry,lowest_price_since_entry,current_price,market_value,unrealised_pnl_abs,unrealised_pnl_pct,realised_pnl_abs,exit_reason,last_updated_at

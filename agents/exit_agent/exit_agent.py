@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, UTC
 
 import pandas as pd
 
+from shared.io_utils import write_csv_with_run_id
+from shared.paths import EXIT_ADVICE_PATH, data_path
+from shared.run_context import get_or_create_run_id
 
-INPUT_PORTFOLIO_MONITOR_FILE = os.path.join("data", "portfolio_monitor.csv")
-OUTPUT_EXIT_ADVICE_FILE = os.path.join("data", "exit_advice.csv")
+
+INPUT_PORTFOLIO_MONITOR_FILE = data_path("portfolio_monitor.csv")
+OUTPUT_EXIT_ADVICE_FILE = EXIT_ADVICE_PATH
 
 
 REQUIRED_COLUMNS = [
@@ -34,7 +37,6 @@ REQUIRED_COLUMNS = [
     "last_updated_at",
 ]
 
-
 NUMERIC_COLUMNS = [
     "entry_price",
     "quantity",
@@ -56,7 +58,7 @@ def utc_now_iso() -> str:
 
 
 def load_portfolio_monitor() -> pd.DataFrame:
-    if not os.path.exists(INPUT_PORTFOLIO_MONITOR_FILE):
+    if not INPUT_PORTFOLIO_MONITOR_FILE.exists():
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
     df = pd.read_csv(INPUT_PORTFOLIO_MONITOR_FILE)
@@ -174,10 +176,17 @@ def build_exit_advice(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run() -> None:
+    run_id = get_or_create_run_id()
+    print(f"Run ID: {run_id}")
+
     portfolio_df = load_portfolio_monitor()
     out_df = build_exit_advice(portfolio_df)
-    out_path = OUTPUT_EXIT_ADVICE_FILE
-    out_df.to_csv(out_path, index=False)
+
+    write_csv_with_run_id(
+        out_df,
+        OUTPUT_EXIT_ADVICE_FILE,
+        run_id=run_id,
+    )
 
     hold_count = int((out_df["exit_action"] == "hold").sum()) if not out_df.empty else 0
     take_profit_count = int((out_df["exit_action"] == "take_profit").sum()) if not out_df.empty else 0
@@ -186,9 +195,10 @@ def run() -> None:
     raise_stop_count = int((out_df["exit_action"] == "raise_stop").sum()) if not out_df.empty else 0
 
     print("Exit Agent finished.")
-    print(f"Saved exit advice to: {out_path}")
+    print(f"Saved exit advice to: {OUTPUT_EXIT_ADVICE_FILE}")
     print()
     print("Run summary:")
+    print(f"Run ID: {run_id}")
     print(f"Total exit advice rows: {len(out_df)}")
     print(f"Hold: {hold_count}")
     print(f"Take profit: {take_profit_count}")

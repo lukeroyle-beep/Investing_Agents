@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import datetime, UTC
 
 import pandas as pd
 
+from shared.io_utils import write_csv_with_run_id
+from shared.paths import (
+    PORTFOLIO_STATE_PATH,
+    POSITION_ALERTS_PATH,
+    UNIVERSE_SNAPSHOT_PATH,
+    data_path,
+)
+from shared.run_context import get_or_create_run_id
 
-PORTFOLIO_STATE_FILE = os.path.join("data", "portfolio_state.csv")
-POSITION_ALERTS_FILE = os.path.join("data", "position_alerts.csv")
-UNIVERSE_SNAPSHOT_FILE = os.path.join("data", "universe_snapshot.csv")
+
+INPUT_PORTFOLIO_STATE_FILE = PORTFOLIO_STATE_PATH
+OUTPUT_PORTFOLIO_MONITOR_FILE = data_path("portfolio_monitor.csv")
+POSITION_ALERTS_FILE = POSITION_ALERTS_PATH
+UNIVERSE_SNAPSHOT_FILE = UNIVERSE_SNAPSHOT_PATH
 
 
 REQUIRED_COLUMNS = [
@@ -36,7 +45,6 @@ REQUIRED_COLUMNS = [
     "last_updated_at",
 ]
 
-
 NUMERIC_COLUMNS = [
     "entry_price",
     "quantity",
@@ -52,6 +60,18 @@ NUMERIC_COLUMNS = [
     "lowest_price_since_entry",
 ]
 
+TEXT_COLUMNS = [
+    "position_id",
+    "ticker",
+    "side",
+    "status",
+    "entry_date",
+    "regime_at_entry",
+    "sector",
+    "exit_reason",
+    "last_updated_at",
+]
+
 
 @dataclass
 class RunResult:
@@ -65,22 +85,21 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def ensure_portfolio_state_file() -> pd.DataFrame:
-    os.makedirs("data", exist_ok=True)
+def ensure_input_portfolio_state_file() -> pd.DataFrame:
+    INPUT_PORTFOLIO_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    if not os.path.exists(PORTFOLIO_STATE_FILE):
+    if not INPUT_PORTFOLIO_STATE_FILE.exists():
         df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-        df.to_csv(PORTFOLIO_STATE_FILE, index=False)
+        df.to_csv(INPUT_PORTFOLIO_STATE_FILE, index=False)
         return df
 
-    df = pd.read_csv(PORTFOLIO_STATE_FILE)
+    df = pd.read_csv(INPUT_PORTFOLIO_STATE_FILE)
 
     for column in REQUIRED_COLUMNS:
         if column not in df.columns:
             df[column] = pd.NA
 
-    df = df[REQUIRED_COLUMNS].copy()
-    return df
+    return df[REQUIRED_COLUMNS].copy()
 
 
 def normalize_portfolio_state(df: pd.DataFrame) -> pd.DataFrame:
@@ -90,17 +109,20 @@ def normalize_portfolio_state(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     for column in NUMERIC_COLUMNS:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+        df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
 
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
-    df["side"] = df["side"].astype(str).str.strip().str.lower()
-    df["status"] = df["status"].astype(str).str.strip().str.lower()
+    for column in TEXT_COLUMNS:
+        df[column] = df[column].astype("object")
+
+    df["ticker"] = df["ticker"].fillna("").astype(str).str.strip().str.upper()
+    df["side"] = df["side"].fillna("").astype(str).str.strip().str.lower()
+    df["status"] = df["status"].fillna("").astype(str).str.strip().str.lower()
 
     return df
 
 
 def load_latest_prices() -> pd.DataFrame:
-    if not os.path.exists(UNIVERSE_SNAPSHOT_FILE):
+    if not UNIVERSE_SNAPSHOT_FILE.exists():
         return pd.DataFrame(columns=["ticker", "latest_price"])
 
     df = pd.read_csv(UNIVERSE_SNAPSHOT_FILE)
@@ -113,11 +135,10 @@ def load_latest_prices() -> pd.DataFrame:
 
     prices_df = df[["ticker", "latest_close"]].copy()
     prices_df["ticker"] = prices_df["ticker"].astype(str).str.strip().str.upper()
-    prices_df["latest_close"] = pd.to_numeric(prices_df["latest_close"], errors="coerce")
+    prices_df["latest_close"] = pd.to_numeric(prices_df["latest_close"], errors="coerce").astype("float64")
     prices_df = prices_df.rename(columns={"latest_close": "latest_price"})
 
-    prices_df = prices_df.dropna(subset=["ticker"]).drop_duplicates(subset=["ticker"], keep="last")
-    return prices_df
+    return prices_df.dropna(subset=["ticker"]).drop_duplicates(subset=["ticker"], keep="last")
 
 
 def refresh_position_prices(portfolio_df: pd.DataFrame, prices_df: pd.DataFrame) -> pd.DataFrame:
@@ -126,10 +147,13 @@ def refresh_position_prices(portfolio_df: pd.DataFrame, prices_df: pd.DataFrame)
 
     merged_df = portfolio_df.merge(prices_df, on="ticker", how="left")
 
-    merged_df["current_price"] = merged_df["latest_price"].combine_first(merged_df["current_price"])
-    merged_df = merged_df.drop(columns=["latest_price"])
+    merged_df["current_price"] = (
+        pd.to_numeric(merged_df["latest_price"], errors="coerce")
+        .combine_first(pd.to_numeric(merged_df["current_price"], errors="coerce"))
+        .astype("float64")
+    )
 
-    return merged_df
+    return merged_df.drop(columns=["latest_price"])
 
 
 def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -138,20 +162,26 @@ def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
 
+    for column in NUMERIC_COLUMNS:
+        df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
+
+    for column in TEXT_COLUMNS:
+        df[column] = df[column].astype("object")
+
     long_mask = df["side"] == "long"
     short_mask = df["side"] == "short"
 
-    df["market_value"] = df["current_price"] * df["quantity"]
+    df["market_value"] = (df["current_price"] * df["quantity"]).astype("float64")
 
     df.loc[long_mask, "pnl_abs"] = (
         (df.loc[long_mask, "current_price"] - df.loc[long_mask, "entry_price"])
         * df.loc[long_mask, "quantity"]
-    )
+    ).astype("float64")
 
     df.loc[short_mask, "pnl_abs"] = (
         (df.loc[short_mask, "entry_price"] - df.loc[short_mask, "current_price"])
         * df.loc[short_mask, "quantity"]
-    )
+    ).astype("float64")
 
     df.loc[long_mask, "pnl_pct"] = (
         (df.loc[long_mask, "current_price"] - df.loc[long_mask, "entry_price"])
@@ -163,13 +193,19 @@ def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
         / df.loc[short_mask, "entry_price"]
     ) * 100.0
 
-    df["highest_price_since_entry"] = df[
-        ["highest_price_since_entry", "current_price"]
-    ].max(axis=1, skipna=True)
+    df["pnl_pct"] = pd.to_numeric(df["pnl_pct"], errors="coerce").astype("float64")
 
-    df["lowest_price_since_entry"] = df[
-        ["lowest_price_since_entry", "current_price"]
-    ].min(axis=1, skipna=True)
+    df["highest_price_since_entry"] = (
+        df[["highest_price_since_entry", "current_price"]]
+        .max(axis=1, skipna=True)
+        .astype("float64")
+    )
+
+    df["lowest_price_since_entry"] = (
+        df[["lowest_price_since_entry", "current_price"]]
+        .min(axis=1, skipna=True)
+        .astype("float64")
+    )
 
     df["last_updated_at"] = utc_now_iso()
 
@@ -184,6 +220,10 @@ def create_alerts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         return df.copy(), alerts_df
 
     df = df.copy()
+
+    for column in TEXT_COLUMNS:
+        df[column] = df[column].astype("object")
+
     alerts = []
     now = utc_now_iso()
 
@@ -193,9 +233,9 @@ def create_alerts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         ticker = row["ticker"]
         side = row["side"]
-        current_price = row["current_price"]
-        stop_loss = row["stop_loss"]
-        take_profit = row["take_profit"]
+        current_price = float(row["current_price"]) if pd.notna(row["current_price"]) else pd.NA
+        stop_loss = float(row["stop_loss"]) if pd.notna(row["stop_loss"]) else pd.NA
+        take_profit = float(row["take_profit"]) if pd.notna(row["take_profit"]) else pd.NA
 
         if pd.isna(current_price):
             alerts.append(
@@ -253,13 +293,24 @@ def create_alerts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return df, alerts_df
 
 
-def save_outputs(portfolio_df: pd.DataFrame, alerts_df: pd.DataFrame) -> None:
-    portfolio_df.to_csv(PORTFOLIO_STATE_FILE, index=False)
-    alerts_df.to_csv(POSITION_ALERTS_FILE, index=False)
+def save_outputs(portfolio_df: pd.DataFrame, alerts_df: pd.DataFrame, run_id: str) -> None:
+    write_csv_with_run_id(
+        portfolio_df,
+        OUTPUT_PORTFOLIO_MONITOR_FILE,
+        run_id=run_id,
+    )
+    write_csv_with_run_id(
+        alerts_df,
+        POSITION_ALERTS_FILE,
+        run_id=run_id,
+    )
 
 
 def main() -> None:
-    portfolio_df = ensure_portfolio_state_file()
+    run_id = get_or_create_run_id()
+    print(f"Run ID: {run_id}")
+
+    portfolio_df = ensure_input_portfolio_state_file()
     portfolio_df = normalize_portfolio_state(portfolio_df)
 
     prices_df = load_latest_prices()
@@ -267,7 +318,7 @@ def main() -> None:
     portfolio_df = calculate_position_metrics(portfolio_df)
     portfolio_df, alerts_df = create_alerts(portfolio_df)
 
-    save_outputs(portfolio_df, alerts_df)
+    save_outputs(portfolio_df, alerts_df, run_id=run_id)
 
     result = RunResult(
         total_positions=len(portfolio_df),
@@ -277,7 +328,9 @@ def main() -> None:
     )
 
     print("\nPosition Tracking Agent finished.")
-    print(f"Saved portfolio state to: {PORTFOLIO_STATE_FILE}")
+    print(f"Run ID: {run_id}")
+    print(f"Read portfolio state from: {INPUT_PORTFOLIO_STATE_FILE}")
+    print(f"Saved portfolio monitor to: {OUTPUT_PORTFOLIO_MONITOR_FILE}")
     print(f"Saved position alerts to: {POSITION_ALERTS_FILE}")
 
     print("\nRun summary:")
@@ -287,7 +340,7 @@ def main() -> None:
     print(f"Updated at: {result.updated_at}")
 
     if not portfolio_df.empty:
-        print("\nPortfolio state preview:")
+        print("\nPortfolio monitor preview:")
         print(portfolio_df)
 
 

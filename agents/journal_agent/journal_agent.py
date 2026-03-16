@@ -1,15 +1,20 @@
-import os
+from __future__ import annotations
+
 from datetime import datetime, UTC
 
 import pandas as pd
 
+from shared.io_utils import read_csv, write_csv
+from shared.paths import FINAL_SHORTLIST_PATH, data_path
+from shared.run_context import get_or_create_run_id
 
-FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
-JOURNAL_FILE = os.path.join("data", "trade_journal.csv")
+
+FINAL_SHORTLIST_FILE = FINAL_SHORTLIST_PATH
+JOURNAL_FILE = data_path("trade_journal.csv")
 
 
-def load_final_shortlist():
-    if not os.path.exists(FINAL_SHORTLIST_FILE):
+def load_final_shortlist() -> pd.DataFrame:
+    if not FINAL_SHORTLIST_FILE.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(FINAL_SHORTLIST_FILE)
@@ -20,8 +25,8 @@ def load_final_shortlist():
     return df
 
 
-def load_existing_journal():
-    if not os.path.exists(JOURNAL_FILE):
+def load_existing_journal() -> pd.DataFrame:
+    if not JOURNAL_FILE.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(JOURNAL_FILE)
@@ -32,7 +37,7 @@ def load_existing_journal():
     return df
 
 
-def build_journal_entries(df):
+def build_journal_entries(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
     run_timestamp = datetime.now(UTC).isoformat()
 
     columns_to_keep = [
@@ -45,7 +50,15 @@ def build_journal_entries(df):
         "risk_notes",
     ]
 
-    journal_df = df[columns_to_keep].copy()
+    available_columns = [col for col in columns_to_keep if col in df.columns]
+    journal_df = df[available_columns].copy()
+
+    for col in columns_to_keep:
+        if col not in journal_df.columns:
+            journal_df[col] = ""
+
+    journal_df = journal_df[columns_to_keep].copy()
+    journal_df["run_id"] = run_id
     journal_df["journaled_at"] = run_timestamp
     journal_df["review_status"] = "open"
     journal_df["user_action"] = ""
@@ -55,7 +68,10 @@ def build_journal_entries(df):
     return journal_df
 
 
-def main():
+def main() -> None:
+    run_id = get_or_create_run_id()
+    print(f"Run ID: {run_id}")
+
     shortlist_df = load_final_shortlist()
 
     if shortlist_df.empty:
@@ -63,15 +79,14 @@ def main():
         return
 
     existing_journal_df = load_existing_journal()
-    new_entries_df = build_journal_entries(shortlist_df)
+    new_entries_df = build_journal_entries(shortlist_df, run_id=run_id)
 
     if existing_journal_df.empty:
-        combined_df = new_entries_df
+        combined_df = new_entries_df.copy()
     else:
         combined_df = pd.concat([existing_journal_df, new_entries_df], ignore_index=True)
 
-    os.makedirs("data", exist_ok=True)
-    combined_df.to_csv(JOURNAL_FILE, index=False)
+    write_csv(combined_df, JOURNAL_FILE)
 
     total_entries = len(combined_df)
     new_entries = len(new_entries_df)
@@ -80,6 +95,7 @@ def main():
     print(f"Saved journal to: {JOURNAL_FILE}")
 
     print("\nRun summary:")
+    print(f"Run ID: {run_id}")
     print(f"New journal entries added: {new_entries}")
     print(f"Total journal entries: {total_entries}")
 

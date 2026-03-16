@@ -1,1 +1,2 @@
-position_id,ticker,alert_type,message,generated_at
+position_id,ticker,alert_type,message,generated_at,run_id
+POS001,COST,take_profit_triggered,COST hit take profit at 1001.7,2026-03-16T18:26:14.605269+00:00,RUN_20260316T182511Z

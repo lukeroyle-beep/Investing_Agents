@@ -11,9 +11,10 @@ from shared.io_utils import (
     read_csv_optional,
     read_csv_required,
     safe_float,
-    write_csv,
+    write_csv_with_run_id,
 )
-from shared.paths import config_path, data_path
+from shared.paths import ADVISORY_TRADES_PATH, config_path, data_path
+from shared.run_context import get_or_create_run_id
 
 
 def utc_now_iso() -> str:
@@ -39,7 +40,11 @@ def calculate_rr(entry_price: float, stop_loss_price: float, take_profit_price: 
     return round(reward / risk, 2)
 
 
-def determine_news_block(has_news: Any, news_severity: Any, governance: dict[str, Any]) -> tuple[bool, str]:
+def determine_news_block(
+    has_news: Any,
+    news_severity: Any,
+    governance: dict[str, Any],
+) -> tuple[bool, str]:
     high_news_severity_block = bool(governance.get("high_news_severity_block", True))
     has_news_bool = str(has_news).strip().lower() in {"true", "1", "yes", "y"}
     severity = str(news_severity).strip().lower()
@@ -53,7 +58,11 @@ def determine_news_block(has_news: Any, news_severity: Any, governance: dict[str
     return False, ""
 
 
-def determine_open_position_block(ticker: str, portfolio_state: pd.DataFrame, governance: dict[str, Any]) -> tuple[bool, str]:
+def determine_open_position_block(
+    ticker: str,
+    portfolio_state: pd.DataFrame,
+    governance: dict[str, Any],
+) -> tuple[bool, str]:
     if not bool(governance.get("block_if_open_position_exists", True)):
         return False, ""
 
@@ -68,8 +77,8 @@ def determine_open_position_block(ticker: str, portfolio_state: pd.DataFrame, go
         return False, ""
 
     open_rows = state[
-        (state["ticker"].astype(str).str.upper() == ticker.upper()) &
-        (state["status"].astype(str).str.lower() == "open")
+        (state["ticker"].astype(str).str.upper() == ticker.upper())
+        & (state["status"].astype(str).str.lower() == "open")
     ]
 
     if not open_rows.empty:
@@ -79,6 +88,9 @@ def determine_open_position_block(ticker: str, portfolio_state: pd.DataFrame, go
 
 
 def run() -> None:
+    run_id = get_or_create_run_id()
+    print(f"Run ID: {run_id}")
+
     governance = load_yaml(config_path("governance.yaml"))
 
     if governance.get("execution_mode") != "advisory_only":
@@ -87,15 +99,19 @@ def run() -> None:
     if bool(governance.get("allow_order_submission", False)):
         raise ValueError("Governance breach: allow_order_submission must be false")
 
-    recommendations = read_csv_required(data_path("portfolio_recommendations.csv"))
-    portfolio_state = read_csv_optional(data_path("portfolio_state.csv"))
-    news_review = read_csv_optional(data_path("news_review.csv"))
+    recommendations_path = data_path("portfolio_recommendations.csv")
+    portfolio_state_path = data_path("portfolio_state.csv")
+    news_review_path = data_path("news_review.csv")
+
+    recommendations = read_csv_required(recommendations_path)
+    portfolio_state = read_csv_optional(portfolio_state_path)
+    news_review = read_csv_optional(news_review_path)
 
     recommendations = normalise_columns(recommendations)
     portfolio_state = normalise_columns(portfolio_state)
     news_review = normalise_columns(news_review)
 
-    news_lookup = {}
+    news_lookup: dict[str, dict[str, Any]] = {}
     if not news_review.empty and "ticker" in news_review.columns:
         for _, row in news_review.iterrows():
             news_lookup[str(row.get("ticker", "")).upper()] = {
@@ -209,17 +225,22 @@ def run() -> None:
         )
 
     out_df = pd.DataFrame(output_rows)
-    out_path = data_path("trade_advice.csv")
-    write_csv(out_df, out_path)
+
+    write_csv_with_run_id(
+        out_df,
+        ADVISORY_TRADES_PATH,
+        run_id=run_id,
+    )
 
     ready_count = int((out_df["advice_status"] == "ready_for_manual_review").sum()) if not out_df.empty else 0
     hold_count = int((out_df["advice_status"] == "hold_for_review").sum()) if not out_df.empty else 0
     blocked_count = int((out_df["advice_status"] == "blocked").sum()) if not out_df.empty else 0
 
     print("Advisory Agent finished.")
-    print(f"Saved trade advice to: {out_path}")
+    print(f"Saved trade advice to: {ADVISORY_TRADES_PATH}")
     print()
     print("Run summary:")
+    print(f"Run ID: {run_id}")
     print(f"Total trade advice rows: {len(out_df)}")
     print(f"Ready for manual review: {ready_count}")
     print(f"Hold for review: {hold_count}")
