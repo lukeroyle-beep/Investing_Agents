@@ -1,36 +1,47 @@
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 
 
-BASE_DIR = Path(__file__).resolve().parent
-
-PIPELINE_STEPS = [
-    ("Universe Agent", BASE_DIR / "agents" / "universe_agent" / "universe_agent.py"),
-    ("Macro Agent", BASE_DIR / "agents" / "macro_agent" / "macro_agent.py"),
-    ("Signal Agent", BASE_DIR / "agents" / "signal_agent" / "signal_agent.py"),
-    ("Risk Agent", BASE_DIR / "agents" / "risk_agent" / "risk_agent.py"),
-    ("Journal Agent", BASE_DIR / "agents" / "journal_agent" / "journal_agent.py"),
-    ("News Agent", BASE_DIR / "agents" / "news_agent" / "news_agent.py"),
-    ("Position Tracking Agent", BASE_DIR / "agents" / "position_tracking_agent" / "position_agent.py"),
-    ("Portfolio Agent", BASE_DIR / "agents" / "portfolio_agent" / "portfolio_agent.py"),
-    ("Execution Agent", BASE_DIR / "agents" / "execution_agent" / "execution_agent.py"),
-]
+ROOT = Path(__file__).resolve().parent
 
 
-def run_step(step_name: str, script_path: Path) -> None:
-    print(f"\n=== Running {step_name} ===")
-    result = subprocess.run([sys.executable, str(script_path)], cwd=BASE_DIR)
+def run_step(name: str, script_path: str) -> None:
+    print(f"\n=== Running {name} ===\n")
 
-    if result.returncode != 0:
-        raise RuntimeError(f"{step_name} failed with exit code {result.returncode}")
+    full_path = ROOT / script_path
+
+    if not full_path.exists():
+        raise FileNotFoundError(f"Agent script not found: {full_path}")
+
+    try:
+        result = subprocess.run([sys.executable, str(full_path)], check=True)
+
+        if result.returncode == 0:
+            print(f"\n{name} finished.\n")
+
+    except subprocess.CalledProcessError as e:
+        print(f"\n{name} failed.")
+        print(f"Script: {full_path}")
+        print(f"Return code: {e.returncode}")
+        raise
 
 
 def main() -> None:
-    for step_name, script_path in PIPELINE_STEPS:
-        run_step(step_name, script_path)
+    run_step("Universe Agent", "agents/universe_agent/universe_agent.py")
+    run_step("Macro Agent", "agents/macro_agent/macro_agent.py")
+    run_step("Signal Agent", "agents/signal_agent/signal_agent.py")
+    run_step("Risk Agent", "agents/risk_agent/risk_agent.py")
+    run_step("News Agent", "agents/news_agent/news_agent.py")
+    run_step("Portfolio Agent", "agents/portfolio_agent/portfolio_agent.py")
 
-    print("\nPipeline completed successfully.")
+    run_step("Advisory Agent", "agents/advisory_agent/advisory_agent.py")
+
+    run_step("Position Tracking Agent", "agents/position_tracking_agent/position_tracking_agent.py")
+
+    run_step("Exit Agent", "agents/exit_agent/exit_agent.py")
+
+    run_step("Journal Agent", "agents/journal_agent/journal_agent.py")
 
 
 if __name__ == "__main__":
