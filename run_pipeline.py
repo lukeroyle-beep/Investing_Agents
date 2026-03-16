@@ -34,6 +34,7 @@ def main() -> None:
     run_step("News Agent", "agents.news_agent.news_agent")
     run_step("Portfolio Agent", "agents.portfolio_agent.portfolio_agent")
     run_step("Advisory Agent", "agents.advisory_agent.advisory_agent")
+    run_step("Fill Agent", "agents.fill_agent.fill_agent")
     run_step("Position Tracking Agent", "agents.position_tracking_agent.position_tracking_agent")
     run_step("Exit Agent", "agents.exit_agent.exit_agent")
     run_step("Journal Agent", "agents.journal_agent.journal_agent")
