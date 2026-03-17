@@ -5,14 +5,19 @@ from datetime import datetime, UTC
 import pandas as pd
 
 from shared.id_utils import validate_fill_id
-from shared.io_utils import read_csv, write_csv, write_csv_with_run_id
+from shared.io_utils import read_csv, write_csv_with_schema_and_run_id
 from shared.paths import (
     PORTFOLIO_STATE_PATH,
     PROCESSED_FILLS_PATH,
     TRADE_FILLS_PATH,
 )
 from shared.run_context import get_or_create_run_id
-from shared.schemas import validate_portfolio_state, validate_processed_fills
+from shared.schemas import (
+    PORTFOLIO_STATE_SCHEMA,
+    PROCESSED_FILLS_SCHEMA,
+    validate_portfolio_state,
+    validate_processed_fills,
+)
 
 
 TRADE_FILLS_FILE = TRADE_FILLS_PATH
@@ -147,7 +152,14 @@ def append_processed_fills(new_ids: list[str], run_id: str) -> None:
     combined_df = combined_df[combined_df["fill_id"] != ""].copy()
     combined_df = combined_df.drop_duplicates(subset=["fill_id"], keep="first")
 
-    write_csv(combined_df, PROCESSED_FILLS_FILE)
+    write_csv_with_schema_and_run_id(
+        combined_df,
+        PROCESSED_FILLS_FILE,
+        schema=PROCESSED_FILLS_SCHEMA,
+        run_id=run_id,
+        overwrite=True,
+        keep_extra_columns=False,
+    )
 
 
 def run_fill_agent() -> None:
@@ -169,7 +181,7 @@ def run_fill_agent() -> None:
         return
 
     portfolio_state = read_csv(PORTFOLIO_STATE_FILE)
-    portfolio_state = validate_portfolio_state(portfolio_state)
+    portfolio_state = validate_portfolio_state(portfolio_state, keep_extra_columns=False)
 
     processed_now: list[str] = []
 
@@ -183,12 +195,15 @@ def run_fill_agent() -> None:
 
     append_processed_fills(processed_now, run_id=run_id)
 
-    portfolio_state = validate_portfolio_state(portfolio_state)
+    portfolio_state = validate_portfolio_state(portfolio_state, keep_extra_columns=False)
 
-    write_csv_with_run_id(
+    write_csv_with_schema_and_run_id(
         portfolio_state,
         PORTFOLIO_STATE_FILE,
+        schema=PORTFOLIO_STATE_SCHEMA,
         run_id=run_id,
+        overwrite=True,
+        keep_extra_columns=False,
     )
 
     print("Fill Agent finished.")

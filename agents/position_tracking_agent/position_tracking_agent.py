@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 
 import pandas as pd
 
-from shared.io_utils import write_csv_with_run_id
+from shared.io_utils import write_csv_with_schema_and_run_id
 from shared.paths import (
     PORTFOLIO_STATE_PATH,
     POSITION_ALERTS_PATH,
@@ -13,7 +13,13 @@ from shared.paths import (
     data_path,
 )
 from shared.run_context import get_or_create_run_id
-from shared.schemas import validate_portfolio_monitor, validate_portfolio_state, validate_position_alerts
+from shared.schemas import (
+    PORTFOLIO_MONITOR_SCHEMA,
+    POSITION_ALERTS_SCHEMA,
+    validate_portfolio_monitor,
+    validate_portfolio_state,
+    validate_position_alerts,
+)
 
 
 INPUT_PORTFOLIO_STATE_FILE = PORTFOLIO_STATE_PATH
@@ -46,7 +52,7 @@ TEXT_COLUMNS = [
     "regime_at_entry",
     "sector",
     "exit_reason",
-    "last_updated_at",
+    "last_updated",
     "run_id",
 ]
 
@@ -68,7 +74,7 @@ def load_portfolio_state() -> pd.DataFrame:
 
     if not INPUT_PORTFOLIO_STATE_FILE.exists():
         empty_df = pd.DataFrame()
-        return validate_portfolio_state(empty_df)
+        return validate_portfolio_state(empty_df, keep_extra_columns=False)
 
     raw_df = pd.read_csv(INPUT_PORTFOLIO_STATE_FILE)
     return validate_portfolio_state(raw_df, keep_extra_columns=False)
@@ -158,7 +164,7 @@ def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
         .astype("float64")
     )
 
-    df["last_updated_at"] = utc_now_iso()
+    df["last_updated"] = utc_now_iso()
 
     return df
 
@@ -247,15 +253,21 @@ def save_outputs(portfolio_df: pd.DataFrame, alerts_df: pd.DataFrame, run_id: st
     portfolio_df = validate_portfolio_monitor(portfolio_df, keep_extra_columns=False)
     alerts_df = validate_position_alerts(alerts_df, keep_extra_columns=False)
 
-    write_csv_with_run_id(
+    write_csv_with_schema_and_run_id(
         portfolio_df,
         OUTPUT_PORTFOLIO_MONITOR_FILE,
+        schema=PORTFOLIO_MONITOR_SCHEMA,
         run_id=run_id,
+        overwrite=True,
+        keep_extra_columns=False,
     )
-    write_csv_with_run_id(
+    write_csv_with_schema_and_run_id(
         alerts_df,
         POSITION_ALERTS_FILE,
+        schema=POSITION_ALERTS_SCHEMA,
         run_id=run_id,
+        overwrite=True,
+        keep_extra_columns=False,
     )
 
 
