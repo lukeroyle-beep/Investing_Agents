@@ -1,0 +1,32 @@
+enabled: true
+
+tickers:
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  - NFLX
+  - COST
+  - CVX
+  - RTX
+  - PANW
+  - DDOG
+
+start_date: "2022-01-01"
+end_date: ""
+
+initial_capital: 100000
+position_size_pct: 10.0
+
+ma_fast_window: 20
+ma_slow_window: 50
+return_lookback_window: 60
+
+stop_loss_pct: 8.0
+take_profit_pct: 15.0
+max_hold_days: 30
+
+min_history_days: 120
+allow_short: false

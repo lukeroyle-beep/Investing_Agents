@@ -7,19 +7,14 @@ import pandas as pd
 import yaml
 
 from shared.run_context import get_or_create_run_id
+from shared.schemas import SchemaSpec, normalise_to_schema
 
 
 def ensure_parent_dir(file_path: Path) -> None:
-    """
-    Ensure the parent directory exists for a file path.
-    """
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a copy of a DataFrame with normalised column names.
-    """
     output_df = df.copy()
     output_df.columns = [
         str(col).strip().lower().replace(" ", "_").replace("-", "_")
@@ -29,9 +24,6 @@ def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
-    """
-    Safely convert a value to float.
-    """
     try:
         if pd.isna(value):
             return default
@@ -46,9 +38,6 @@ def read_csv_file(
     empty_ok: bool = True,
     normalise: bool = False,
 ) -> pd.DataFrame:
-    """
-    General CSV reader.
-    """
     if not file_path.exists():
         if empty_ok:
             return pd.DataFrame()
@@ -75,9 +64,6 @@ def read_csv(
     empty_ok: bool = True,
     normalise: bool = False,
 ) -> pd.DataFrame:
-    """
-    Backward-compatible CSV reader expected by older agents.
-    """
     path = Path(file_path)
     return read_csv_file(
         file_path=path,
@@ -91,9 +77,6 @@ def read_csv_optional(
     file_path: Path | str,
     normalise: bool = True,
 ) -> pd.DataFrame:
-    """
-    Read a CSV if it exists, otherwise return an empty DataFrame.
-    """
     path = Path(file_path)
     return read_csv_file(
         file_path=path,
@@ -107,9 +90,6 @@ def read_csv_required(
     required_columns: Optional[Iterable[str]] = None,
     normalise: bool = True,
 ) -> pd.DataFrame:
-    """
-    Read a CSV that must exist.
-    """
     path = Path(file_path)
     return read_csv_file(
         file_path=path,
@@ -119,14 +99,21 @@ def read_csv_required(
     )
 
 
+def read_csv_with_schema(
+    file_path: Path | str,
+    schema: SchemaSpec,
+    empty_ok: bool = True,
+) -> pd.DataFrame:
+    path = Path(file_path)
+    df = read_csv_file(path, empty_ok=empty_ok, normalise=False)
+    return normalise_to_schema(df, schema)
+
+
 def write_csv_file(
     df: pd.DataFrame,
     file_path: Path,
     sort_columns: Optional[list[str]] = None,
 ) -> None:
-    """
-    Write a DataFrame to CSV.
-    """
     ensure_parent_dir(file_path)
 
     output_df = df.copy()
@@ -144,9 +131,6 @@ def write_csv(
     file_path: Path | str,
     sort_columns: Optional[list[str]] = None,
 ) -> None:
-    """
-    Backward-compatible CSV writer expected by older agents.
-    """
     path = Path(file_path)
     write_csv_file(df=df, file_path=path, sort_columns=sort_columns)
 
@@ -157,9 +141,6 @@ def add_run_id_column(
     column_name: str = "run_id",
     overwrite: bool = True,
 ) -> pd.DataFrame:
-    """
-    Add or overwrite a run_id column on a DataFrame.
-    """
     output_df = df.copy()
     resolved_run_id = run_id or get_or_create_run_id()
 
@@ -177,9 +158,6 @@ def write_csv_with_run_id(
     column_name: str = "run_id",
     overwrite: bool = True,
 ) -> None:
-    """
-    Stamp a DataFrame with run_id and write it to CSV.
-    """
     path = Path(file_path)
     output_df = add_run_id_column(
         df=df,
@@ -191,9 +169,6 @@ def write_csv_with_run_id(
 
 
 def load_yaml(file_path: Path | str, empty_ok: bool = False) -> dict[str, Any]:
-    """
-    Load a YAML file and return a dictionary.
-    """
     path = Path(file_path)
 
     if not path.exists():
@@ -208,9 +183,6 @@ def load_yaml(file_path: Path | str, empty_ok: bool = False) -> dict[str, Any]:
 
 
 def save_yaml(data: dict[str, Any], file_path: Path | str) -> None:
-    """
-    Save a dictionary to a YAML file.
-    """
     path = Path(file_path)
     ensure_parent_dir(path)
 
@@ -219,9 +191,6 @@ def save_yaml(data: dict[str, Any], file_path: Path | str) -> None:
 
 
 def append_csv_file(new_rows_df: pd.DataFrame, file_path: Path | str) -> pd.DataFrame:
-    """
-    Append rows to an existing CSV file and return the combined DataFrame.
-    """
     path = Path(file_path)
     ensure_parent_dir(path)
 

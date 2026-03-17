@@ -4,9 +4,10 @@ from datetime import datetime, UTC
 
 import pandas as pd
 
-from shared.io_utils import read_csv, write_csv
+from shared.io_utils import write_csv
 from shared.paths import FINAL_SHORTLIST_PATH, data_path
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_trade_journal
 
 
 FINAL_SHORTLIST_FILE = FINAL_SHORTLIST_PATH
@@ -65,7 +66,7 @@ def build_journal_entries(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
     journal_df["outcome"] = ""
     journal_df["notes"] = ""
 
-    return journal_df
+    return validate_trade_journal(journal_df)
 
 
 def main() -> None:
@@ -85,6 +86,8 @@ def main() -> None:
         combined_df = new_entries_df.copy()
     else:
         combined_df = pd.concat([existing_journal_df, new_entries_df], ignore_index=True)
+
+    combined_df = validate_trade_journal(combined_df)
 
     write_csv(combined_df, JOURNAL_FILE)
 

@@ -12,6 +12,7 @@ from shared.paths import (
     TRADE_FILLS_PATH,
 )
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_portfolio_state, validate_processed_fills
 
 
 TRADE_FILLS_FILE = TRADE_FILLS_PATH
@@ -42,9 +43,6 @@ def utc_now_iso() -> str:
 
 
 def validate_trade_fills_input(trade_fills_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Validate and normalise the trade_fills input before processing.
-    """
     missing_columns = [col for col in REQUIRED_FILL_COLUMNS if col not in trade_fills_df.columns]
 
     if missing_columns:
@@ -111,47 +109,15 @@ def validate_trade_fills_input(trade_fills_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_processed_fills_df() -> pd.DataFrame:
-    """
-    Load processed fills ledger in a schema-tolerant way.
-
-    Legacy rows may contain only:
-    - fill_id
-    - fill_id + processed_at
-
-    New rows should contain:
-    - fill_id
-    - processed_at
-    - run_id
-    """
     df = read_csv(PROCESSED_FILLS_FILE)
 
     if df.empty:
         return pd.DataFrame(columns=PROCESSED_FILLS_REQUIRED_COLUMNS)
 
-    if "fill_id" not in df.columns:
-        df["fill_id"] = ""
-
-    if "processed_at" not in df.columns:
-        df["processed_at"] = ""
-
-    if "run_id" not in df.columns:
-        df["run_id"] = ""
-
-    df = df[PROCESSED_FILLS_REQUIRED_COLUMNS].copy()
-    df["fill_id"] = df["fill_id"].fillna("").astype(str).str.strip()
-    df["processed_at"] = df["processed_at"].fillna("").astype(str).str.strip()
-    df["run_id"] = df["run_id"].fillna("").astype(str).str.strip()
-
-    df = df[df["fill_id"] != ""].copy()
-    df = df.drop_duplicates(subset=["fill_id"], keep="first")
-
-    return df
+    return validate_processed_fills(df)
 
 
 def load_processed_fills() -> set[str]:
-    """
-    Load already processed fill ids.
-    """
     processed_df = load_processed_fills_df()
 
     if processed_df.empty:
@@ -161,9 +127,6 @@ def load_processed_fills() -> set[str]:
 
 
 def append_processed_fills(new_ids: list[str], run_id: str) -> None:
-    """
-    Append newly processed fills to the ledger using a governed schema.
-    """
     if not new_ids:
         return
 
@@ -177,9 +140,10 @@ def append_processed_fills(new_ids: list[str], run_id: str) -> None:
             "run_id": run_id,
         }
     )
+    new_df = validate_processed_fills(new_df)
 
     combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-    combined_df["fill_id"] = combined_df["fill_id"].fillna("").astype(str).str.strip()
+    combined_df = validate_processed_fills(combined_df)
     combined_df = combined_df[combined_df["fill_id"] != ""].copy()
     combined_df = combined_df.drop_duplicates(subset=["fill_id"], keep="first")
 
@@ -205,6 +169,8 @@ def run_fill_agent() -> None:
         return
 
     portfolio_state = read_csv(PORTFOLIO_STATE_FILE)
+    portfolio_state = validate_portfolio_state(portfolio_state)
+
     processed_now: list[str] = []
 
     for _, fill in new_fills.iterrows():
@@ -213,14 +179,11 @@ def run_fill_agent() -> None:
 
         print(f"Processing fill {fill_id} for {ticker}")
 
-        # Placeholder only.
-        # Canonical position mutation logic can be added later.
-        _ = fill
-        _ = portfolio_state
-
         processed_now.append(fill_id)
 
     append_processed_fills(processed_now, run_id=run_id)
+
+    portfolio_state = validate_portfolio_state(portfolio_state)
 
     write_csv_with_run_id(
         portfolio_state,

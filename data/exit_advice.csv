@@ -1,2 +1,2 @@
 position_id,ticker,exit_action,reason,status,exit_reason,current_price,stop_loss,take_profit,pnl_abs,pnl_pct,generated_at,run_id
-POS001,COST,take_profit,Take profit level has been reached.,exit_required,take_profit_triggered,1001.7,660.0,800.0,,,2026-03-16T18:26:14.627550+00:00,RUN_20260316T182511Z
+POS001,COST,take_profit,Take profit level has been reached.,exit_required,take_profit_triggered,1001.74,660.0,800.0,,,2026-03-17T11:06:11.855797+00:00,RUN_20260317T110511Z

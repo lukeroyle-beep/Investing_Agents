@@ -7,6 +7,7 @@ import pandas as pd
 from shared.io_utils import write_csv_with_run_id
 from shared.paths import EXIT_ADVICE_PATH, data_path
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_exit_advice
 
 
 INPUT_PORTFOLIO_MONITOR_FILE = data_path("portfolio_monitor.csv")
@@ -127,11 +128,11 @@ def decide_exit_action(row: pd.Series) -> tuple[str, str]:
     return "hold", "No exit condition triggered."
 
 
-def build_exit_advice(df: pd.DataFrame) -> pd.DataFrame:
+def build_exit_advice(df: pd.DataFrame, run_id: str) -> pd.DataFrame:
     output_rows: list[dict] = []
 
     if df.empty:
-        return pd.DataFrame(
+        empty_df = pd.DataFrame(
             columns=[
                 "position_id",
                 "ticker",
@@ -145,8 +146,10 @@ def build_exit_advice(df: pd.DataFrame) -> pd.DataFrame:
                 "pnl_abs",
                 "pnl_pct",
                 "generated_at",
+                "run_id",
             ]
         )
+        return validate_exit_advice(empty_df)
 
     for _, row in df.iterrows():
         ticker = row["ticker"]
@@ -169,10 +172,12 @@ def build_exit_advice(df: pd.DataFrame) -> pd.DataFrame:
                 "pnl_abs": row["pnl_abs"],
                 "pnl_pct": row["pnl_pct"],
                 "generated_at": utc_now_iso(),
+                "run_id": run_id,
             }
         )
 
-    return pd.DataFrame(output_rows)
+    out_df = pd.DataFrame(output_rows)
+    return validate_exit_advice(out_df)
 
 
 def run() -> None:
@@ -180,7 +185,7 @@ def run() -> None:
     print(f"Run ID: {run_id}")
 
     portfolio_df = load_portfolio_monitor()
-    out_df = build_exit_advice(portfolio_df)
+    out_df = build_exit_advice(portfolio_df, run_id=run_id)
 
     write_csv_with_run_id(
         out_df,

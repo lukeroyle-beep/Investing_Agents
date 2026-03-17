@@ -13,6 +13,7 @@ from shared.paths import (
     data_path,
 )
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_portfolio_monitor, validate_portfolio_state, validate_position_alerts
 
 
 INPUT_PORTFOLIO_STATE_FILE = PORTFOLIO_STATE_PATH
@@ -20,30 +21,6 @@ OUTPUT_PORTFOLIO_MONITOR_FILE = data_path("portfolio_monitor.csv")
 POSITION_ALERTS_FILE = POSITION_ALERTS_PATH
 UNIVERSE_SNAPSHOT_FILE = UNIVERSE_SNAPSHOT_PATH
 
-
-REQUIRED_COLUMNS = [
-    "position_id",
-    "ticker",
-    "side",
-    "status",
-    "entry_date",
-    "entry_price",
-    "quantity",
-    "capital_allocated",
-    "stop_loss",
-    "take_profit",
-    "current_price",
-    "market_value",
-    "pnl_abs",
-    "pnl_pct",
-    "regime_at_entry",
-    "sector",
-    "signal_score",
-    "highest_price_since_entry",
-    "lowest_price_since_entry",
-    "exit_reason",
-    "last_updated_at",
-]
 
 NUMERIC_COLUMNS = [
     "entry_price",
@@ -70,6 +47,7 @@ TEXT_COLUMNS = [
     "sector",
     "exit_reason",
     "last_updated_at",
+    "run_id",
 ]
 
 
@@ -85,40 +63,15 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def ensure_input_portfolio_state_file() -> pd.DataFrame:
+def load_portfolio_state() -> pd.DataFrame:
     INPUT_PORTFOLIO_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     if not INPUT_PORTFOLIO_STATE_FILE.exists():
-        df = pd.DataFrame(columns=REQUIRED_COLUMNS)
-        df.to_csv(INPUT_PORTFOLIO_STATE_FILE, index=False)
-        return df
+        empty_df = pd.DataFrame()
+        return validate_portfolio_state(empty_df)
 
-    df = pd.read_csv(INPUT_PORTFOLIO_STATE_FILE)
-
-    for column in REQUIRED_COLUMNS:
-        if column not in df.columns:
-            df[column] = pd.NA
-
-    return df[REQUIRED_COLUMNS].copy()
-
-
-def normalize_portfolio_state(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
-
-    df = df.copy()
-
-    for column in NUMERIC_COLUMNS:
-        df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
-
-    for column in TEXT_COLUMNS:
-        df[column] = df[column].astype("object")
-
-    df["ticker"] = df["ticker"].fillna("").astype(str).str.strip().str.upper()
-    df["side"] = df["side"].fillna("").astype(str).str.strip().str.lower()
-    df["status"] = df["status"].fillna("").astype(str).str.strip().str.lower()
-
-    return df
+    raw_df = pd.read_csv(INPUT_PORTFOLIO_STATE_FILE)
+    return validate_portfolio_state(raw_df, keep_extra_columns=False)
 
 
 def load_latest_prices() -> pd.DataFrame:
@@ -163,10 +116,8 @@ def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     for column in NUMERIC_COLUMNS:
-        df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
-
-    for column in TEXT_COLUMNS:
-        df[column] = df[column].astype("object")
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce").astype("float64")
 
     long_mask = df["side"] == "long"
     short_mask = df["side"] == "short"
@@ -215,15 +166,11 @@ def calculate_position_metrics(df: pd.DataFrame) -> pd.DataFrame:
 def create_alerts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     if df.empty:
         alerts_df = pd.DataFrame(
-            columns=["position_id", "ticker", "alert_type", "message", "generated_at"]
+            columns=["position_id", "ticker", "alert_type", "message", "generated_at", "run_id"]
         )
         return df.copy(), alerts_df
 
     df = df.copy()
-
-    for column in TEXT_COLUMNS:
-        df[column] = df[column].astype("object")
-
     alerts = []
     now = utc_now_iso()
 
@@ -287,13 +234,19 @@ def create_alerts(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     alerts_df = pd.DataFrame(alerts)
     if alerts_df.empty:
         alerts_df = pd.DataFrame(
-            columns=["position_id", "ticker", "alert_type", "message", "generated_at"]
+            columns=["position_id", "ticker", "alert_type", "message", "generated_at", "run_id"]
         )
 
     return df, alerts_df
 
 
 def save_outputs(portfolio_df: pd.DataFrame, alerts_df: pd.DataFrame, run_id: str) -> None:
+    portfolio_df["run_id"] = run_id
+    alerts_df["run_id"] = run_id
+
+    portfolio_df = validate_portfolio_monitor(portfolio_df, keep_extra_columns=False)
+    alerts_df = validate_position_alerts(alerts_df, keep_extra_columns=False)
+
     write_csv_with_run_id(
         portfolio_df,
         OUTPUT_PORTFOLIO_MONITOR_FILE,
@@ -310,9 +263,7 @@ def main() -> None:
     run_id = get_or_create_run_id()
     print(f"Run ID: {run_id}")
 
-    portfolio_df = ensure_input_portfolio_state_file()
-    portfolio_df = normalize_portfolio_state(portfolio_df)
-
+    portfolio_df = load_portfolio_state()
     prices_df = load_latest_prices()
     portfolio_df = refresh_position_prices(portfolio_df, prices_df)
     portfolio_df = calculate_position_metrics(portfolio_df)
