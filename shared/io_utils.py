@@ -109,6 +109,10 @@ def read_csv_with_schema(
     return normalise_to_schema(df, schema)
 
 
+# -----------------------------
+# WRITE FUNCTIONS (BASE)
+# -----------------------------
+
 def write_csv_file(
     df: pd.DataFrame,
     file_path: Path,
@@ -135,6 +139,28 @@ def write_csv(
     write_csv_file(df=df, file_path=path, sort_columns=sort_columns)
 
 
+# -----------------------------
+# WRITE FUNCTIONS (SCHEMA ENFORCED)
+# -----------------------------
+
+def write_csv_with_schema(
+    df: pd.DataFrame,
+    file_path: Path | str,
+    schema: SchemaSpec,
+    sort_columns: Optional[list[str]] = None,
+    keep_extra_columns: bool = False,
+) -> None:
+    path = Path(file_path)
+
+    output_df = normalise_to_schema(
+        df=df,
+        spec=schema,
+        keep_extra_columns=keep_extra_columns,
+    )
+
+    write_csv_file(output_df, path, sort_columns=sort_columns)
+
+
 def add_run_id_column(
     df: pd.DataFrame,
     run_id: Optional[str] = None,
@@ -159,14 +185,48 @@ def write_csv_with_run_id(
     overwrite: bool = True,
 ) -> None:
     path = Path(file_path)
+
     output_df = add_run_id_column(
         df=df,
         run_id=run_id,
         column_name=column_name,
         overwrite=overwrite,
     )
+
     write_csv_file(output_df, path, sort_columns=sort_columns)
 
+
+def write_csv_with_schema_and_run_id(
+    df: pd.DataFrame,
+    file_path: Path | str,
+    schema: SchemaSpec,
+    sort_columns: Optional[list[str]] = None,
+    run_id: Optional[str] = None,
+    column_name: str = "run_id",
+    overwrite: bool = True,
+    keep_extra_columns: bool = False,
+) -> None:
+    path = Path(file_path)
+
+    output_df = add_run_id_column(
+        df=df,
+        run_id=run_id,
+        column_name=column_name,
+        overwrite=overwrite,
+    )
+
+    output_df = normalise_to_schema(
+        df=output_df,
+        spec=schema,
+        keep_extra_columns=keep_extra_columns,
+    )
+
+    write_csv_file(output_df, path, sort_columns=sort_columns)
+
+
+# -----------------------------
+# YAML HELPERS
+# -----------------------------
 
 def load_yaml(file_path: Path | str, empty_ok: bool = False) -> dict[str, Any]:
     path = Path(file_path)
@@ -189,6 +249,10 @@ def save_yaml(data: dict[str, Any], file_path: Path | str) -> None:
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
 
+
+# -----------------------------
+# APPEND
+# -----------------------------
 
 def append_csv_file(new_rows_df: pd.DataFrame, file_path: Path | str) -> pd.DataFrame:
     path = Path(file_path)

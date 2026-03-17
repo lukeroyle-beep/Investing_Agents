@@ -147,7 +147,7 @@ PORTFOLIO_STATE_SCHEMA = SchemaSpec(
         "highest_price_since_entry",
         "lowest_price_since_entry",
         "exit_reason",
-        "last_updated_at",
+        "last_updated",
         "run_id",
     ],
     numeric_columns=[
@@ -173,7 +173,7 @@ PORTFOLIO_STATE_SCHEMA = SchemaSpec(
         "regime_at_entry",
         "sector",
         "exit_reason",
-        "last_updated_at",
+        "last_updated",
         "run_id",
     ],
     uppercase_columns=["ticker"],
@@ -190,6 +190,7 @@ PORTFOLIO_STATE_SCHEMA = SchemaSpec(
         "entry_price": ["average_entry_price"],
         "pnl_abs": ["unrealised_pnl_abs"],
         "pnl_pct": ["unrealised_pnl_pct"],
+        "last_updated": ["last_updated_at"],
     },
     column_order=[
         "position_id",
@@ -212,7 +213,7 @@ PORTFOLIO_STATE_SCHEMA = SchemaSpec(
         "highest_price_since_entry",
         "lowest_price_since_entry",
         "exit_reason",
-        "last_updated_at",
+        "last_updated",
         "run_id",
     ],
 )
