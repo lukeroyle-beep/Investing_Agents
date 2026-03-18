@@ -28,3 +28,6 @@ Thumbs.db
 
 # Runtime data outputs
 data/runtime/
+# Runtime data outputs
+data/*.csv
+!data/example_*.csv
