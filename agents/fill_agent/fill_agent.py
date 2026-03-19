@@ -1,512 +1,533 @@
 from __future__ import annotations
 
+import os
+import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = "data"
 
-MANUAL_FILLS_FILE = DATA_DIR / "manual_fills.csv"
-PORTFOLIO_STATE_FILE = DATA_DIR / "portfolio_state.csv"
-PROCESSED_FILLS_FILE = DATA_DIR / "processed_fills.csv"
+STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
+PROCESSED_FILLS_PATH = os.path.join(DATA_DIR, "processed_fills.csv")
+MANUAL_FILLS_PATH = os.path.join(DATA_DIR, "manual_fills.csv")
+CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
+CASH_LEDGER_PATH = os.path.join(DATA_DIR, "cash_ledger.csv")
 
-
-STATE_COLUMNS = [
-    "position_id",
-    "ticker",
-    "side",
-    "status",
-    "quantity",
-    "entry_price",
-    "entry_date",
-    "capital_allocated",
-    "stop_loss",
-    "take_profit",
-    "regime_at_entry",
-    "sector",
-    "signal_score",
-    "highest_price_since_entry",
-    "lowest_price_since_entry",
-    "current_price",
-    "market_value",
-    "pnl_abs",
-    "pnl_pct",
-    "exit_flag",
-    "exit_reason",
-    "last_updated",
-    "run_id",
-]
-
-FILL_COLUMNS = [
-    "fill_id",
-    "ticker",
-    "side",
-    "quantity",
-    "price",
-    "filled_at",
-]
-
-PROCESSED_FILLS_COLUMNS = [
-    "fill_id",
-    "ticker",
-    "side",
-    "quantity",
-    "price",
-    "filled_at",
-    "processed_at",
-    "run_id",
-]
-
-ALLOWED_FILL_SIDES = {"buy", "sell"}
-ALLOWED_POSITION_SIDES = {"long", "short"}
-ALLOWED_STATUSES = {"open", "closed"}
-ALLOWED_EXIT_FLAGS = {"none", "review", "exit_required"}
+DEFAULT_STARTING_CASH = 100000.0
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def generate_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("RUN_%Y%m%dT%H%M%SZ")
+def current_run_id() -> str:
+    return "RUN_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(temp_path, index=False)
-    temp_path.replace(path)
+def safe_read_csv_or_default(
+    path: str,
+    columns: list[str],
+    default_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """
+    Read CSV safely.
+    If file does not exist, is zero-byte, or is structurally empty, create/reset it.
+    """
+    if not os.path.exists(path):
+        if default_df is not None:
+            df = default_df.copy()
+        else:
+            df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+    if os.path.getsize(path) == 0:
+        if default_df is not None:
+            df = default_df.copy()
+        else:
+            df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+    try:
+        df = pd.read_csv(path)
+    except EmptyDataError:
+        if default_df is not None:
+            df = default_df.copy()
+        else:
+            df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+    if df.empty and len(df.columns) == 0:
+        if default_df is not None:
+            df = default_df.copy()
+        else:
+            df = pd.DataFrame(columns=columns)
+        df.to_csv(path, index=False)
+        return df
+
+    return df
 
 
-def ensure_state_file_exists() -> None:
-    if not PORTFOLIO_STATE_FILE.exists():
-        empty_df = pd.DataFrame(columns=STATE_COLUMNS)
-        atomic_write_csv(empty_df, PORTFOLIO_STATE_FILE)
+def ensure_cash_files() -> tuple[pd.DataFrame, pd.DataFrame]:
+    cash_state_df = safe_read_csv_or_default(
+        CASH_STATE_PATH,
+        columns=["as_of", "cash_balance"],
+        default_df=pd.DataFrame(
+            [{"as_of": utc_now_iso(), "cash_balance": DEFAULT_STARTING_CASH}]
+        ),
+    )
+
+    cash_ledger_df = safe_read_csv_or_default(
+        CASH_LEDGER_PATH,
+        columns=[
+            "ledger_id",
+            "run_id",
+            "timestamp",
+            "event_type",
+            "position_id",
+            "ticker",
+            "side",
+            "action",
+            "amount",
+            "fees",
+            "cash_balance_after",
+            "notes",
+        ],
+    )
+
+    return cash_state_df, cash_ledger_df
 
 
-def ensure_processed_fills_file_exists() -> None:
-    if not PROCESSED_FILLS_FILE.exists():
-        empty_df = pd.DataFrame(columns=PROCESSED_FILLS_COLUMNS)
-        atomic_write_csv(empty_df, PROCESSED_FILLS_FILE)
+def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
+    aliases = {
+        "average_entry_price": "entry_price",
+        "current_qty": "quantity",
+    }
 
-def load_portfolio_state() -> pd.DataFrame:
-    ensure_state_file_exists()
-    df = pd.read_csv(PORTFOLIO_STATE_FILE)
+    for old_col, new_col in aliases.items():
+        if old_col in df.columns and new_col not in df.columns:
+            df[new_col] = df[old_col]
 
-    for column in STATE_COLUMNS:
-        if column not in df.columns:
-            if column == "status":
-                df[column] = "open"
-            elif column == "side":
-                df[column] = "long"
-            elif column == "exit_flag":
-                df[column] = "none"
-            elif column == "exit_reason":
-                df[column] = ""
-            elif column == "run_id":
-                df[column] = ""
-            else:
-                df[column] = pd.NA
-
-    df = df[STATE_COLUMNS].copy()
-
-    string_columns = [
+    required_columns = [
         "position_id",
         "ticker",
         "side",
         "status",
-        "entry_date",
-        "regime_at_entry",
-        "sector",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-    ]
-    for column in string_columns:
-        df[column] = df[column].fillna("").astype(str).str.strip()
-
-    df["ticker"] = df["ticker"].str.upper()
-    df["side"] = df["side"].str.lower()
-    df["status"] = df["status"].str.lower()
-    df["exit_flag"] = df["exit_flag"].str.lower()
-
-    numeric_columns = [
         "quantity",
         "entry_price",
-        "capital_allocated",
-        "stop_loss",
-        "take_profit",
-        "signal_score",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
+        "entry_date",
         "current_price",
         "market_value",
         "pnl_abs",
         "pnl_pct",
+        "realised_pnl_abs",
+        "fees_total",
+        "exit_flag",
+        "exit_reason",
+        "last_updated",
+        "run_id",
+        "closed_at",
+        "exit_price",
     ]
-    for column in numeric_columns:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
 
-    validate_portfolio_state(df)
-    return df
+    for col in required_columns:
+        if col not in df.columns:
+            if col in {"realised_pnl_abs", "fees_total", "market_value", "pnl_abs", "pnl_pct"}:
+                df[col] = 0.0
+            elif col == "exit_flag":
+                df[col] = False
+            elif col == "exit_reason":
+                df[col] = ""
+            else:
+                df[col] = pd.NA
 
-
-def load_processed_fills() -> pd.DataFrame:
-    ensure_processed_fills_file_exists()
-    df = pd.read_csv(PROCESSED_FILLS_FILE)
-
-    for column in PROCESSED_FILLS_COLUMNS:
-        if column not in df.columns:
-            df[column] = pd.NA
-
-    df = df[PROCESSED_FILLS_COLUMNS].copy()
-
-    for column in ["fill_id", "ticker", "side", "filled_at", "processed_at", "run_id"]:
-        df[column] = df[column].fillna("").astype(str).str.strip()
-
-    df["ticker"] = df["ticker"].str.upper()
-    df["side"] = df["side"].str.lower()
-
-    for column in ["quantity", "price"]:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+    df["exit_flag"] = df["exit_flag"].fillna(False)
+    df["exit_reason"] = df["exit_reason"].fillna("")
 
     return df
 
 
-def load_manual_fills() -> pd.DataFrame:
-    if not MANUAL_FILLS_FILE.exists():
-        raise FileNotFoundError(f"Missing file: {MANUAL_FILLS_FILE}")
+def ensure_state_file() -> pd.DataFrame:
+    required_columns = [
+        "position_id",
+        "ticker",
+        "side",
+        "status",
+        "quantity",
+        "entry_price",
+        "entry_date",
+        "current_price",
+        "market_value",
+        "pnl_abs",
+        "pnl_pct",
+        "realised_pnl_abs",
+        "fees_total",
+        "exit_flag",
+        "exit_reason",
+        "last_updated",
+        "run_id",
+        "closed_at",
+        "exit_price",
+    ]
 
-    df = pd.read_csv(MANUAL_FILLS_FILE)
-
-    missing = [col for col in FILL_COLUMNS if col not in df.columns]
-    if missing:
-        raise ValueError(f"manual_fills.csv is missing required columns: {missing}")
-
-    df = df[FILL_COLUMNS].copy()
-
-    for column in ["fill_id", "ticker", "side", "filled_at"]:
-        df[column] = df[column].fillna("").astype(str).str.strip()
-
-    df["ticker"] = df["ticker"].str.upper()
-    df["side"] = df["side"].str.lower()
-
-    for column in ["quantity", "price"]:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
-
-    validate_manual_fills(df)
-    return df
-
-
-def validate_portfolio_state(df: pd.DataFrame) -> None:
-    if df["position_id"].duplicated().any():
-        duplicates = df.loc[df["position_id"].duplicated(), "position_id"].tolist()
-        raise ValueError(f"Duplicate position_id values detected: {duplicates}")
-
-    invalid_sides = sorted(set(df.loc[~df["side"].isin(ALLOWED_POSITION_SIDES), "side"]) - {""})
-    if invalid_sides:
-        raise ValueError(f"Invalid position side values detected: {invalid_sides}")
-
-    invalid_statuses = sorted(set(df.loc[~df["status"].isin(ALLOWED_STATUSES), "status"]) - {""})
-    if invalid_statuses:
-        raise ValueError(f"Invalid status values detected: {invalid_statuses}")
-
-    invalid_exit_flags = sorted(set(df.loc[~df["exit_flag"].isin(ALLOWED_EXIT_FLAGS), "exit_flag"]) - {""})
-    if invalid_exit_flags:
-        raise ValueError(f"Invalid exit_flag values detected: {invalid_exit_flags}")
+    df = safe_read_csv_or_default(STATE_PATH, columns=required_columns)
+    return normalise_state_columns(df)
 
 
-def validate_manual_fills(df: pd.DataFrame) -> None:
-    if df.empty:
-        return
-
-    if df["fill_id"].eq("").any():
-        bad_rows = df[df["fill_id"].eq("")]
-        raise ValueError(f"Blank fill_id detected in rows: {bad_rows.index.tolist()}")
-
-    if df["fill_id"].duplicated().any():
-        duplicates = df.loc[df["fill_id"].duplicated(), "fill_id"].tolist()
-        raise ValueError(f"Duplicate fill_id values in manual_fills.csv: {duplicates}")
-
-    invalid_sides = sorted(set(df.loc[~df["side"].isin(ALLOWED_FILL_SIDES), "side"]) - {""})
-    if invalid_sides:
-        raise ValueError(f"Invalid fill side values detected: {invalid_sides}")
-
-    if df["ticker"].eq("").any():
-        bad_rows = df[df["ticker"].eq("")]
-        raise ValueError(f"Blank ticker detected in rows: {bad_rows.index.tolist()}")
-
-    if df["quantity"].isna().any():
-        bad_rows = df[df["quantity"].isna()]
-        raise ValueError(f"Invalid quantity detected in rows: {bad_rows.index.tolist()}")
-
-    if (df["quantity"] <= 0).any():
-        bad_rows = df[df["quantity"] <= 0]
-        raise ValueError(f"Non-positive quantity detected in rows: {bad_rows.index.tolist()}")
-
-    if df["price"].isna().any():
-        bad_rows = df[df["price"].isna()]
-        raise ValueError(f"Invalid price detected in rows: {bad_rows.index.tolist()}")
-
-    if (df["price"] <= 0).any():
-        bad_rows = df[df["price"] <= 0]
-        raise ValueError(f"Non-positive price detected in rows: {bad_rows.index.tolist()}")
-
-
-def next_position_id(state_df: pd.DataFrame) -> str:
-    if state_df.empty:
-        return "POS001"
-
-    existing = (
-        state_df["position_id"]
-        .fillna("")
-        .astype(str)
-        .str.extract(r"POS(\d+)", expand=False)
-        .dropna()
+def ensure_processed_fills_file() -> pd.DataFrame:
+    return safe_read_csv_or_default(
+        PROCESSED_FILLS_PATH,
+        columns=["fill_id", "processed_at", "run_id"],
     )
 
-    if existing.empty:
-        return "POS001"
 
-    max_id = existing.astype(int).max()
-    return f"POS{max_id + 1:03d}"
+def ensure_manual_fills_file() -> pd.DataFrame:
+    return safe_read_csv_or_default(
+        MANUAL_FILLS_PATH,
+        columns=[
+            "fill_id",
+            "ticker",
+            "side",
+            "action",
+            "quantity",
+            "fill_price",
+            "fees",
+            "fill_timestamp",
+        ],
+    )
 
 
-def find_open_position(state_df: pd.DataFrame, ticker: str, side: str = "long") -> Optional[int]:
-    matches = state_df[
-        (state_df["ticker"] == ticker) &
-        (state_df["side"] == side) &
-        (state_df["status"] == "open")
+def read_fill_input() -> pd.DataFrame:
+    df = ensure_manual_fills_file()
+
+    required = [
+        "fill_id",
+        "ticker",
+        "side",
+        "action",
+        "quantity",
+        "fill_price",
+        "fees",
+        "fill_timestamp",
     ]
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required fill input columns in {MANUAL_FILLS_PATH}: {missing}")
 
+    return df
+
+
+def validate_fill_row(row: pd.Series) -> None:
+    if pd.isna(row["fill_id"]) or str(row["fill_id"]).strip() == "":
+        raise ValueError("fill_id is required")
+
+    if pd.isna(row["ticker"]) or str(row["ticker"]).strip() == "":
+        raise ValueError("ticker is required")
+
+    if str(row["side"]).strip().lower() not in {"long", "short"}:
+        raise ValueError(f"Invalid side: {row['side']}")
+
+    if str(row["action"]).strip().lower() not in {"buy", "sell"}:
+        raise ValueError(f"Invalid action: {row['action']}")
+
+    quantity = pd.to_numeric(row["quantity"], errors="coerce")
+    fill_price = pd.to_numeric(row["fill_price"], errors="coerce")
+    fees = pd.to_numeric(row["fees"], errors="coerce")
+
+    if pd.isna(quantity) or quantity <= 0:
+        raise ValueError("quantity must be positive")
+
+    if pd.isna(fill_price) or fill_price <= 0:
+        raise ValueError("fill_price must be positive")
+
+    if pd.isna(fees) or fees < 0:
+        raise ValueError("fees must be zero or positive")
+
+    if pd.isna(row["fill_timestamp"]) or str(row["fill_timestamp"]).strip() == "":
+        raise ValueError("fill_timestamp is required")
+
+
+def get_cash_balance(cash_state_df: pd.DataFrame) -> float:
+    if cash_state_df.empty:
+        return DEFAULT_STARTING_CASH
+    return float(cash_state_df.iloc[-1]["cash_balance"])
+
+
+def write_cash_balance(balance: float) -> None:
+    pd.DataFrame(
+        [{"as_of": utc_now_iso(), "cash_balance": balance}]
+    ).to_csv(CASH_STATE_PATH, index=False)
+
+
+def append_cash_ledger_row(
+    ledger_df: pd.DataFrame,
+    run_id: str,
+    event_type: str,
+    position_id: str,
+    ticker: str,
+    side: str,
+    action: str,
+    amount: float,
+    fees: float,
+    cash_balance_after: float,
+    notes: str,
+) -> pd.DataFrame:
+    new_row = pd.DataFrame(
+        [
+            {
+                "ledger_id": str(uuid.uuid4()),
+                "run_id": run_id,
+                "timestamp": utc_now_iso(),
+                "event_type": event_type,
+                "position_id": position_id,
+                "ticker": ticker,
+                "side": side,
+                "action": action,
+                "amount": amount,
+                "fees": fees,
+                "cash_balance_after": cash_balance_after,
+                "notes": notes,
+            }
+        ]
+    )
+    out = pd.concat([ledger_df, new_row], ignore_index=True)
+    out.to_csv(CASH_LEDGER_PATH, index=False)
+    return out
+
+
+def find_open_position(state_df: pd.DataFrame, ticker: str, side: str) -> Optional[int]:
+    matches = state_df[
+        (state_df["ticker"].astype(str).str.upper() == str(ticker).upper()) &
+        (state_df["side"].astype(str).str.lower() == str(side).lower()) &
+        (state_df["status"].astype(str).isin(["open", "exit_required"]))
+    ]
     if matches.empty:
         return None
-
     if len(matches) > 1:
-        raise ValueError(f"Multiple open positions found for ticker {ticker}. State integrity violated.")
-
+        raise RuntimeError(f"More than one active position found for ticker={ticker}, side={side}")
     return matches.index[0]
 
 
-def create_new_long_position(
+def open_long_position(
     state_df: pd.DataFrame,
-    ticker: str,
-    quantity: float,
-    price: float,
-    filled_at: str,
+    cash_balance: float,
+    ledger_df: pd.DataFrame,
+    row: pd.Series,
     run_id: str,
-) -> pd.DataFrame:
-    position_id = next_position_id(state_df)
-    now = utc_now_iso()
+) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+    ticker = str(row["ticker"]).upper()
+    side = str(row["side"]).lower()
+    quantity = float(row["quantity"])
+    fill_price = float(row["fill_price"])
+    fees = float(row["fees"])
+    gross_cost = quantity * fill_price
+    total_cash_out = gross_cost + fees
 
-    new_row = {
-        "position_id": position_id,
-        "ticker": ticker,
-        "side": "long",
-        "status": "open",
-        "quantity": quantity,
-        "entry_price": price,
-        "entry_date": filled_at,
-        "capital_allocated": quantity * price,
-        "stop_loss": pd.NA,
-        "take_profit": pd.NA,
-        "regime_at_entry": "",
-        "sector": "",
-        "signal_score": pd.NA,
-        "highest_price_since_entry": price,
-        "lowest_price_since_entry": price,
-        "current_price": price,
-        "market_value": quantity * price,
-        "pnl_abs": 0.0,
-        "pnl_pct": 0.0,
-        "exit_flag": "none",
-        "exit_reason": "",
-        "last_updated": now,
-        "run_id": run_id,
-    }
-
-    return pd.concat([state_df, pd.DataFrame([new_row], columns=STATE_COLUMNS)], ignore_index=True)
-
-
-def apply_buy_fill(
-    state_df: pd.DataFrame,
-    fill: pd.Series,
-    run_id: str,
-) -> pd.DataFrame:
-    ticker = fill["ticker"]
-    quantity = float(fill["quantity"])
-    price = float(fill["price"])
-    filled_at = fill["filled_at"]
-
-    existing_idx = find_open_position(state_df, ticker=ticker, side="long")
-
-    if existing_idx is None:
-        return create_new_long_position(
-            state_df=state_df,
-            ticker=ticker,
-            quantity=quantity,
-            price=price,
-            filled_at=filled_at,
-            run_id=run_id,
+    if cash_balance < total_cash_out:
+        raise RuntimeError(
+            f"Insufficient cash to open position in {ticker}. "
+            f"Required={total_cash_out:.2f}, Available={cash_balance:.2f}"
         )
 
-    row = state_df.loc[existing_idx].copy()
+    existing_idx = find_open_position(state_df, ticker, side)
+    if existing_idx is not None:
+        raise RuntimeError(f"Active position already exists for {ticker} {side}")
 
-    old_quantity = float(row["quantity"])
-    old_entry_price = float(row["entry_price"])
-    new_quantity = old_quantity + quantity
-    new_entry_price = ((old_quantity * old_entry_price) + (quantity * price)) / new_quantity
+    position_id = "POS_" + uuid.uuid4().hex[:10].upper()
 
-    row["quantity"] = new_quantity
-    row["entry_price"] = new_entry_price
-    row["capital_allocated"] = new_quantity * new_entry_price
-    row["current_price"] = price
-    row["market_value"] = new_quantity * price
-    row["pnl_abs"] = (price - new_entry_price) * new_quantity
-    row["pnl_pct"] = 0.0 if new_quantity * new_entry_price == 0 else (row["pnl_abs"] / (new_quantity * new_entry_price)) * 100.0
-    row["highest_price_since_entry"] = price if pd.isna(row["highest_price_since_entry"]) else max(float(row["highest_price_since_entry"]), price)
-    row["lowest_price_since_entry"] = price if pd.isna(row["lowest_price_since_entry"]) else min(float(row["lowest_price_since_entry"]), price)
-    row["exit_flag"] = "none"
-    row["exit_reason"] = ""
-    row["last_updated"] = utc_now_iso()
-    row["run_id"] = run_id
+    new_row = pd.DataFrame(
+        [
+            {
+                "position_id": position_id,
+                "ticker": ticker,
+                "side": side,
+                "status": "open",
+                "quantity": quantity,
+                "entry_price": fill_price,
+                "entry_date": row["fill_timestamp"],
+                "current_price": fill_price,
+                "market_value": quantity * fill_price,
+                "pnl_abs": -fees,
+                "pnl_pct": (-fees / gross_cost * 100) if gross_cost > 0 else 0.0,
+                "realised_pnl_abs": 0.0,
+                "fees_total": fees,
+                "exit_flag": False,
+                "exit_reason": "",
+                "last_updated": utc_now_iso(),
+                "run_id": run_id,
+                "closed_at": pd.NA,
+                "exit_price": pd.NA,
+            }
+        ]
+    )
 
-    state_df.loc[existing_idx] = row
-    return state_df
+    state_df = pd.concat([state_df, new_row], ignore_index=True)
+
+    cash_balance -= total_cash_out
+    write_cash_balance(cash_balance)
+
+    ledger_df = append_cash_ledger_row(
+        ledger_df=ledger_df,
+        run_id=run_id,
+        event_type="position_open",
+        position_id=position_id,
+        ticker=ticker,
+        side=side,
+        action="buy",
+        amount=-gross_cost,
+        fees=fees,
+        cash_balance_after=cash_balance,
+        notes=f"Opened {quantity} shares at {fill_price}",
+    )
+
+    return state_df, cash_balance, ledger_df
 
 
-def apply_sell_fill(
+def close_long_position(
     state_df: pd.DataFrame,
-    fill: pd.Series,
+    cash_balance: float,
+    ledger_df: pd.DataFrame,
+    row: pd.Series,
     run_id: str,
-) -> pd.DataFrame:
-    ticker = fill["ticker"]
-    sell_quantity = float(fill["quantity"])
-    price = float(fill["price"])
+) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+    ticker = str(row["ticker"]).upper()
+    side = str(row["side"]).lower()
+    quantity = float(row["quantity"])
+    fill_price = float(row["fill_price"])
+    fees = float(row["fees"])
 
-    existing_idx = find_open_position(state_df, ticker=ticker, side="long")
+    idx = find_open_position(state_df, ticker, side)
+    if idx is None:
+        raise RuntimeError(f"No active position found to close for {ticker} {side}")
 
-    if existing_idx is None:
-        raise ValueError(f"Cannot process sell fill for {ticker}: no open long position exists.")
+    position = state_df.loc[idx].copy()
 
-    row = state_df.loc[existing_idx].copy()
-    old_quantity = float(row["quantity"])
-
-    if sell_quantity > old_quantity:
-        raise ValueError(
-            f"Cannot process sell fill for {ticker}: sell quantity {sell_quantity} exceeds open quantity {old_quantity}."
+    if float(position["quantity"]) != quantity:
+        raise RuntimeError(
+            f"Partial closes are not supported yet for {ticker}. "
+            f"Expected quantity={position['quantity']}, received={quantity}"
         )
 
-    remaining_quantity = old_quantity - sell_quantity
+    entry_price = float(position["entry_price"])
+    entry_fees = float(position.get("fees_total", 0.0))
 
-    if remaining_quantity == 0:
-        row["quantity"] = 0.0
-        row["status"] = "closed"
-        row["current_price"] = price
-        row["market_value"] = 0.0
-        row["pnl_abs"] = (price - float(row["entry_price"])) * old_quantity
-        capital_allocated = float(row["capital_allocated"]) if pd.notna(row["capital_allocated"]) else float(row["entry_price"]) * old_quantity
-        row["pnl_pct"] = 0.0 if capital_allocated == 0 else (row["pnl_abs"] / capital_allocated) * 100.0
-        row["exit_flag"] = "none"
-        row["exit_reason"] = ""
-        row["last_updated"] = utc_now_iso()
-        row["run_id"] = run_id
-        state_df.loc[existing_idx] = row
-        return state_df
+    gross_proceeds = quantity * fill_price
+    net_proceeds = gross_proceeds - fees
+    realised_pnl = net_proceeds - (quantity * entry_price) - entry_fees
 
-    entry_price = float(row["entry_price"])
-    row["quantity"] = remaining_quantity
-    row["capital_allocated"] = remaining_quantity * entry_price
-    row["current_price"] = price
-    row["market_value"] = remaining_quantity * price
-    row["pnl_abs"] = (price - entry_price) * remaining_quantity
-    row["pnl_pct"] = 0.0 if row["capital_allocated"] == 0 else (row["pnl_abs"] / row["capital_allocated"]) * 100.0
-    row["exit_flag"] = "none"
-    row["exit_reason"] = ""
-    row["last_updated"] = utc_now_iso()
-    row["run_id"] = run_id
+    state_df.at[idx, "status"] = "closed"
+    state_df.at[idx, "current_price"] = fill_price
+    state_df.at[idx, "market_value"] = 0.0
+    state_df.at[idx, "pnl_abs"] = 0.0
+    state_df.at[idx, "pnl_pct"] = 0.0
+    state_df.at[idx, "realised_pnl_abs"] = realised_pnl
+    state_df.at[idx, "fees_total"] = entry_fees + fees
+    state_df.at[idx, "exit_flag"] = False
+    state_df.at[idx, "exit_reason"] = "position_closed"
+    state_df.at[idx, "last_updated"] = utc_now_iso()
+    state_df.at[idx, "run_id"] = run_id
+    state_df.at[idx, "closed_at"] = row["fill_timestamp"]
+    state_df.at[idx, "exit_price"] = fill_price
 
-    state_df.loc[existing_idx] = row
-    return state_df
+    cash_balance += net_proceeds
+    write_cash_balance(cash_balance)
 
+    ledger_df = append_cash_ledger_row(
+        ledger_df=ledger_df,
+        run_id=run_id,
+        event_type="position_close",
+        position_id=str(position["position_id"]),
+        ticker=ticker,
+        side=side,
+        action="sell",
+        amount=net_proceeds,
+        fees=fees,
+        cash_balance_after=cash_balance,
+        notes=f"Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
+    )
 
-def process_fill(
-    state_df: pd.DataFrame,
-    fill: pd.Series,
-    run_id: str,
-) -> pd.DataFrame:
-    if fill["side"] == "buy":
-        return apply_buy_fill(state_df, fill, run_id)
-
-    if fill["side"] == "sell":
-        return apply_sell_fill(state_df, fill, run_id)
-
-    raise ValueError(f"Unsupported fill side: {fill['side']}")
+    return state_df, cash_balance, ledger_df
 
 
-def build_processed_fill_row(fill: pd.Series, run_id: str) -> dict:
-    return {
-        "fill_id": fill["fill_id"],
-        "ticker": fill["ticker"],
-        "side": fill["side"],
-        "quantity": float(fill["quantity"]),
-        "price": float(fill["price"]),
-        "filled_at": fill["filled_at"],
-        "processed_at": utc_now_iso(),
-        "run_id": run_id,
-    }
+def append_processed_fill(processed_df: pd.DataFrame, fill_id: str, run_id: str) -> pd.DataFrame:
+    new_row = pd.DataFrame(
+        [{"fill_id": fill_id, "processed_at": utc_now_iso(), "run_id": run_id}]
+    )
+    out = pd.concat([processed_df, new_row], ignore_index=True)
+    out.to_csv(PROCESSED_FILLS_PATH, index=False)
+    return out
 
 
 def run_fill_agent() -> None:
-    run_id = generate_run_id()
+    run_id = current_run_id()
 
-    state_df = load_portfolio_state()
-    processed_df = load_processed_fills()
-    manual_fills_df = load_manual_fills()
+    state_df = ensure_state_file()
+    processed_df = ensure_processed_fills_file()
+    fills_df = read_fill_input()
+    cash_state_df, ledger_df = ensure_cash_files()
 
-    already_processed = set(processed_df["fill_id"].dropna().astype(str).tolist())
-    pending_fills_df = manual_fills_df[~manual_fills_df["fill_id"].isin(already_processed)].copy()
+    cash_balance = get_cash_balance(cash_state_df)
+    processed_ids = set(processed_df["fill_id"].astype(str).tolist()) if not processed_df.empty else set()
 
-    if pending_fills_df.empty:
+    if fills_df.empty:
         print("Fill Agent finished.")
-        print("No new fills to process.")
-        print(f"Run ID: {run_id}")
+        print(f"No fills found in {MANUAL_FILLS_PATH}")
+        print(f"Ending cash balance: {cash_balance:.2f}")
         return
 
-    processed_now: List[dict] = []
+    for _, row in fills_df.iterrows():
+        validate_fill_row(row)
 
-    for _, fill in pending_fills_df.iterrows():
-        print(f"Processing fill {fill['fill_id']} for {fill['ticker']}")
-        state_df = process_fill(state_df, fill, run_id)
-        processed_now.append(build_processed_fill_row(fill, run_id))
+        fill_id = str(row["fill_id"])
+        if fill_id in processed_ids:
+            continue
 
-    state_df = state_df[STATE_COLUMNS].copy()
-    validate_portfolio_state(state_df)
+        action = str(row["action"]).strip().lower()
+        side = str(row["side"]).strip().lower()
 
-    processed_append_df = pd.DataFrame(processed_now, columns=PROCESSED_FILLS_COLUMNS)
-    processed_df = pd.concat([processed_df, processed_append_df], ignore_index=True)
-    processed_df = processed_df[PROCESSED_FILLS_COLUMNS].copy()
+        print(f"Processing fill {fill_id} for {row['ticker']}")
 
-    atomic_write_csv(state_df, PORTFOLIO_STATE_FILE)
-    atomic_write_csv(processed_df, PROCESSED_FILLS_FILE)
+        if side != "long":
+            raise NotImplementedError("This version currently supports long positions only")
 
-    open_positions = int((state_df["status"] == "open").sum())
-    closed_positions = int((state_df["status"] == "closed").sum())
+        if action == "buy":
+            state_df, cash_balance, ledger_df = open_long_position(
+                state_df=state_df,
+                cash_balance=cash_balance,
+                ledger_df=ledger_df,
+                row=row,
+                run_id=run_id,
+            )
+        elif action == "sell":
+            state_df, cash_balance, ledger_df = close_long_position(
+                state_df=state_df,
+                cash_balance=cash_balance,
+                ledger_df=ledger_df,
+                row=row,
+                run_id=run_id,
+            )
+        else:
+            raise ValueError(f"Unsupported action: {action}")
+
+        processed_df = append_processed_fill(processed_df, fill_id, run_id)
+        processed_ids.add(fill_id)
+
+    state_df.to_csv(STATE_PATH, index=False)
 
     print("Fill Agent finished.")
-    print(f"Saved updated portfolio state to: {PORTFOLIO_STATE_FILE}")
-    print(f"Saved processed fills to: {PROCESSED_FILLS_FILE}")
-    print()
-    print("Run summary:")
-    print(f"Run ID: {run_id}")
-    print(f"New fills processed: {len(processed_now)}")
-    print(f"Open positions: {open_positions}")
-    print(f"Closed positions: {closed_positions}")
+    print(f"Saved state to: {STATE_PATH}")
+    print(f"Saved processed fills to: {PROCESSED_FILLS_PATH}")
+    print(f"Saved cash state to: {CASH_STATE_PATH}")
+    print(f"Saved cash ledger to: {CASH_LEDGER_PATH}")
+    print(f"Ending cash balance: {cash_balance:.2f}")
 
 
 if __name__ == "__main__":

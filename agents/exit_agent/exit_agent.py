@@ -1,260 +1,371 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import List
+from typing import Any
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 
 
-BASE_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = "data"
 
-PORTFOLIO_STATE_FILE = DATA_DIR / "portfolio_state.csv"
-EXIT_ADVICE_FILE = DATA_DIR / "exit_advice.csv"
+STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
+EXIT_ADVICE_PATH = os.path.join(DATA_DIR, "exit_advice.csv")
 
 
-STATE_COLUMNS = [
-    "position_id",
-    "ticker",
-    "side",
-    "status",
-    "quantity",
-    "entry_price",
-    "entry_date",
-    "capital_allocated",
-    "stop_loss",
-    "take_profit",
-    "regime_at_entry",
-    "sector",
-    "signal_score",
-    "highest_price_since_entry",
-    "lowest_price_since_entry",
-    "current_price",
-    "market_value",
-    "pnl_abs",
-    "pnl_pct",
-    "exit_flag",
-    "exit_reason",
-    "last_updated",
-    "run_id",
-]
-
-EXIT_ADVICE_COLUMNS = [
-    "position_id",
-    "ticker",
-    "exit_action",
-    "reason",
-    "status",
-    "exit_reason",
-    "current_price",
-    "stop_loss",
-    "take_profit",
-    "pnl_abs",
-    "pnl_pct",
-    "generated_at",
-    "run_id",
-]
-
-ALLOWED_SIDES = {"long", "short"}
-ALLOWED_STATUSES = {"open", "closed"}
-ALLOWED_EXIT_FLAGS = {"none", "review", "exit_required"}
+VALID_STATUSES = {"open", "exit_required", "closed"}
+VALID_SIDES = {"long", "short"}
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def generate_run_id() -> str:
-    return datetime.now(timezone.utc).strftime("RUN_%Y%m%dT%H%M%SZ")
+def safe_read_csv(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Required file not found: {path}")
+
+    if os.path.getsize(path) == 0:
+        raise ValueError(f"Required CSV is zero-byte empty: {path}")
+
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError as exc:
+        raise ValueError(f"Required CSV has no parseable columns: {path}") from exc
 
 
-def atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(temp_path, index=False)
-    temp_path.replace(path)
+def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
 
+    aliases = {
+        "average_entry_price": "entry_price",
+        "current_qty": "quantity",
+    }
 
-def load_portfolio_state() -> pd.DataFrame:
-    if not PORTFOLIO_STATE_FILE.exists():
-        raise FileNotFoundError(f"Missing file: {PORTFOLIO_STATE_FILE}")
+    for old_col, new_col in aliases.items():
+        if old_col in df.columns and new_col not in df.columns:
+            df[new_col] = df[old_col]
 
-    df = pd.read_csv(PORTFOLIO_STATE_FILE)
-
-    for column in STATE_COLUMNS:
-        if column not in df.columns:
-            if column == "status":
-                df[column] = "open"
-            elif column == "side":
-                df[column] = "long"
-            elif column == "exit_flag":
-                df[column] = "none"
-            elif column == "exit_reason":
-                df[column] = ""
-            elif column == "run_id":
-                df[column] = ""
-            else:
-                df[column] = pd.NA
-
-    df = df[STATE_COLUMNS].copy()
-
-    string_columns = [
+    required_columns = [
         "position_id",
         "ticker",
         "side",
         "status",
-        "entry_date",
-        "regime_at_entry",
-        "sector",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-    ]
-    for column in string_columns:
-        df[column] = df[column].fillna("").astype(str).str.strip()
-
-    df["ticker"] = df["ticker"].str.upper()
-    df["side"] = df["side"].str.lower()
-    df["status"] = df["status"].str.lower()
-    df["exit_flag"] = df["exit_flag"].str.lower()
-
-    numeric_columns = [
         "quantity",
         "entry_price",
-        "capital_allocated",
-        "stop_loss",
-        "take_profit",
-        "signal_score",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
+        "entry_date",
         "current_price",
         "market_value",
         "pnl_abs",
         "pnl_pct",
+        "realised_pnl_abs",
+        "fees_total",
+        "exit_flag",
+        "exit_reason",
+        "last_updated",
+        "run_id",
+        "closed_at",
+        "exit_price",
+        "take_profit",
+        "stop_loss",
     ]
-    for column in numeric_columns:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
 
+    numeric_default_zero = {
+        "market_value",
+        "pnl_abs",
+        "pnl_pct",
+        "realised_pnl_abs",
+        "fees_total",
+    }
+
+    for col in required_columns:
+        if col not in df.columns:
+            if col in numeric_default_zero:
+                df[col] = 0.0
+            elif col == "exit_flag":
+                df[col] = False
+            elif col == "exit_reason":
+                df[col] = ""
+            else:
+                df[col] = pd.NA
+
+    df["exit_reason"] = df["exit_reason"].fillna("")
+    return df
+
+
+def parse_bool(value: Any) -> bool:
+    if pd.isna(value):
+        return False
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+
+    text = str(value).strip().lower()
+
+    if text in {"true", "1", "yes", "y"}:
+        return True
+
+    if text in {"false", "0", "no", "n", "", "none", "null", "nan"}:
+        return False
+
+    raise ValueError(f"Unrecognised boolean value: {value}")
+
+
+def load_portfolio_state() -> pd.DataFrame:
+    df = safe_read_csv(STATE_PATH)
+    df = normalise_state_columns(df)
     validate_portfolio_state(df)
+    df["exit_flag"] = df["exit_flag"].apply(parse_bool)
     return df
 
 
 def validate_portfolio_state(df: pd.DataFrame) -> None:
+    if "position_id" not in df.columns:
+        raise ValueError("portfolio_state.csv is missing position_id")
+
     if df["position_id"].duplicated().any():
-        duplicates = df.loc[df["position_id"].duplicated(), "position_id"].tolist()
-        raise ValueError(f"Duplicate position_id values detected: {duplicates}")
+        dupes = df.loc[df["position_id"].duplicated(keep=False), "position_id"].tolist()
+        raise ValueError(f"Duplicate position_id values detected: {dupes}")
 
-    invalid_sides = sorted(set(df.loc[~df["side"].isin(ALLOWED_SIDES), "side"]) - {""})
-    if invalid_sides:
-        raise ValueError(f"Invalid side values detected: {invalid_sides}")
+    invalid_status = sorted(
+        set(df.loc[~df["status"].isin(VALID_STATUSES), "status"].dropna().astype(str).tolist())
+    )
+    if invalid_status:
+        raise ValueError(f"Invalid status values detected: {invalid_status}")
 
-    invalid_statuses = sorted(set(df.loc[~df["status"].isin(ALLOWED_STATUSES), "status"]) - {""})
-    if invalid_statuses:
-        raise ValueError(f"Invalid status values detected: {invalid_statuses}")
+    invalid_side = sorted(
+        set(df.loc[~df["side"].isin(VALID_SIDES), "side"].dropna().astype(str).tolist())
+    )
+    if invalid_side:
+        raise ValueError(f"Invalid side values detected: {invalid_side}")
 
-    invalid_exit_flags = sorted(set(df.loc[~df["exit_flag"].isin(ALLOWED_EXIT_FLAGS), "exit_flag"]) - {""})
+    invalid_exit_flags: list[str] = []
+    for value in df["exit_flag"].tolist():
+        try:
+            parse_bool(value)
+        except ValueError:
+            invalid_exit_flags.append(str(value))
+
     if invalid_exit_flags:
-        raise ValueError(f"Invalid exit_flag values detected: {invalid_exit_flags}")
+        raise ValueError(f"Invalid exit_flag values detected: {sorted(set(invalid_exit_flags))}")
+
+    active_df = df[df["status"].isin(["open", "exit_required"])].copy()
+
+    active_qty = pd.to_numeric(active_df["quantity"], errors="coerce")
+    if active_qty.isna().any() or (active_qty <= 0).any():
+        bad_ids = active_df.loc[active_qty.isna() | (active_qty <= 0), "position_id"].tolist()
+        raise ValueError(f"Invalid quantity for active positions: {bad_ids}")
+
+    active_entry = pd.to_numeric(active_df["entry_price"], errors="coerce")
+    if active_entry.isna().any() or (active_entry <= 0).any():
+        bad_ids = active_df.loc[active_entry.isna() | (active_entry <= 0), "position_id"].tolist()
+        raise ValueError(f"Invalid entry_price for active positions: {bad_ids}")
 
 
-def build_exit_row(row: pd.Series, generated_at: str, run_id: str) -> dict:
-    exit_action = determine_exit_action(row)
-    reason = determine_reason_text(row, exit_action)
+def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
+    position_id = str(row["position_id"])
+    ticker = str(row["ticker"])
+    status = str(row["status"]).strip().lower()
+
+    if status == "closed":
+        return {
+            "position_id": position_id,
+            "ticker": ticker,
+            "exit_action": "hold",
+            "reason": "Position already closed.",
+            "status": "no_action",
+            "exit_reason": "already_closed",
+            "current_price": row.get("current_price"),
+            "stop_loss": row.get("stop_loss"),
+            "take_profit": row.get("take_profit"),
+            "pnl_abs": row.get("pnl_abs"),
+            "pnl_pct": row.get("pnl_pct"),
+            "generated_at": utc_now_iso(),
+        }
+
+    current_price = pd.to_numeric(pd.Series([row.get("current_price")]), errors="coerce").iloc[0]
+    stop_loss = pd.to_numeric(pd.Series([row.get("stop_loss")]), errors="coerce").iloc[0]
+    take_profit = pd.to_numeric(pd.Series([row.get("take_profit")]), errors="coerce").iloc[0]
+    pnl_abs = pd.to_numeric(pd.Series([row.get("pnl_abs")]), errors="coerce").iloc[0]
+    pnl_pct = pd.to_numeric(pd.Series([row.get("pnl_pct")]), errors="coerce").iloc[0]
+    side = str(row["side"]).strip().lower()
+    exit_flag = parse_bool(row.get("exit_flag"))
+    existing_exit_reason = str(row.get("exit_reason") if not pd.isna(row.get("exit_reason")) else "").strip()
+
+    if exit_flag:
+        return {
+            "position_id": position_id,
+            "ticker": ticker,
+            "exit_action": "review",
+            "reason": "Position is flagged for exit.",
+            "status": "exit_required",
+            "exit_reason": existing_exit_reason or "exit_flagged",
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "generated_at": utc_now_iso(),
+        }
+
+    if pd.isna(current_price):
+        return {
+            "position_id": position_id,
+            "ticker": ticker,
+            "exit_action": "review",
+            "reason": "Current price missing.",
+            "status": "review_required",
+            "exit_reason": "missing_current_price",
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "generated_at": utc_now_iso(),
+        }
+
+    if side == "long":
+        if not pd.isna(take_profit) and current_price >= take_profit:
+            return {
+                "position_id": position_id,
+                "ticker": ticker,
+                "exit_action": "take_profit",
+                "reason": "Take profit level has been reached.",
+                "status": "exit_required",
+                "exit_reason": "take_profit_triggered",
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "pnl_abs": pnl_abs,
+                "pnl_pct": pnl_pct,
+                "generated_at": utc_now_iso(),
+            }
+
+        if not pd.isna(stop_loss) and current_price <= stop_loss:
+            return {
+                "position_id": position_id,
+                "ticker": ticker,
+                "exit_action": "close",
+                "reason": "Stop loss level has been breached.",
+                "status": "exit_required",
+                "exit_reason": "stop_loss_triggered",
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "pnl_abs": pnl_abs,
+                "pnl_pct": pnl_pct,
+                "generated_at": utc_now_iso(),
+            }
+
+    elif side == "short":
+        if not pd.isna(take_profit) and current_price <= take_profit:
+            return {
+                "position_id": position_id,
+                "ticker": ticker,
+                "exit_action": "take_profit",
+                "reason": "Take profit level has been reached.",
+                "status": "exit_required",
+                "exit_reason": "take_profit_triggered",
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "pnl_abs": pnl_abs,
+                "pnl_pct": pnl_pct,
+                "generated_at": utc_now_iso(),
+            }
+
+        if not pd.isna(stop_loss) and current_price >= stop_loss:
+            return {
+                "position_id": position_id,
+                "ticker": ticker,
+                "exit_action": "close",
+                "reason": "Stop loss level has been breached.",
+                "status": "exit_required",
+                "exit_reason": "stop_loss_triggered",
+                "current_price": current_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "pnl_abs": pnl_abs,
+                "pnl_pct": pnl_pct,
+                "generated_at": utc_now_iso(),
+            }
 
     return {
-        "position_id": row["position_id"],
-        "ticker": row["ticker"],
-        "exit_action": exit_action,
-        "reason": reason,
-        "status": row["status"],
-        "exit_reason": row["exit_reason"],
-        "current_price": row["current_price"],
-        "stop_loss": row["stop_loss"],
-        "take_profit": row["take_profit"],
-        "pnl_abs": row["pnl_abs"],
-        "pnl_pct": row["pnl_pct"],
-        "generated_at": generated_at,
-        "run_id": run_id,
+        "position_id": position_id,
+        "ticker": ticker,
+        "exit_action": "hold",
+        "reason": "No exit condition met.",
+        "status": "hold",
+        "exit_reason": "",
+        "current_price": current_price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "pnl_abs": pnl_abs,
+        "pnl_pct": pnl_pct,
+        "generated_at": utc_now_iso(),
     }
 
 
-def determine_exit_action(row: pd.Series) -> str:
-    if row["status"] != "open":
-        return "hold"
-
-    exit_flag = row["exit_flag"]
-    exit_reason = row["exit_reason"]
-
-    if exit_flag == "review":
-        return "review_immediately"
-
-    if exit_flag == "exit_required":
-        if exit_reason == "stop_loss_triggered":
-            return "close"
-        if exit_reason == "take_profit_triggered":
-            return "take_profit"
-        return "close"
-
-    return "hold"
-
-
-def determine_reason_text(row: pd.Series, exit_action: str) -> str:
-    exit_reason = row["exit_reason"]
-
-    if exit_action == "review_immediately":
-        if exit_reason == "missing_price":
-            return "Live price missing. Review immediately."
-        return "Position requires review."
-
-    if exit_action == "close":
-        if exit_reason == "stop_loss_triggered":
-            return "Stop loss level has been reached."
-        if exit_reason:
-            return f"Exit required: {exit_reason}."
-        return "Exit required."
-
-    if exit_action == "take_profit":
-        return "Take profit level has been reached."
-
-    return "No exit action required."
-
-
 def run_exit_agent() -> None:
-    run_id = generate_run_id()
-    generated_at = utc_now_iso()
-
     state_df = load_portfolio_state()
 
-    open_state_df = state_df[state_df["status"] == "open"].copy()
+    if state_df.empty:
+        out_df = pd.DataFrame(
+            columns=[
+                "position_id",
+                "ticker",
+                "exit_action",
+                "reason",
+                "status",
+                "exit_reason",
+                "current_price",
+                "stop_loss",
+                "take_profit",
+                "pnl_abs",
+                "pnl_pct",
+                "generated_at",
+            ]
+        )
+        out_df.to_csv(EXIT_ADVICE_PATH, index=False)
+        print("Exit Agent finished.")
+        print(f"Saved exit advice to: {EXIT_ADVICE_PATH}")
+        print("")
+        print("Run summary:")
+        print("Total exit advice rows: 0")
+        print("Hold: 0")
+        print("Take profit: 0")
+        print("Close: 0")
+        print("Review immediately: 0")
+        print("Raise stop: 0")
+        return
 
-    advice_rows: List[dict] = []
-    for _, row in open_state_df.iterrows():
-        advice_rows.append(build_exit_row(row, generated_at, run_id))
+    decisions = [exit_decision_for_row(row) for _, row in state_df.iterrows()]
+    out_df = pd.DataFrame(decisions)
+    out_df.to_csv(EXIT_ADVICE_PATH, index=False)
 
-    exit_advice_df = pd.DataFrame(advice_rows, columns=EXIT_ADVICE_COLUMNS)
-
-    if exit_advice_df.empty:
-        exit_advice_df = pd.DataFrame(columns=EXIT_ADVICE_COLUMNS)
-
-    atomic_write_csv(exit_advice_df, EXIT_ADVICE_FILE)
-
-    total_rows = len(exit_advice_df)
-    hold_count = int((exit_advice_df["exit_action"] == "hold").sum()) if not exit_advice_df.empty else 0
-    take_profit_count = int((exit_advice_df["exit_action"] == "take_profit").sum()) if not exit_advice_df.empty else 0
-    close_count = int((exit_advice_df["exit_action"] == "close").sum()) if not exit_advice_df.empty else 0
-    review_count = int((exit_advice_df["exit_action"] == "review_immediately").sum()) if not exit_advice_df.empty else 0
+    hold_count = int((out_df["exit_action"] == "hold").sum())
+    take_profit_count = int((out_df["exit_action"] == "take_profit").sum())
+    close_count = int((out_df["exit_action"] == "close").sum())
+    review_count = int((out_df["exit_action"] == "review").sum())
+    raise_stop_count = int((out_df["exit_action"] == "raise_stop").sum()) if "raise_stop" in out_df["exit_action"].values else 0
 
     print("Exit Agent finished.")
-    print(f"Saved exit advice to: {EXIT_ADVICE_FILE}")
-    print()
+    print(f"Saved exit advice to: {EXIT_ADVICE_PATH}")
+    print("")
     print("Run summary:")
-    print(f"Run ID: {run_id}")
-    print(f"Total exit advice rows: {total_rows}")
+    print(f"Total exit advice rows: {len(out_df)}")
     print(f"Hold: {hold_count}")
     print(f"Take profit: {take_profit_count}")
     print(f"Close: {close_count}")
     print(f"Review immediately: {review_count}")
+    print(f"Raise stop: {raise_stop_count}")
 
 
 if __name__ == "__main__":
