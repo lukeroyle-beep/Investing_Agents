@@ -1,12 +1,9 @@
 ticker,name,headline_count,categories_found,has_news,checked_at
-COST,Costco,10,other,True,2026-03-17T11:06:11.747685+00:00
-CRM,Salesforce,10,other,True,2026-03-17T11:06:11.747685+00:00
-CVX,Chevron,10,other,True,2026-03-17T11:06:11.747685+00:00
-DDOG,Datadog,10,other,True,2026-03-17T11:06:11.747685+00:00
-MU,Micron Technology,10,other,True,2026-03-17T11:06:11.747685+00:00
-NET,Cloudflare,10,other,True,2026-03-17T11:06:11.747685+00:00
-NFLX,Netflix,10,other,True,2026-03-17T11:06:11.747685+00:00
-PANW,Palo Alto Networks,10,other,True,2026-03-17T11:06:11.747685+00:00
-RTX,RTX,10,other,True,2026-03-17T11:06:11.747685+00:00
-VZ,Verizon,10,other,True,2026-03-17T11:06:11.747685+00:00
-XOM,Exxon Mobil,10,other,True,2026-03-17T11:06:11.747685+00:00
+CVX,Chevron,10,other,True,2026-03-19T16:08:33.638996+00:00
+DOCU,DocuSign,10,other,True,2026-03-19T16:08:33.638996+00:00
+MU,Micron Technology,10,other,True,2026-03-19T16:08:33.638996+00:00
+NET,Cloudflare,10,other,True,2026-03-19T16:08:33.638996+00:00
+PANW,Palo Alto Networks,10,other,True,2026-03-19T16:08:33.638996+00:00
+PFE,Pfizer,10,other,True,2026-03-19T16:08:33.638996+00:00
+PLTR,Palantir,10,other,True,2026-03-19T16:08:33.638996+00:00
+XOM,Exxon Mobil,10,other,True,2026-03-19T16:08:33.638996+00:00

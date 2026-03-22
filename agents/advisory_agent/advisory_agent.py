@@ -15,6 +15,7 @@ from shared.io_utils import (
 )
 from shared.paths import ADVISORY_TRADES_PATH, config_path, data_path
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_advisory_trades
 
 
 def utc_now_iso() -> str:
@@ -69,8 +70,7 @@ def determine_open_position_block(
     if portfolio_state.empty:
         return False, ""
 
-    state = portfolio_state.copy()
-    state = normalise_columns(state)
+    state = normalise_columns(portfolio_state.copy())
 
     required_cols = {"ticker", "status"}
     if not required_cols.issubset(set(state.columns)):
@@ -99,13 +99,9 @@ def run() -> None:
     if bool(governance.get("allow_order_submission", False)):
         raise ValueError("Governance breach: allow_order_submission must be false")
 
-    recommendations_path = data_path("portfolio_recommendations.csv")
-    portfolio_state_path = data_path("portfolio_state.csv")
-    news_review_path = data_path("news_review.csv")
-
-    recommendations = read_csv_required(recommendations_path)
-    portfolio_state = read_csv_optional(portfolio_state_path)
-    news_review = read_csv_optional(news_review_path)
+    recommendations = read_csv_required(data_path("portfolio_recommendations.csv"))
+    portfolio_state = read_csv_optional(data_path("portfolio_state.csv"))
+    news_review = read_csv_optional(data_path("news_review.csv"))
 
     recommendations = normalise_columns(recommendations)
     portfolio_state = normalise_columns(portfolio_state)
@@ -221,10 +217,12 @@ def run() -> None:
                 "advice_status": advice_status,
                 "advice_notes": " | ".join(filter(None, [recommendation_notes] + advice_notes)).strip(),
                 "advice_generated_at": utc_now_iso(),
+                "run_id": run_id,
             }
         )
 
     out_df = pd.DataFrame(output_rows)
+    out_df = validate_advisory_trades(out_df)
 
     write_csv_with_run_id(
         out_df,
