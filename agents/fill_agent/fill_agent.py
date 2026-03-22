@@ -8,6 +8,12 @@ from typing import Optional
 import pandas as pd
 from pandas.errors import EmptyDataError
 
+from agents.shared.event_log import (
+    append_event,
+    append_state_change_event,
+    ensure_event_log_exists,
+)
+
 
 DATA_DIR = "data"
 
@@ -18,6 +24,7 @@ CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
 CASH_LEDGER_PATH = os.path.join(DATA_DIR, "cash_ledger.csv")
 
 DEFAULT_STARTING_CASH = 100000.0
+AGENT_NAME = "Fill Agent"
 
 
 def utc_now_iso() -> str:
@@ -261,6 +268,18 @@ def get_cash_balance(cash_state_df: pd.DataFrame) -> float:
     return float(cash_state_df.iloc[-1]["cash_balance"])
 
 
+def serialise_row_state(row: pd.Series | dict) -> dict[str, object]:
+    if isinstance(row, pd.Series):
+        payload = row.to_dict()
+    else:
+        payload = dict(row)
+
+    clean_payload: dict[str, object] = {}
+    for key, value in payload.items():
+        clean_payload[str(key)] = None if pd.isna(value) else value
+    return clean_payload
+
+
 def write_cash_balance(balance: float) -> None:
     pd.DataFrame(
         [{"as_of": utc_now_iso(), "cash_balance": balance}]
@@ -371,6 +390,8 @@ def open_long_position(
 
     state_df = pd.concat([state_df, new_row], ignore_index=True)
 
+    position_after = serialise_row_state(new_row.iloc[0])
+    cash_balance_before = cash_balance
     cash_balance -= total_cash_out
     write_cash_balance(cash_balance)
 
@@ -386,6 +407,46 @@ def open_long_position(
         fees=fees,
         cash_balance_after=cash_balance,
         notes=f"Opened {quantity} shares at {fill_price}",
+    )
+
+    append_state_change_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="position_opened",
+        entity_type="position",
+        entity_id=position_id,
+        ticker=ticker,
+        position_id=position_id,
+        message=f"Opened long position for {ticker}",
+        before_state={},
+        after_state=position_after,
+        metadata={
+            "fill_id": str(row["fill_id"]),
+            "action": "buy",
+            "side": side,
+            "quantity": quantity,
+            "fill_price": fill_price,
+            "fees": fees,
+        },
+    )
+    append_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="cash_adjusted",
+        entity_type="cash",
+        entity_id="cash_state",
+        ticker=ticker,
+        position_id=position_id,
+        message=f"Cash debited for opening {ticker}",
+        before_state={"cash_balance": round(cash_balance_before, 2)},
+        after_state={"cash_balance": round(cash_balance, 2)},
+        metadata={
+            "fill_id": str(row["fill_id"]),
+            "action": "buy",
+            "gross_cost": round(gross_cost, 2),
+            "fees": fees,
+            "net_cash_change": round(-total_cash_out, 2),
+        },
     )
 
     return state_df, cash_balance, ledger_df
@@ -409,6 +470,7 @@ def close_long_position(
         raise RuntimeError(f"No active position found to close for {ticker} {side}")
 
     position = state_df.loc[idx].copy()
+    position_before = serialise_row_state(position)
 
     if float(position["quantity"]) != quantity:
         raise RuntimeError(
@@ -437,6 +499,8 @@ def close_long_position(
     state_df.at[idx, "closed_at"] = row["fill_timestamp"]
     state_df.at[idx, "exit_price"] = fill_price
 
+    position_after = serialise_row_state(state_df.loc[idx])
+    cash_balance_before = cash_balance
     cash_balance += net_proceeds
     write_cash_balance(cash_balance)
 
@@ -454,6 +518,47 @@ def close_long_position(
         notes=f"Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
     )
 
+    append_state_change_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="position_closed",
+        entity_type="position",
+        entity_id=str(position["position_id"]),
+        ticker=ticker,
+        position_id=str(position["position_id"]),
+        message=f"Closed long position for {ticker}",
+        before_state=position_before,
+        after_state=position_after,
+        metadata={
+            "fill_id": str(row["fill_id"]),
+            "action": "sell",
+            "side": side,
+            "quantity": quantity,
+            "fill_price": fill_price,
+            "fees": fees,
+            "realised_pnl_abs": round(realised_pnl, 2),
+        },
+    )
+    append_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="cash_adjusted",
+        entity_type="cash",
+        entity_id="cash_state",
+        ticker=ticker,
+        position_id=str(position["position_id"]),
+        message=f"Cash credited for closing {ticker}",
+        before_state={"cash_balance": round(cash_balance_before, 2)},
+        after_state={"cash_balance": round(cash_balance, 2)},
+        metadata={
+            "fill_id": str(row["fill_id"]),
+            "action": "sell",
+            "gross_proceeds": round(gross_proceeds, 2),
+            "fees": fees,
+            "net_cash_change": round(net_proceeds, 2),
+        },
+    )
+
     return state_df, cash_balance, ledger_df
 
 
@@ -468,6 +573,7 @@ def append_processed_fill(processed_df: pd.DataFrame, fill_id: str, run_id: str)
 
 def run_fill_agent() -> None:
     run_id = current_run_id()
+    ensure_event_log_exists()
 
     state_df = ensure_state_file()
     processed_df = ensure_processed_fills_file()
@@ -519,6 +625,23 @@ def run_fill_agent() -> None:
 
         processed_df = append_processed_fill(processed_df, fill_id, run_id)
         processed_ids.add(fill_id)
+        append_event(
+            run_id=run_id,
+            agent_name=AGENT_NAME,
+            event_type="fill_processed",
+            entity_type="fill",
+            entity_id=fill_id,
+            ticker=str(row["ticker"]).upper(),
+            message=f"Processed fill {fill_id}",
+            metadata={
+                "side": side,
+                "action": action,
+                "quantity": float(row["quantity"]),
+                "fill_price": float(row["fill_price"]),
+                "fees": float(row["fees"]),
+                "fill_timestamp": str(row["fill_timestamp"]),
+            },
+        )
 
     state_df.to_csv(STATE_PATH, index=False)
 
