@@ -7,11 +7,15 @@ from typing import Any, Dict, List
 import pandas as pd
 from pandas.errors import EmptyDataError
 
+from agents.shared.event_log import append_event
+from shared.run_context import get_or_create_run_id
+
 
 DATA_DIR = "data"
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 REPORT_PATH = os.path.join(DATA_DIR, "lifecycle_integrity_report.csv")
 SNAPSHOT_PATH = os.path.join(DATA_DIR, "portfolio_state_prev_snapshot.csv")
+AGENT_NAME = "Lifecycle Integrity Agent"
 
 VALID_STATUSES = {"open", "exit_required", "closed"}
 VALID_SIDES = {"long", "short"}
@@ -427,7 +431,48 @@ def write_snapshot(df: pd.DataFrame) -> None:
     snapshot_df.to_csv(SNAPSHOT_PATH, index=False)
 
 
+def emit_validation_summary_event(
+    run_id: str,
+    issues: List[Dict[str, Any]],
+    critical_count: int,
+    passed: bool,
+) -> None:
+    """
+    Append one summary validation event for this Lifecycle Integrity run.
+    """
+    critical_issues = [issue for issue in issues if issue.get("severity") == "critical"]
+    affected_position_ids = sorted(
+        {
+            str(issue.get("position_id")).strip()
+            for issue in critical_issues
+            if str(issue.get("position_id") or "").strip()
+        }
+    )
+
+    append_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="validation_passed" if passed else "validation_failed",
+        entity_type="system",
+        entity_id="portfolio_state",
+        severity="info" if passed else "error",
+        message=(
+            "Lifecycle Integrity validation passed"
+            if passed
+            else f"Lifecycle Integrity validation failed: {critical_count} critical issues detected"
+        ),
+        metadata={
+            "validation_stage": "final_summary",
+            "total_issue_count": len(issues),
+            "critical_issue_count": critical_count,
+            "report_path": REPORT_PATH,
+            "affected_position_ids": affected_position_ids,
+        },
+    )
+
+
 def run_lifecycle_integrity_agent() -> None:
+    run_id = get_or_create_run_id()
     current_df = safe_read_csv(STATE_PATH, required=True)
     current_df = normalise_columns(current_df)
 
@@ -449,12 +494,24 @@ def run_lifecycle_integrity_agent() -> None:
     print(f"Critical issues found: {critical_count}")
 
     if critical_count > 0:
+        emit_validation_summary_event(
+            run_id=run_id,
+            issues=issues,
+            critical_count=critical_count,
+            passed=False,
+        )
         raise RuntimeError(
             f"Lifecycle Integrity Agent hard-failed. "
             f"Critical issues found: {critical_count}. "
             f"See {REPORT_PATH}"
         )
 
+    emit_validation_summary_event(
+        run_id=run_id,
+        issues=issues,
+        critical_count=critical_count,
+        passed=True,
+    )
     write_snapshot(current_df)
 
 

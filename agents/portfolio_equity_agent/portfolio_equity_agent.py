@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from agents.shared.event_log import append_event
+from shared.run_context import get_or_create_run_id
+
 
 DATA_DIR = "data"
 
@@ -12,14 +15,12 @@ STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
 EQUITY_SNAPSHOT_PATH = os.path.join(DATA_DIR, "portfolio_equity.csv")
 EQUITY_HISTORY_PATH = os.path.join(DATA_DIR, "portfolio_equity_history.csv")
+PERFORMANCE_SUMMARY_PATH = os.path.join(DATA_DIR, "performance_summary.csv")
+AGENT_NAME = "Portfolio Equity Agent"
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def current_run_id() -> str:
-    return "RUN_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def read_csv_required(path: str) -> pd.DataFrame:
@@ -83,8 +84,99 @@ def ensure_cash_state() -> pd.DataFrame:
     return df
 
 
+def emit_portfolio_equity_snapshot_event(run_id: str, snapshot_row: pd.Series) -> None:
+    """
+    Append one event-log row for a portfolio equity snapshot.
+    """
+    append_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        event_type="portfolio_equity_snapshot",
+        entity_type="portfolio",
+        entity_id="portfolio_equity",
+        severity="info",
+        message="Portfolio equity snapshot generated",
+        metadata={
+            "timestamp": snapshot_row.get("timestamp"),
+            "cash_balance": snapshot_row.get("cash_balance"),
+            "open_market_value": snapshot_row.get("open_market_value"),
+            "gross_exposure": snapshot_row.get("gross_exposure"),
+            "net_exposure": snapshot_row.get("net_exposure"),
+            "unrealised_pnl_abs": snapshot_row.get("unrealised_pnl_abs"),
+            "realised_pnl_abs": snapshot_row.get("realised_pnl_abs"),
+            "total_equity": snapshot_row.get("total_equity"),
+            "open_positions": snapshot_row.get("open_positions"),
+            "closed_positions": snapshot_row.get("closed_positions"),
+        },
+    )
+
+
+def apply_drawdown_metrics(history_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add peak equity and drawdown fields based on total equity history.
+    """
+    output_df = history_df.copy()
+    if "timestamp" in output_df.columns:
+        output_df["timestamp"] = pd.to_datetime(output_df["timestamp"], errors="coerce")
+        output_df = output_df.sort_values(by="timestamp", kind="stable").reset_index(drop=True)
+        output_df["timestamp"] = output_df["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+        output_df["timestamp"] = output_df["timestamp"].str.replace(
+            r"(\+|-)(\d{2})(\d{2})$",
+            r"\1\2:\3",
+            regex=True,
+        )
+
+    total_equity = pd.to_numeric(output_df["total_equity"], errors="coerce").fillna(0.0)
+    output_df["total_equity"] = total_equity
+
+    output_df["peak_equity"] = total_equity.cummax()
+    output_df["drawdown_abs"] = output_df["peak_equity"] - total_equity
+    output_df["drawdown_pct"] = output_df.apply(
+        lambda row: 0.0
+        if float(row["peak_equity"]) <= 0
+        else (float(row["drawdown_abs"]) / float(row["peak_equity"])) * 100.0,
+        axis=1,
+    )
+
+    output_df["peak_equity"] = output_df["peak_equity"].round(6)
+    output_df["drawdown_abs"] = output_df["drawdown_abs"].round(6)
+    output_df["drawdown_pct"] = output_df["drawdown_pct"].round(6)
+
+    return output_df
+
+
+def build_performance_summary(history_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a one-row performance summary from the full equity history.
+    """
+    latest_row = history_df.iloc[-1]
+    peak_idx = pd.to_numeric(history_df["peak_equity"], errors="coerce").idxmax()
+    max_drawdown_idx = pd.to_numeric(history_df["drawdown_abs"], errors="coerce").idxmax()
+
+    peak_row = history_df.loc[peak_idx]
+    max_drawdown_row = history_df.loc[max_drawdown_idx]
+
+    return pd.DataFrame(
+        [
+            {
+                "latest_timestamp": latest_row.get("timestamp"),
+                "latest_run_id": latest_row.get("run_id"),
+                "current_total_equity": latest_row.get("total_equity"),
+                "peak_equity": latest_row.get("peak_equity"),
+                "peak_equity_timestamp": peak_row.get("timestamp"),
+                "current_drawdown_abs": latest_row.get("drawdown_abs"),
+                "current_drawdown_pct": latest_row.get("drawdown_pct"),
+                "max_drawdown_abs": max_drawdown_row.get("drawdown_abs"),
+                "max_drawdown_pct": max_drawdown_row.get("drawdown_pct"),
+                "max_drawdown_timestamp": max_drawdown_row.get("timestamp"),
+                "observation_count": len(history_df),
+            }
+        ]
+    )
+
+
 def run_portfolio_equity_agent() -> None:
-    run_id = current_run_id()
+    run_id = get_or_create_run_id()
 
     state_df = read_csv_required(STATE_PATH)
     state_df = normalise_state_columns(state_df)
@@ -121,19 +213,25 @@ def run_portfolio_equity_agent() -> None:
         ]
     )
 
-    snapshot.to_csv(EQUITY_SNAPSHOT_PATH, index=False)
-
     if os.path.exists(EQUITY_HISTORY_PATH):
         history_df = pd.read_csv(EQUITY_HISTORY_PATH)
         history_df = pd.concat([history_df, snapshot], ignore_index=True)
     else:
         history_df = snapshot.copy()
 
+    history_df = apply_drawdown_metrics(history_df)
+    snapshot = history_df.tail(1).copy()
+    performance_summary_df = build_performance_summary(history_df)
+
+    snapshot.to_csv(EQUITY_SNAPSHOT_PATH, index=False)
     history_df.to_csv(EQUITY_HISTORY_PATH, index=False)
+    performance_summary_df.to_csv(PERFORMANCE_SUMMARY_PATH, index=False)
+    emit_portfolio_equity_snapshot_event(run_id=run_id, snapshot_row=snapshot.iloc[0])
 
     print("Portfolio Equity Agent finished.")
     print(f"Saved equity snapshot to: {EQUITY_SNAPSHOT_PATH}")
     print(f"Saved equity history to: {EQUITY_HISTORY_PATH}")
+    print(f"Saved performance summary to: {PERFORMANCE_SUMMARY_PATH}")
     print("")
     print("Run summary:")
     print(f"Cash balance: {cash_balance:.2f}")

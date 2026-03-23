@@ -1,3 +1,3 @@
 ticker,name,sector,market_regime,adjusted_setup_score,adjusted_setup_status,risk_decision,risk_notes,headline_count,categories_found,has_news,risk_budget_pct,stop_loss_pct,raw_position_size_pct,scaled_target_allocation_pct,portfolio_action,portfolio_checked_at
-ARM,Arm Holdings,Technology,risk_off,5,actionable,approved,clear,10,other,True,0.3,9.4,3.19,8.42,buy,2026-03-23T11:18:53.900072+00:00
-XOM,Exxon Mobil,Energy,risk_off,5,actionable,approved,clear,10,other,True,0.3,4.78,6.28,16.58,buy,2026-03-23T11:18:53.900072+00:00
+ARM,Arm Holdings,Technology,risk_off,5,actionable,approved,clear,10,other,True,0.3,9.4,3.19,8.42,buy,2026-03-23T11:58:58.052366+00:00
+XOM,Exxon Mobil,Energy,risk_off,5,actionable,approved,clear,10,other,True,0.3,4.78,6.28,16.58,buy,2026-03-23T11:58:58.052366+00:00
