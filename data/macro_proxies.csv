@@ -1,4 +1,4 @@
 ticker,name,latest_close,ma50,above_ma50
-SPY,SPDR S&P 500 ETF Trust,658.56,684.69,False
-QQQ,Invesco QQQ Trust,591.28,611.75,False
-^VIX,CBOE Volatility Index,25.73,19.75,True
+SPY,SPDR S&P 500 ETF Trust,648.57,682.06,False
+QQQ,Invesco QQQ Trust,582.06,610.95,False
+^VIX,CBOE Volatility Index,29.96,20.24,True

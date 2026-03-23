@@ -1,9 +1,9 @@
 ticker,name,latest_close,ma20,ma50,return_20d_pct,return_60d_pct,volatility_20d_pct,above_ma20,above_ma50,ma20_above_ma50,positive_20d_return,positive_60d_return,acceptable_volatility,score,lead_status,checked_at
-ARM,Arm Holdings,128.43,123.3,118.13,1.18,12.63,2.88,True,True,True,True,True,True,6,pass,2026-03-19T16:08:04.543859+00:00
-CVX,Chevron,201.69,190.5,178.94,9.15,37.84,1.25,True,True,True,True,True,True,6,pass,2026-03-19T16:07:49.457350+00:00
-PFE,Pfizer,27.31,27.01,26.5,1.66,10.21,1.35,True,True,True,True,True,True,6,pass,2026-03-19T16:07:47.889115+00:00
-XOM,Exxon Mobil,158.83,152.37,143.68,5.2,37.02,1.44,True,True,True,True,True,True,6,pass,2026-03-19T16:07:49.017428+00:00
-MU,Micron Technology,439.13,416.57,398.83,5.22,65.2,4.07,True,True,True,True,True,False,5,pass,2026-03-19T16:07:38.933735+00:00
-NET,Cloudflare,224.54,193.43,187.25,16.56,14.75,4.06,True,True,True,True,True,False,5,pass,2026-03-19T16:08:05.556135+00:00
-NFLX,Netflix,92.38,92.22,87.16,19.97,-2.13,3.65,True,True,True,True,False,True,5,pass,2026-03-19T16:07:35.348379+00:00
-VZ,Verizon,49.45,50.29,46.01,1.67,26.34,1.12,False,True,True,True,True,True,5,pass,2026-03-19T16:07:54.476514+00:00
+ARM,Arm Holdings,132.35,123.71,118.49,5.39,16.82,2.9,True,True,True,True,True,True,6,pass,2026-03-23T11:18:25.912210+00:00
+CVX,Chevron,201.73,191.38,179.89,9.68,35.98,1.23,True,True,True,True,True,True,6,pass,2026-03-23T11:18:11.837238+00:00
+NET,Cloudflare,215.42,195.18,187.44,21.61,6.61,3.63,True,True,True,True,True,True,6,pass,2026-03-23T11:18:26.894232+00:00
+T,AT&T,28.31,28.0,26.58,1.18,17.87,1.64,True,True,True,True,True,True,6,pass,2026-03-23T11:18:16.155141+00:00
+XOM,Exxon Mobil,159.67,152.96,144.51,8.41,36.04,1.3,True,True,True,True,True,True,6,pass,2026-03-23T11:18:11.413953+00:00
+AMAT,Applied Materials,357.06,356.2,338.41,-4.88,38.03,3.1,True,True,True,False,True,True,5,pass,2026-03-23T11:18:00.927187+00:00
+PFE,Pfizer,26.97,27.03,26.55,1.2,8.77,1.39,False,True,True,True,True,True,5,pass,2026-03-23T11:18:10.190754+00:00
+VZ,Verizon,49.98,50.33,46.22,1.48,27.18,1.1,False,True,True,True,True,True,5,pass,2026-03-23T11:18:16.513107+00:00

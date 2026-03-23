@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Iterable
+
+from shared.run_context import get_or_create_run_id
+from shared.run_history import complete_run_record, fail_run_record, start_run_record
 
 
 PIPELINE_STEPS: list[tuple[str, str]] = [
@@ -21,6 +25,10 @@ PIPELINE_STEPS: list[tuple[str, str]] = [
     ("Portfolio Equity Agent", "agents.portfolio_equity_agent.portfolio_equity_agent"),
     ("Journal Agent", "agents.journal_agent.journal_agent"),
 ]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def run_module(label: str, module_path: str) -> None:
@@ -47,7 +55,30 @@ def run_pipeline(steps: Iterable[tuple[str, str]]) -> None:
 
 
 def main() -> None:
-    run_pipeline(PIPELINE_STEPS)
+    run_id = get_or_create_run_id()
+    start_run_record(run_id=run_id, started_at=utc_now_iso())
+
+    try:
+        run_pipeline(PIPELINE_STEPS)
+    except Exception as exc:
+        failed_agent = "Unknown"
+        message = str(exc).strip() or exc.__class__.__name__
+
+        if message.endswith(" failed."):
+            failed_agent = message[:-8]
+
+        fail_run_record(
+            run_id=run_id,
+            completed_at=utc_now_iso(),
+            failed_agent=failed_agent,
+            error_message=message,
+        )
+        raise
+
+    complete_run_record(
+        run_id=run_id,
+        completed_at=utc_now_iso(),
+    )
     print("\nPipeline completed successfully.")
 
 

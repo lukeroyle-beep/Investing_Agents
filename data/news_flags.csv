@@ -1,9 +1,8 @@
 ticker,name,headline_count,categories_found,has_news,checked_at
-CVX,Chevron,10,other,True,2026-03-19T16:08:33.638996+00:00
-DOCU,DocuSign,10,other,True,2026-03-19T16:08:33.638996+00:00
-MU,Micron Technology,10,other,True,2026-03-19T16:08:33.638996+00:00
-NET,Cloudflare,10,other,True,2026-03-19T16:08:33.638996+00:00
-PANW,Palo Alto Networks,10,other,True,2026-03-19T16:08:33.638996+00:00
-PFE,Pfizer,10,other,True,2026-03-19T16:08:33.638996+00:00
-PLTR,Palantir,10,other,True,2026-03-19T16:08:33.638996+00:00
-XOM,Exxon Mobil,10,other,True,2026-03-19T16:08:33.638996+00:00
+ARM,Arm Holdings,10,other,True,2026-03-23T11:18:52.815332+00:00
+CVX,Chevron,10,other,True,2026-03-23T11:18:52.815332+00:00
+NET,Cloudflare,10,other,True,2026-03-23T11:18:52.815332+00:00
+OKTA,Okta,10,other,True,2026-03-23T11:18:52.815332+00:00
+PANW,Palo Alto Networks,10,other,True,2026-03-23T11:18:52.815332+00:00
+T,AT&T,10,other,True,2026-03-23T11:18:52.815332+00:00
+XOM,Exxon Mobil,10,other,True,2026-03-23T11:18:52.815332+00:00

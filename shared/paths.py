@@ -90,6 +90,7 @@ ADVISORY_TRADES_PATH = data_path("advisory_trades.csv")
 EXECUTION_ORDERS_PATH = data_path("execution_orders.csv")
 TRADE_FILLS_PATH = data_path("trade_fills.csv")
 PROCESSED_FILLS_PATH = data_path("processed_fills.csv")
+RUN_HISTORY_PATH = data_path("run_history.csv")
 
 # Position / exit / journal outputs
 PORTFOLIO_STATE_PATH = data_path("portfolio_state.csv")
@@ -126,6 +127,7 @@ advisory_trades_path = ADVISORY_TRADES_PATH
 execution_orders_path = EXECUTION_ORDERS_PATH
 trade_fills_path = TRADE_FILLS_PATH
 processed_fills_path = PROCESSED_FILLS_PATH
+run_history_path = RUN_HISTORY_PATH
 
 portfolio_state_path = PORTFOLIO_STATE_PATH
 position_alerts_path = POSITION_ALERTS_PATH

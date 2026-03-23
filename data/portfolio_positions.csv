@@ -1,3 +1,3 @@
 ticker,name,sector,market_regime,adjusted_setup_score,risk_decision,risk_notes,risk_budget_pct,stop_loss_pct,raw_position_size_pct,scaled_target_allocation_pct,headline_count,categories_found,has_news,portfolio_checked_at
-XOM,Exxon Mobil,Energy,risk_off,4,approved,clear,0.3,5.04,5.95,15.89,10,other,True,2026-03-19T16:08:34.636217+00:00
-NET,Cloudflare,Technology,risk_off,4,caution,overextended,0.3,8.8,3.41,9.11,10,other,True,2026-03-19T16:08:34.636217+00:00
+ARM,Arm Holdings,Technology,risk_off,5,approved,clear,0.3,9.4,3.19,8.42,10,other,True,2026-03-23T11:18:53.900072+00:00
+XOM,Exxon Mobil,Energy,risk_off,5,approved,clear,0.3,4.78,6.28,16.58,10,other,True,2026-03-23T11:18:53.900072+00:00
