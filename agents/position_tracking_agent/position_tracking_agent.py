@@ -6,7 +6,7 @@ from typing import Optional
 
 import pandas as pd
 
-from shared.io_utils import read_csv_with_schema, write_csv_with_schema
+from shared.io_utils import read_csv_with_schema, write_csv, write_csv_with_schema
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
     CLOSED_POSITION_STATUS,
@@ -66,7 +66,7 @@ def ensure_alerts_file() -> pd.DataFrame:
         ]
     )
     df = validate_position_alerts(df, keep_extra_columns=False)
-    df.to_csv(ALERTS_PATH, index=False)
+    write_csv(df, ALERTS_PATH)
     return df
 
 
@@ -131,7 +131,7 @@ def append_alert(
     )
     out = pd.concat([alerts_df, new_row], ignore_index=True)
     out = validate_position_alerts(out, keep_extra_columns=False)
-    out.to_csv(ALERTS_PATH, index=False)
+    write_csv(out, ALERTS_PATH)
     return out
 
 

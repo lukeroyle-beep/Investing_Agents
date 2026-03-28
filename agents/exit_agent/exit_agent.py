@@ -8,6 +8,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import append_exit_decision_generated_event
+from shared.io_utils import write_csv
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
     VALID_POSITION_SIDES,
@@ -295,7 +296,7 @@ def run_exit_agent() -> None:
             ]
         )
         out_df = validate_exit_advice(out_df, keep_extra_columns=False)
-        out_df.to_csv(EXIT_ADVICE_PATH, index=False)
+        write_csv(out_df, EXIT_ADVICE_PATH)
         print("Exit Agent finished.")
         print(f"Saved exit advice to: {EXIT_ADVICE_PATH}")
         print("")
@@ -313,7 +314,7 @@ def run_exit_agent() -> None:
         decision["run_id"] = run_id
     out_df = pd.DataFrame(decisions)
     out_df = validate_exit_advice(out_df, keep_extra_columns=False)
-    out_df.to_csv(EXIT_ADVICE_PATH, index=False)
+    write_csv(out_df, EXIT_ADVICE_PATH)
     for decision in decisions:
         emit_exit_decision_event(run_id=run_id, decision=decision)
 

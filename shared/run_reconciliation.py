@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from shared.io_utils import ensure_parent_dir
+from shared.io_utils import ensure_parent_dir, write_csv_file
 from shared.paths import (
     POSITION_ALERTS_PATH,
     RUN_HISTORY_PATH,
@@ -263,7 +263,7 @@ def _upsert_reconciliation_row(row: dict[str, object]) -> pd.DataFrame:
         combined_df = pd.concat([existing_df, row_df], ignore_index=True)
 
     combined_df = validate_run_reconciliation_summary(combined_df, keep_extra_columns=False)
-    combined_df.to_csv(RUN_RECONCILIATION_SUMMARY_PATH, index=False)
+    write_csv_file(combined_df, RUN_RECONCILIATION_SUMMARY_PATH)
     return combined_df
 
 

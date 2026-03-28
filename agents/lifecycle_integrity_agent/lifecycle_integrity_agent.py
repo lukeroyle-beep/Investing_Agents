@@ -8,7 +8,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import append_validation_event
-from shared.io_utils import write_csv_with_schema
+from shared.io_utils import write_csv, write_csv_with_schema
 from shared.invariants import (
     InvariantFailure,
     InvariantResult,
@@ -119,7 +119,7 @@ def write_report(issues: List[Dict[str, Any]]) -> None:
 
 def write_snapshot(df: pd.DataFrame) -> None:
     snapshot_df = df.copy()
-    snapshot_df.to_csv(SNAPSHOT_PATH, index=False)
+    write_csv(snapshot_df, SNAPSHOT_PATH)
 
 
 def emit_validation_summary_event(

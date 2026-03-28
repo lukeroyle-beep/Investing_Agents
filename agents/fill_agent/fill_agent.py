@@ -15,6 +15,7 @@ from agents.shared.event_log import (
     append_position_opened_event,
     ensure_event_log_exists,
 )
+from shared.io_utils import write_csv
 from shared.schema_registry import get_file_schema
 from shared.schemas import (
     validate_cash_ledger,
@@ -62,7 +63,7 @@ def safe_read_csv_or_default(
             df = default_df.copy()
         else:
             df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
+        write_csv(df, path)
         return df
 
     if os.path.getsize(path) == 0:
@@ -70,7 +71,7 @@ def safe_read_csv_or_default(
             df = default_df.copy()
         else:
             df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
+        write_csv(df, path)
         return df
 
     try:
@@ -80,7 +81,7 @@ def safe_read_csv_or_default(
             df = default_df.copy()
         else:
             df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
+        write_csv(df, path)
         return df
 
     if df.empty and len(df.columns) == 0:
@@ -88,7 +89,7 @@ def safe_read_csv_or_default(
             df = default_df.copy()
         else:
             df = pd.DataFrame(columns=columns)
-        df.to_csv(path, index=False)
+        write_csv(df, path)
         return df
 
     return df
@@ -218,7 +219,7 @@ def write_cash_balance(balance: float) -> None:
         [{"as_of": utc_now_iso(), "cash_balance": balance}]
     )
     cash_state_df = validate_cash_state(cash_state_df, keep_extra_columns=False)
-    cash_state_df.to_csv(CASH_STATE_PATH, index=False)
+    write_csv(cash_state_df, CASH_STATE_PATH)
 
 
 def append_cash_ledger_row(
@@ -255,7 +256,7 @@ def append_cash_ledger_row(
     )
     out = pd.concat([ledger_df, new_row], ignore_index=True)
     out = validate_cash_ledger(out, keep_extra_columns=False)
-    out.to_csv(CASH_LEDGER_PATH, index=False)
+    write_csv(out, CASH_LEDGER_PATH)
     return out
 
 
@@ -494,7 +495,7 @@ def append_processed_fill(processed_df: pd.DataFrame, fill_id: str, run_id: str)
     )
     out = pd.concat([processed_df, new_row], ignore_index=True)
     out = validate_processed_fills(out, keep_extra_columns=False)
-    out.to_csv(PROCESSED_FILLS_PATH, index=False)
+    write_csv(out, PROCESSED_FILLS_PATH)
     return out
 
 
@@ -569,7 +570,7 @@ def run_fill_agent() -> None:
         )
 
     state_df = validate_portfolio_state(state_df, keep_extra_columns=False)
-    state_df.to_csv(STATE_PATH, index=False)
+    write_csv(state_df, STATE_PATH)
 
     print("Fill Agent finished.")
     print(f"Saved state to: {STATE_PATH}")

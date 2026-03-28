@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from agents.shared.event_log import append_equity_snapshot_recorded_event
+from shared.io_utils import write_csv
 from shared.portfolio_state_helpers import ACTIVE_POSITION_STATUSES, CLOSED_POSITION_STATUS
 from shared.schema_registry import get_file_schema
 from shared.schemas import (
@@ -47,7 +48,7 @@ def ensure_cash_state() -> pd.DataFrame:
         columns=CASH_STATE_SCHEMA.canonical_column_order,
     )
     df = validate_cash_state(df, keep_extra_columns=False)
-    df.to_csv(CASH_STATE_PATH, index=False)
+    write_csv(df, CASH_STATE_PATH)
     return df
 
 
@@ -190,8 +191,8 @@ def run_portfolio_equity_agent() -> None:
     performance_summary_df = build_performance_summary(history_df)
     performance_summary_df = validate_performance_summary(performance_summary_df, keep_extra_columns=False)
 
-    history_df.to_csv(EQUITY_HISTORY_PATH, index=False)
-    performance_summary_df.to_csv(PERFORMANCE_SUMMARY_PATH, index=False)
+    write_csv(history_df, EQUITY_HISTORY_PATH)
+    write_csv(performance_summary_df, PERFORMANCE_SUMMARY_PATH)
     emit_portfolio_equity_snapshot_event(run_id=run_id, snapshot_row=snapshot.iloc[0])
 
     print("Portfolio Equity Agent finished.")

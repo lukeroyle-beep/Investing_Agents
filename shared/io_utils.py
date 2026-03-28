@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -12,6 +14,27 @@ from shared.schemas import SchemaSpec, normalise_to_schema
 
 def ensure_parent_dir(file_path: Path) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _atomic_replace(temp_path: Path, destination_path: Path) -> None:
+    """
+    Atomically replace a destination with a fully-written temp file.
+
+    The temp file must live in the same directory so `os.replace` stays on the
+    same filesystem. On Windows, replacement is atomic but can still fail if
+    another process currently holds the destination open without shared delete
+    permissions.
+    """
+    os.replace(temp_path, destination_path)
+
+
+def _temp_path_for(destination_path: Path) -> tuple[int, Path]:
+    fd, raw_path = tempfile.mkstemp(
+        dir=destination_path.parent,
+        prefix=f".{destination_path.stem}.",
+        suffix=f"{destination_path.suffix}.tmp",
+    )
+    return fd, Path(raw_path)
 
 
 def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -127,7 +150,17 @@ def write_csv_file(
         if existing_sort_columns:
             output_df = output_df.sort_values(by=existing_sort_columns)
 
-    output_df.to_csv(file_path, index=False)
+    fd, temp_path = _temp_path_for(file_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            output_df.to_csv(handle, index=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        _atomic_replace(temp_path, file_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def write_csv(
@@ -246,8 +279,17 @@ def save_yaml(data: dict[str, Any], file_path: Path | str) -> None:
     path = Path(file_path)
     ensure_parent_dir(path)
 
-    with path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+    fd, temp_path = _temp_path_for(path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        _atomic_replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 # -----------------------------
@@ -264,5 +306,5 @@ def append_csv_file(new_rows_df: pd.DataFrame, file_path: Path | str) -> pd.Data
     else:
         combined_df = new_rows_df.copy()
 
-    combined_df.to_csv(path, index=False)
+    write_csv_file(combined_df, path)
     return combined_df

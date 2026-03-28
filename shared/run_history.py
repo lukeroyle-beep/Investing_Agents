@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from shared.io_utils import ensure_parent_dir
+from shared.io_utils import ensure_parent_dir, write_csv_file
 from shared.paths import RUN_HISTORY_PATH
 from shared.schema_registry import get_file_schema
 
@@ -20,7 +20,10 @@ def ensure_run_history_file() -> Path:
     ensure_parent_dir(RUN_HISTORY_PATH)
 
     if not RUN_HISTORY_PATH.exists():
-        pd.DataFrame(columns=RUN_HISTORY_COLUMNS, dtype=str).to_csv(RUN_HISTORY_PATH, index=False)
+        write_csv_file(
+            pd.DataFrame(columns=RUN_HISTORY_COLUMNS, dtype=str),
+            RUN_HISTORY_PATH,
+        )
 
     return RUN_HISTORY_PATH
 
@@ -39,7 +42,7 @@ def _read_run_history() -> pd.DataFrame:
 def _write_run_history(df: pd.DataFrame) -> None:
     output_df = df.copy()
     output_df = output_df[RUN_HISTORY_COLUMNS].fillna("").astype(str).copy()
-    output_df.to_csv(RUN_HISTORY_PATH, index=False)
+    write_csv_file(output_df, RUN_HISTORY_PATH)
 
 
 def _find_matching_run_index(df: pd.DataFrame, run_id: str) -> int:
