@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from shared.validation import validate_portfolio_state
+from shared.schemas import validate_portfolio_state
 
 sample = pd.DataFrame(
     [

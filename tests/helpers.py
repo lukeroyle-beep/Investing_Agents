@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 
 import pandas as pd
 
+from shared.event_log import EVENT_LOG_COLUMNS
 from shared.run_history import RUN_HISTORY_COLUMNS
 from shared.schemas import (
+    validate_cash_ledger,
     validate_cash_state,
+    validate_event_log,
     validate_portfolio_equity_history,
     validate_portfolio_state,
     validate_processed_fills,
@@ -98,3 +102,49 @@ def processed_fills_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 def run_history_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=RUN_HISTORY_COLUMNS).fillna("")
+
+
+def cash_ledger_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return validate_cash_ledger(pd.DataFrame(rows), keep_extra_columns=False)
+
+
+def event_log_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    df = pd.DataFrame(rows, columns=EVENT_LOG_COLUMNS).fillna("")
+    return validate_event_log(df, keep_extra_columns=False)
+
+
+def event_log_row(
+    *,
+    event_id: str,
+    run_id: str,
+    event_type: str,
+    metadata: dict[str, Any] | None = None,
+    agent_name: str = "Test Agent",
+    event_time: str = "2026-03-28T10:00:00+00:00",
+    entity_type: str = "system",
+    entity_id: str = "portfolio_state",
+    severity: str = "info",
+    message: str = "",
+    ticker: str = "",
+    position_id: str = "",
+    order_id: str = "",
+    before_json: str = "",
+    after_json: str = "",
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "run_id": run_id,
+        "event_time": event_time,
+        "agent_name": agent_name,
+        "event_type": event_type,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "ticker": ticker,
+        "position_id": position_id,
+        "order_id": order_id,
+        "severity": severity,
+        "message": message,
+        "before_json": before_json,
+        "after_json": after_json,
+        "metadata_json": json.dumps(metadata or {}, sort_keys=True, separators=(",", ":")),
+    }

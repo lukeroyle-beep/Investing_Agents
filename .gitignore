@@ -1,6 +1,7 @@
 # Python virtual environments
 venv/
 .venv/
+.venv-test/
 activate.ps1
 
 # Python cache

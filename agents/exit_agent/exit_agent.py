@@ -8,7 +8,16 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import append_exit_decision_generated_event
+from shared.portfolio_state_helpers import (
+    ACTIVE_POSITION_STATUSES,
+    VALID_POSITION_SIDES,
+    VALID_POSITION_STATUSES,
+    is_closed_position_status,
+    normalise_position_status,
+    parse_boolean_flag,
+)
 from shared.run_context import get_or_create_run_id
+from shared.schemas import validate_exit_advice, validate_portfolio_state
 
 
 DATA_DIR = "data"
@@ -16,11 +25,6 @@ DATA_DIR = "data"
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 EXIT_ADVICE_PATH = os.path.join(DATA_DIR, "exit_advice.csv")
 AGENT_NAME = "Exit Agent"
-
-
-VALID_STATUSES = {"open", "exit_required", "closed"}
-VALID_SIDES = {"long", "short"}
-
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -39,98 +43,15 @@ def safe_read_csv(path: str) -> pd.DataFrame:
         raise ValueError(f"Required CSV has no parseable columns: {path}") from exc
 
 
-def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    aliases = {
-        "average_entry_price": "entry_price",
-        "current_qty": "quantity",
-    }
-
-    for old_col, new_col in aliases.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
-
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-        "closed_at",
-        "exit_price",
-        "take_profit",
-        "stop_loss",
-    ]
-
-    numeric_default_zero = {
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-    }
-
-    for col in required_columns:
-        if col not in df.columns:
-            if col in numeric_default_zero:
-                df[col] = 0.0
-            elif col == "exit_flag":
-                df[col] = False
-            elif col == "exit_reason":
-                df[col] = ""
-            else:
-                df[col] = pd.NA
-
-    df["exit_reason"] = df["exit_reason"].fillna("")
-    return df
-
-
-def parse_bool(value: Any) -> bool:
-    if pd.isna(value):
-        return False
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, (int, float)):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-
-    text = str(value).strip().lower()
-
-    if text in {"true", "1", "yes", "y"}:
-        return True
-
-    if text in {"false", "0", "no", "n", "", "none", "null", "nan"}:
-        return False
-
-    raise ValueError(f"Unrecognised boolean value: {value}")
-
-
 def load_portfolio_state() -> pd.DataFrame:
     df = safe_read_csv(STATE_PATH)
-    df = normalise_state_columns(df)
-    validate_portfolio_state(df)
-    df["exit_flag"] = df["exit_flag"].apply(parse_bool)
+    df = validate_portfolio_state(df, keep_extra_columns=True)
+    validate_state_for_exit_decisions(df)
+    df["exit_flag"] = df["exit_flag"].apply(parse_boolean_flag)
     return df
 
 
-def validate_portfolio_state(df: pd.DataFrame) -> None:
+def validate_state_for_exit_decisions(df: pd.DataFrame) -> None:
     if "position_id" not in df.columns:
         raise ValueError("portfolio_state.csv is missing position_id")
 
@@ -139,13 +60,13 @@ def validate_portfolio_state(df: pd.DataFrame) -> None:
         raise ValueError(f"Duplicate position_id values detected: {dupes}")
 
     invalid_status = sorted(
-        set(df.loc[~df["status"].isin(VALID_STATUSES), "status"].dropna().astype(str).tolist())
+        set(df.loc[~df["status"].isin(VALID_POSITION_STATUSES), "status"].dropna().astype(str).tolist())
     )
     if invalid_status:
         raise ValueError(f"Invalid status values detected: {invalid_status}")
 
     invalid_side = sorted(
-        set(df.loc[~df["side"].isin(VALID_SIDES), "side"].dropna().astype(str).tolist())
+        set(df.loc[~df["side"].isin(VALID_POSITION_SIDES), "side"].dropna().astype(str).tolist())
     )
     if invalid_side:
         raise ValueError(f"Invalid side values detected: {invalid_side}")
@@ -153,14 +74,14 @@ def validate_portfolio_state(df: pd.DataFrame) -> None:
     invalid_exit_flags: list[str] = []
     for value in df["exit_flag"].tolist():
         try:
-            parse_bool(value)
+            parse_boolean_flag(value)
         except ValueError:
             invalid_exit_flags.append(str(value))
 
     if invalid_exit_flags:
         raise ValueError(f"Invalid exit_flag values detected: {sorted(set(invalid_exit_flags))}")
 
-    active_df = df[df["status"].isin(["open", "exit_required"])].copy()
+    active_df = df[df["status"].isin(ACTIVE_POSITION_STATUSES)].copy()
 
     active_qty = pd.to_numeric(active_df["quantity"], errors="coerce")
     if active_qty.isna().any() or (active_qty <= 0).any():
@@ -176,9 +97,9 @@ def validate_portfolio_state(df: pd.DataFrame) -> None:
 def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
     position_id = str(row["position_id"])
     ticker = str(row["ticker"])
-    status = str(row["status"]).strip().lower()
+    status = normalise_position_status(row["status"])
 
-    if status == "closed":
+    if is_closed_position_status(status):
         return {
             "position_id": position_id,
             "ticker": ticker,
@@ -192,6 +113,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
             "pnl_abs": row.get("pnl_abs"),
             "pnl_pct": row.get("pnl_pct"),
             "generated_at": utc_now_iso(),
+            "run_id": "",
         }
 
     current_price = pd.to_numeric(pd.Series([row.get("current_price")]), errors="coerce").iloc[0]
@@ -200,7 +122,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
     pnl_abs = pd.to_numeric(pd.Series([row.get("pnl_abs")]), errors="coerce").iloc[0]
     pnl_pct = pd.to_numeric(pd.Series([row.get("pnl_pct")]), errors="coerce").iloc[0]
     side = str(row["side"]).strip().lower()
-    exit_flag = parse_bool(row.get("exit_flag"))
+    exit_flag = parse_boolean_flag(row.get("exit_flag"))
     existing_exit_reason = str(row.get("exit_reason") if not pd.isna(row.get("exit_reason")) else "").strip()
 
     if exit_flag:
@@ -217,6 +139,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
             "pnl_abs": pnl_abs,
             "pnl_pct": pnl_pct,
             "generated_at": utc_now_iso(),
+            "run_id": "",
         }
 
     if pd.isna(current_price):
@@ -233,6 +156,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
             "pnl_abs": pnl_abs,
             "pnl_pct": pnl_pct,
             "generated_at": utc_now_iso(),
+            "run_id": "",
         }
 
     if side == "long":
@@ -250,6 +174,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "generated_at": utc_now_iso(),
+                "run_id": "",
             }
 
         if not pd.isna(stop_loss) and current_price <= stop_loss:
@@ -266,6 +191,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "generated_at": utc_now_iso(),
+                "run_id": "",
             }
 
     elif side == "short":
@@ -283,6 +209,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "generated_at": utc_now_iso(),
+                "run_id": "",
             }
 
         if not pd.isna(stop_loss) and current_price >= stop_loss:
@@ -299,6 +226,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
                 "pnl_abs": pnl_abs,
                 "pnl_pct": pnl_pct,
                 "generated_at": utc_now_iso(),
+                "run_id": "",
             }
 
     return {
@@ -314,6 +242,7 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
         "pnl_abs": pnl_abs,
         "pnl_pct": pnl_pct,
         "generated_at": utc_now_iso(),
+        "run_id": "",
     }
 
 
@@ -362,8 +291,10 @@ def run_exit_agent() -> None:
                 "pnl_abs",
                 "pnl_pct",
                 "generated_at",
+                "run_id",
             ]
         )
+        out_df = validate_exit_advice(out_df, keep_extra_columns=False)
         out_df.to_csv(EXIT_ADVICE_PATH, index=False)
         print("Exit Agent finished.")
         print(f"Saved exit advice to: {EXIT_ADVICE_PATH}")
@@ -378,7 +309,10 @@ def run_exit_agent() -> None:
         return
 
     decisions = [exit_decision_for_row(row) for _, row in state_df.iterrows()]
+    for decision in decisions:
+        decision["run_id"] = run_id
     out_df = pd.DataFrame(decisions)
+    out_df = validate_exit_advice(out_df, keep_extra_columns=False)
     out_df.to_csv(EXIT_ADVICE_PATH, index=False)
     for decision in decisions:
         emit_exit_decision_event(run_id=run_id, decision=decision)

@@ -6,6 +6,8 @@ from typing import Optional
 
 import pandas as pd
 
+from shared.schemas import validate_position_alerts
+
 
 DATA_DIR = "data"
 
@@ -95,7 +97,7 @@ def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def ensure_alerts_file() -> pd.DataFrame:
     if os.path.exists(ALERTS_PATH):
-        return pd.read_csv(ALERTS_PATH)
+        return validate_position_alerts(pd.read_csv(ALERTS_PATH), keep_extra_columns=False)
 
     df = pd.DataFrame(
         columns=[
@@ -109,6 +111,7 @@ def ensure_alerts_file() -> pd.DataFrame:
             "message",
         ]
     )
+    df = validate_position_alerts(df, keep_extra_columns=False)
     df.to_csv(ALERTS_PATH, index=False)
     return df
 
@@ -173,6 +176,7 @@ def append_alert(
         ]
     )
     out = pd.concat([alerts_df, new_row], ignore_index=True)
+    out = validate_position_alerts(out, keep_extra_columns=False)
     out.to_csv(ALERTS_PATH, index=False)
     return out
 

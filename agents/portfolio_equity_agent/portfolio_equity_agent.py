@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from agents.shared.event_log import append_equity_snapshot_recorded_event
+from shared.portfolio_state_helpers import ACTIVE_POSITION_STATUSES, CLOSED_POSITION_STATUS
 from shared.schema_registry import get_file_schema
 from shared.schemas import (
     validate_cash_state,
@@ -147,8 +148,8 @@ def run_portfolio_equity_agent() -> None:
 
     cash_state_df = ensure_cash_state()
 
-    active_df = state_df[state_df["status"].astype(str).isin(["open", "exit_required"])].copy()
-    closed_df = state_df[state_df["status"].astype(str) == "closed"].copy()
+    active_df = state_df[state_df["status"].astype(str).isin(ACTIVE_POSITION_STATUSES)].copy()
+    closed_df = state_df[state_df["status"].astype(str) == CLOSED_POSITION_STATUS].copy()
 
     cash_balance = float(cash_state_df.iloc[-1]["cash_balance"]) if not cash_state_df.empty else 0.0
     open_market_value = pd.to_numeric(active_df["market_value"], errors="coerce").fillna(0.0).sum()

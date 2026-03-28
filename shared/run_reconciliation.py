@@ -104,8 +104,14 @@ def _extract_validation_counts(event_rows: pd.DataFrame) -> tuple[int, int]:
     except json.JSONDecodeError:
         return 0, 0
 
-    warning_count = int(metadata.get("warning_check_count", 0) or 0)
-    failure_count = int(metadata.get("critical_issue_count", 0) or 0)
+    details = metadata.get("details")
+    if isinstance(details, dict):
+        metadata_source = details
+    else:
+        metadata_source = metadata
+
+    warning_count = int(metadata_source.get("warning_check_count", 0) or 0)
+    failure_count = int(metadata_source.get("critical_issue_count", 0) or 0)
     return warning_count, failure_count
 
 

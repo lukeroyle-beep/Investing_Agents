@@ -16,7 +16,12 @@ from agents.shared.event_log import (
     ensure_event_log_exists,
 )
 from shared.schema_registry import get_file_schema
-from shared.schemas import validate_cash_ledger, validate_cash_state, validate_processed_fills
+from shared.schemas import (
+    validate_cash_ledger,
+    validate_cash_state,
+    validate_portfolio_state,
+    validate_processed_fills,
+)
 
 
 DATA_DIR = "data"
@@ -29,6 +34,7 @@ CASH_LEDGER_PATH = os.path.join(DATA_DIR, "cash_ledger.csv")
 
 DEFAULT_STARTING_CASH = 100000.0
 AGENT_NAME = "Fill Agent"
+PORTFOLIO_STATE_SCHEMA = get_file_schema("portfolio_state.csv")
 CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
 CASH_LEDGER_SCHEMA = get_file_schema("cash_ledger.csv")
 PROCESSED_FILLS_SCHEMA = get_file_schema("processed_fills.csv")
@@ -107,82 +113,12 @@ def ensure_cash_files() -> tuple[pd.DataFrame, pd.DataFrame]:
     return cash_state_df, cash_ledger_df
 
 
-def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    aliases = {
-        "average_entry_price": "entry_price",
-        "current_qty": "quantity",
-    }
-
-    for old_col, new_col in aliases.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
-
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-        "closed_at",
-        "exit_price",
-    ]
-
-    for col in required_columns:
-        if col not in df.columns:
-            if col in {"realised_pnl_abs", "fees_total", "market_value", "pnl_abs", "pnl_pct"}:
-                df[col] = 0.0
-            elif col == "exit_flag":
-                df[col] = False
-            elif col == "exit_reason":
-                df[col] = ""
-            else:
-                df[col] = pd.NA
-
-    df["exit_flag"] = df["exit_flag"].fillna(False)
-    df["exit_reason"] = df["exit_reason"].fillna("")
-
-    return df
-
-
 def ensure_state_file() -> pd.DataFrame:
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-        "closed_at",
-        "exit_price",
-    ]
-
-    df = safe_read_csv_or_default(STATE_PATH, columns=required_columns)
-    return normalise_state_columns(df)
+    df = safe_read_csv_or_default(
+        STATE_PATH,
+        columns=PORTFOLIO_STATE_SCHEMA.canonical_column_order,
+    )
+    return validate_portfolio_state(df, keep_extra_columns=False)
 
 
 def ensure_processed_fills_file() -> pd.DataFrame:
@@ -632,6 +568,7 @@ def run_fill_agent() -> None:
             },
         )
 
+    state_df = validate_portfolio_state(state_df, keep_extra_columns=False)
     state_df.to_csv(STATE_PATH, index=False)
 
     print("Fill Agent finished.")

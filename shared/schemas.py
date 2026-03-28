@@ -45,8 +45,14 @@ ALLOWED_EXIT_ACTION_VALUES = {
     "hold",
     "take_profit",
     "close",
-    "review_immediately",
+    "review",
     "raise_stop",
+}
+ALLOWED_EXIT_ADVICE_STATUS_VALUES = {
+    "exit_required",
+    "hold",
+    "no_action",
+    "review_required",
 }
 ALLOWED_REVIEW_STATUS_VALUES = {
     "open",
@@ -256,7 +262,7 @@ EXIT_ADVICE_SCHEMA = SchemaSpec(
     lowercase_columns=["exit_action", "status", "exit_reason"],
     allowed_values={
         "exit_action": ALLOWED_EXIT_ACTION_VALUES,
-        "status": ALLOWED_POSITION_STATUS_VALUES,
+        "status": ALLOWED_EXIT_ADVICE_STATUS_VALUES,
     },
     default_values={
         "reason": "",

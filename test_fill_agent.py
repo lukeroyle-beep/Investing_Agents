@@ -5,7 +5,7 @@ from agents.fill_agent.fill_agent import (
     get_unprocessed_fills,
     process_fills,
 )
-from shared.validation import validate_portfolio_state
+from shared.schemas import validate_portfolio_state
 
 
 def main() -> None:

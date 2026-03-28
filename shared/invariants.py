@@ -5,6 +5,14 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from shared.portfolio_state_helpers import (
+    ACTIVE_POSITION_STATUSES,
+    CLOSED_POSITION_STATUS,
+    VALID_POSITION_SIDES,
+    VALID_POSITION_STATUSES,
+    normalise_exit_flag,
+    normalise_position_status,
+)
 from shared.schemas import (
     validate_cash_ledger,
     validate_cash_state,
@@ -13,11 +21,6 @@ from shared.schemas import (
     validate_processed_fills,
 )
 
-
-ACTIVE_POSITION_STATUSES = {"open", "exit_required"}
-CLOSED_POSITION_STATUS = "closed"
-VALID_POSITION_SIDES = {"long", "short"}
-VALID_POSITION_STATUSES = ACTIVE_POSITION_STATUSES | {CLOSED_POSITION_STATUS}
 VALID_LIFECYCLE_TRANSITIONS = {
     "open": {"open", "exit_required", "closed"},
     "exit_required": {"exit_required", "closed"},
@@ -104,16 +107,6 @@ def normalise_scalar(value: Any) -> Any:
 
 def values_equal(a: Any, b: Any) -> bool:
     return normalise_scalar(a) == normalise_scalar(b)
-
-
-def parse_exit_flag(value: Any) -> str:
-    if pd.isna(value):
-        return ""
-
-    if isinstance(value, bool):
-        return str(value).lower()
-
-    return str(value).strip().lower()
 
 
 def _empty_frame(columns: list[str]) -> pd.DataFrame:
@@ -462,8 +455,8 @@ def invariant_lifecycle_transitions_are_valid_only(
             )
 
     for _, row in context.current_state.iterrows():
-        status = str(row.get("status")).strip().lower()
-        exit_flag = parse_exit_flag(row.get("exit_flag"))
+        status = normalise_position_status(row.get("status"))
+        exit_flag = normalise_exit_flag(row.get("exit_flag"))
 
         if status == "open" and exit_flag == "true":
             failures.append(
@@ -506,8 +499,8 @@ def invariant_lifecycle_transitions_are_valid_only(
         if isinstance(previous_row, pd.DataFrame):
             continue
 
-        previous_status = str(previous_row.get("status")).strip().lower()
-        current_status = str(current_row.get("status")).strip().lower()
+        previous_status = normalise_position_status(previous_row.get("status"))
+        current_status = normalise_position_status(current_row.get("status"))
         allowed_next = VALID_LIFECYCLE_TRANSITIONS.get(previous_status)
 
         if allowed_next is None or current_status not in allowed_next:

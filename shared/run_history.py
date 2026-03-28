@@ -54,21 +54,42 @@ def _find_matching_run_index(df: pd.DataFrame, run_id: str) -> int:
     return int(matches[0])
 
 
+def _require_non_blank(value: str, field_name: str) -> str:
+    normalised = str(value).strip()
+    if normalised == "":
+        raise ValueError(f"{field_name} must be non-blank")
+    return normalised
+
+
+def _get_current_status(df: pd.DataFrame, idx: int) -> str:
+    return str(df.at[idx, "status"]).strip().lower()
+
+
+def _require_running_status_for_terminal_update(df: pd.DataFrame, idx: int, run_id: str) -> None:
+    current_status = _get_current_status(df, idx)
+    if current_status != "running":
+        raise ValueError(
+            f"Run history record for run_id={run_id} is already terminal or invalid: status={current_status}"
+        )
+
+
 def start_run_record(run_id: str, started_at: str) -> None:
     """
     Append a new run-history row with status set to running.
     """
     df = _read_run_history()
+    run_id = _require_non_blank(run_id, "run_id")
+    started_at = _require_non_blank(started_at, "started_at")
 
     existing = df["run_id"].astype(str).str.strip()
-    if (existing == str(run_id).strip()).any():
+    if (existing == run_id).any():
         raise ValueError(f"Run history record already exists for run_id={run_id}")
 
     new_row = pd.DataFrame(
         [
             {
-                "run_id": str(run_id).strip(),
-                "started_at": str(started_at).strip(),
+                "run_id": run_id,
+                "started_at": started_at,
                 "completed_at": "",
                 "status": "running",
                 "failed_agent": "",
@@ -89,9 +110,12 @@ def complete_run_record(run_id: str, completed_at: str) -> None:
     Mark an existing run-history row as successfully completed.
     """
     df = _read_run_history()
+    run_id = _require_non_blank(run_id, "run_id")
+    completed_at = _require_non_blank(completed_at, "completed_at")
     idx = _find_matching_run_index(df, run_id)
+    _require_running_status_for_terminal_update(df, idx, run_id)
 
-    df.at[idx, "completed_at"] = str(completed_at).strip()
+    df.at[idx, "completed_at"] = completed_at
     df.at[idx, "status"] = "success"
 
     _write_run_history(df)
@@ -107,9 +131,12 @@ def fail_run_record(
     Mark an existing run-history row as failed with failure details.
     """
     df = _read_run_history()
+    run_id = _require_non_blank(run_id, "run_id")
+    completed_at = _require_non_blank(completed_at, "completed_at")
     idx = _find_matching_run_index(df, run_id)
+    _require_running_status_for_terminal_update(df, idx, run_id)
 
-    df.at[idx, "completed_at"] = str(completed_at).strip()
+    df.at[idx, "completed_at"] = completed_at
     df.at[idx, "status"] = "failed"
     df.at[idx, "failed_agent"] = str(failed_agent).strip()
     df.at[idx, "error_message"] = str(error_message).strip()
