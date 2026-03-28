@@ -9,6 +9,7 @@ import run_pipeline
 import shared.event_log as shared_event_log
 import shared.run_history as shared_run_history
 import shared.run_reconciliation as shared_run_reconciliation
+import shared.sqlite_parity as sqlite_parity
 import shared.sqlite_sidecar as sqlite_sidecar
 from agents.exit_agent import exit_agent
 from agents.fill_agent import fill_agent
@@ -56,6 +57,21 @@ def _patch_control_paths(isolated_workspace: Path, monkeypatch) -> None:
     monkeypatch.setattr(shared_run_reconciliation, "CASH_LEDGER_PATH", data_dir / "cash_ledger.csv")
     monkeypatch.setattr(shared_run_reconciliation, "PROCESSED_FILLS_PATH", data_dir / "processed_fills.csv")
     monkeypatch.setattr(shared_run_reconciliation, "POSITION_ALERTS_PATH", data_dir / "position_alerts.csv")
+
+    monkeypatch.setattr(sqlite_parity, "EVENT_LOG_PATH", data_dir / "event_log.csv")
+    monkeypatch.setattr(sqlite_parity, "RUN_HISTORY_PATH", data_dir / "run_history.csv")
+    monkeypatch.setattr(
+        sqlite_parity,
+        "RUN_RECONCILIATION_SUMMARY_PATH",
+        data_dir / "run_reconciliation_summary.csv",
+    )
+    monkeypatch.setattr(sqlite_parity, "CASH_LEDGER_PATH", data_dir / "cash_ledger.csv")
+    monkeypatch.setattr(sqlite_parity, "PROCESSED_FILLS_PATH", data_dir / "processed_fills.csv")
+    monkeypatch.setattr(
+        sqlite_parity,
+        "PORTFOLIO_EQUITY_HISTORY_PATH",
+        data_dir / "portfolio_equity_history.csv",
+    )
 
     monkeypatch.setattr(lifecycle_integrity_agent, "STATE_PATH", str(data_dir / "portfolio_state.csv"))
     monkeypatch.setattr(lifecycle_integrity_agent, "REPORT_PATH", str(data_dir / "lifecycle_integrity_report.csv"))

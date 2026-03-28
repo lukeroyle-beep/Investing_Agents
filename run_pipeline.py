@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from shared.event_log import append_run_lifecycle_event
+from shared.sqlite_parity import format_parity_report, validate_sqlite_dual_write_parity
 from shared.run_reconciliation import print_run_reconciliation_summary, write_run_reconciliation_summary
 from shared.run_context import get_or_create_run_id
 from shared.run_history import complete_run_record, fail_run_record, start_run_record
@@ -60,6 +61,8 @@ def emit_reconciliation_summary(run_id: str) -> None:
     try:
         row = write_run_reconciliation_summary(run_id)
         print_run_reconciliation_summary(row)
+        print()
+        print(format_parity_report(validate_sqlite_dual_write_parity(run_id=run_id)))
     except Exception as exc:
         print("\nRun reconciliation summary could not be generated.")
         print(f"Reason: {exc}")

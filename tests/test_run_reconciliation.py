@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pandas as pd
 
+import shared.analytics_reads as analytics_reads
 import shared.run_reconciliation as run_reconciliation
+import shared.sqlite_sidecar as sqlite_sidecar
 from tests.helpers import (
     event_log_frame,
     event_log_row,
@@ -134,3 +136,101 @@ def test_run_reconciliation_accepts_legacy_validation_metadata_shape() -> None:
 
     assert warning_count == 3
     assert failure_count == 2
+
+
+def test_run_reconciliation_can_read_dual_written_inputs_from_sqlite(
+    isolated_workspace,
+    monkeypatch,
+) -> None:
+    data_dir = isolated_workspace / "data"
+    _patch_reconciliation_paths(isolated_workspace, monkeypatch)
+    monkeypatch.setattr(analytics_reads, "PREFER_SQLITE_ANALYTICS_READS", True)
+
+    run_id = "RUN_SQLITE_RECON"
+    sqlite_sidecar.initialise_db()
+    sqlite_sidecar.upsert_run_history_row(
+        {
+            "run_id": run_id,
+            "started_at": "2026-03-28T10:00:00+00:00",
+            "completed_at": "2026-03-28T10:05:00+00:00",
+            "status": "success",
+            "failed_agent": "",
+            "error_message": "",
+            "notes": "sqlite-backed analytics read",
+        }
+    )
+    sqlite_sidecar.append_processed_fill_row(
+        {
+            "fill_id": "FILL_SQLITE_001",
+            "processed_at": "2026-03-28T10:01:00+00:00",
+            "run_id": run_id,
+        }
+    )
+    sqlite_sidecar.append_event_log_row(
+        {
+            "event_id": "EVT_SQLITE_OPEN",
+            "run_id": run_id,
+            "event_time": "2026-03-28T10:02:00+00:00",
+            "agent_name": "Fill Agent",
+            "event_type": "position_opened",
+            "entity_type": "position",
+            "entity_id": "POS_SQLITE_001",
+            "ticker": "AAPL",
+            "position_id": "POS_SQLITE_001",
+            "order_id": "",
+            "severity": "info",
+            "message": "Opened position",
+            "before_json": "",
+            "after_json": "",
+            "metadata_json": "{}",
+        }
+    )
+    sqlite_sidecar.append_event_log_row(
+        {
+            "event_id": "EVT_SQLITE_VALIDATE",
+            "run_id": run_id,
+            "event_time": "2026-03-28T10:03:00+00:00",
+            "agent_name": "Lifecycle Integrity Agent",
+            "event_type": "validation_passed",
+            "entity_type": "system",
+            "entity_id": "portfolio_state",
+            "ticker": "",
+            "position_id": "",
+            "order_id": "",
+            "severity": "info",
+            "message": "Validation passed",
+            "before_json": "",
+            "after_json": "",
+            "metadata_json": '{"details":{"warning_check_count":0,"critical_issue_count":0}}',
+        }
+    )
+    sqlite_sidecar.append_cash_ledger_row(
+        {
+            "ledger_id": "LEDGER_SQLITE_001",
+            "run_id": run_id,
+            "timestamp": "2026-03-28T10:01:00+00:00",
+            "event_type": "position_open",
+            "position_id": "POS_SQLITE_001",
+            "ticker": "AAPL",
+            "side": "long",
+            "action": "buy",
+            "amount": -1000.0,
+            "fees": 2.5,
+            "cash_balance_after": 98997.5,
+            "notes": "sqlite-only ledger row",
+        }
+    )
+
+    write_csv(data_dir / "position_alerts.csv", pd.DataFrame(columns=["run_id", "alert_type"]))
+
+    row = run_reconciliation.write_run_reconciliation_summary(run_id)
+
+    assert row["run_id"] == run_id
+    assert row["status"] == "success"
+    assert int(row["fills_processed"]) == 1
+    assert int(row["positions_opened"]) == 1
+    assert int(row["positions_closed"]) == 0
+    assert int(row["validation_warning_count"]) == 0
+    assert int(row["validation_failure_count"]) == 0
+    assert float(row["cash_delta"]) == -1002.5
+    assert "cash_ledger.csv" in str(row["notes"])

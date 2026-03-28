@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from shared.analytics_reads import AnalyticsTableSpec, read_analytics_table
 from shared.io_utils import ensure_parent_dir, write_csv_file
 from shared.paths import (
     POSITION_ALERTS_PATH,
@@ -42,9 +43,15 @@ def _read_csv_if_exists(path) -> pd.DataFrame:
 
 
 def _read_run_history() -> pd.DataFrame:
-    if not RUN_HISTORY_PATH.exists():
-        raise FileNotFoundError(f"Missing run history file: {RUN_HISTORY_PATH}")
-    return pd.read_csv(RUN_HISTORY_PATH, dtype=str, keep_default_na=False)
+    return read_analytics_table(
+        AnalyticsTableSpec(
+            table_name="run_history",
+            csv_path=RUN_HISTORY_PATH,
+            csv_read_kwargs={"dtype": str, "keep_default_na": False},
+            sqlite_order_by=["started_at", "run_id"],
+            required=True,
+        )
+    )
 
 
 def _find_run_row(run_history_df: pd.DataFrame, run_id: str) -> pd.Series:
@@ -57,15 +64,33 @@ def _find_run_row(run_history_df: pd.DataFrame, run_id: str) -> pd.Series:
 
 
 def _read_event_log() -> pd.DataFrame:
-    return _read_csv_if_exists(EVENT_LOG_PATH)
+    return read_analytics_table(
+        AnalyticsTableSpec(
+            table_name="event_log",
+            csv_path=EVENT_LOG_PATH,
+            sqlite_order_by=["event_time", "event_id"],
+        )
+    )
 
 
 def _read_equity_history() -> pd.DataFrame:
-    return _read_csv_if_exists(EQUITY_HISTORY_PATH)
+    return read_analytics_table(
+        AnalyticsTableSpec(
+            table_name="portfolio_equity_history",
+            csv_path=EQUITY_HISTORY_PATH,
+            sqlite_order_by=["timestamp", "run_id"],
+        )
+    )
 
 
 def _read_cash_ledger() -> pd.DataFrame:
-    return _read_csv_if_exists(CASH_LEDGER_PATH)
+    return read_analytics_table(
+        AnalyticsTableSpec(
+            table_name="cash_ledger",
+            csv_path=CASH_LEDGER_PATH,
+            sqlite_order_by=["timestamp", "ledger_id"],
+        )
+    )
 
 
 def _read_position_alerts() -> pd.DataFrame:
@@ -117,7 +142,13 @@ def _extract_validation_counts(event_rows: pd.DataFrame) -> tuple[int, int]:
 
 
 def _count_processed_fills(run_id: str) -> int:
-    processed_fills_df = _read_csv_if_exists(PROCESSED_FILLS_PATH)
+    processed_fills_df = read_analytics_table(
+        AnalyticsTableSpec(
+            table_name="processed_fills",
+            csv_path=PROCESSED_FILLS_PATH,
+            sqlite_order_by=["processed_at", "fill_id"],
+        )
+    )
     if processed_fills_df.empty or "run_id" not in processed_fills_df.columns:
         return 0
     return int((processed_fills_df["run_id"].astype(str).str.strip() == str(run_id).strip()).sum())

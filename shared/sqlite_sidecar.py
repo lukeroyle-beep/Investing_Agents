@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import warnings
 from contextlib import contextmanager
@@ -146,6 +147,12 @@ def initialise_db(db_path: Path | str | None = None) -> None:
     with get_connection(db_path=db_path) as connection:
         with transaction(connection):
             _create_schema(connection)
+
+
+def _validated_identifier(identifier: str) -> str:
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(identifier)):
+        raise ValueError(f"Invalid SQLite identifier: {identifier}")
+    return str(identifier)
 
 
 def _execute_best_effort(action: str, fn) -> None:
@@ -326,12 +333,28 @@ def upsert_portfolio_equity_history_row(row: dict[str, Any]) -> None:
 def fetch_row_count(table_name: str, db_path: Path | str | None = None) -> int:
     with get_connection(db_path=db_path) as connection:
         _create_schema(connection)
-        row = connection.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+        row = connection.execute(f"SELECT COUNT(*) AS count FROM {_validated_identifier(table_name)}").fetchone()
         return int(row["count"])
 
 
 def fetch_all_rows(table_name: str, db_path: Path | str | None = None) -> list[dict[str, Any]]:
     with get_connection(db_path=db_path) as connection:
         _create_schema(connection)
-        rows = connection.execute(f"SELECT * FROM {table_name}").fetchall()
+        query = f"SELECT * FROM {_validated_identifier(table_name)}"
+        rows = connection.execute(query).fetchall()
         return [dict(row) for row in rows]
+
+
+def fetch_table_df(
+    table_name: str,
+    db_path: Path | str | None = None,
+    order_by: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    with get_connection(db_path=db_path) as connection:
+        _create_schema(connection)
+        query = f"SELECT * FROM {_validated_identifier(table_name)}"
+        if order_by:
+            order_clause = ", ".join(_validated_identifier(column) for column in order_by)
+            query = f"{query} ORDER BY {order_clause}"
+        rows = connection.execute(query).fetchall()
+        return pd.DataFrame([dict(row) for row in rows])
