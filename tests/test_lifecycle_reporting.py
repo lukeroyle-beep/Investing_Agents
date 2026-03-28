@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from agents.lifecycle_integrity_agent import lifecycle_integrity_agent
+from shared.schemas import validate_lifecycle_integrity_report
 from tests.helpers import (
     cash_state_frame,
     closed_position_row,
@@ -12,6 +13,21 @@ from tests.helpers import (
     run_history_frame,
     write_csv,
 )
+
+EXPECTED_REPORT_COLUMNS = [
+    "checked_at",
+    "record_type",
+    "severity",
+    "invariant_name",
+    "rule",
+    "position_id",
+    "ticker",
+    "detail",
+    "total_checks",
+    "passed_checks",
+    "warning_count",
+    "failure_count",
+]
 
 
 def _patch_lifecycle_paths(isolated_workspace, monkeypatch) -> None:
@@ -62,7 +78,9 @@ def test_lifecycle_integrity_report_rows_on_failure(isolated_workspace, monkeypa
         assert "hard-failed" in str(exc)
 
     report_df = pd.read_csv(data_dir / "lifecycle_integrity_report.csv")
+    report_df = validate_lifecycle_integrity_report(report_df, keep_extra_columns=False)
 
+    assert report_df.columns.tolist() == EXPECTED_REPORT_COLUMNS
     assert report_df.iloc[0]["record_type"] == "summary"
     assert int(report_df.iloc[0]["failure_count"]) >= 1
     assert (
@@ -109,7 +127,9 @@ def test_lifecycle_integrity_report_rows_on_success(isolated_workspace, monkeypa
     lifecycle_integrity_agent.run_lifecycle_integrity_agent()
 
     report_df = pd.read_csv(data_dir / "lifecycle_integrity_report.csv")
+    report_df = validate_lifecycle_integrity_report(report_df, keep_extra_columns=False)
 
+    assert report_df.columns.tolist() == EXPECTED_REPORT_COLUMNS
     assert report_df.iloc[0]["record_type"] == "summary"
     assert int(report_df.iloc[0]["failure_count"]) == 0
     assert int(report_df.iloc[0]["passed_checks"]) == int(report_df.iloc[0]["total_checks"])

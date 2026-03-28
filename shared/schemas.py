@@ -318,6 +318,12 @@ RUN_RECONCILIATION_SUMMARY_SCHEMA = _schema_spec_from_registry(
     name="run_reconciliation_summary",
 )
 
+LIFECYCLE_INTEGRITY_REPORT_SCHEMA = _schema_spec_from_registry(
+    file_name="lifecycle_integrity_report.csv",
+    name="lifecycle_integrity_report",
+    lowercase_columns=["record_type", "severity"],
+)
+
 EVENT_LOG_SCHEMA = _schema_spec_from_registry(
     file_name="event_log.csv",
     name="event_log",
@@ -554,6 +560,10 @@ def validate_performance_summary(df: pd.DataFrame, keep_extra_columns: bool = Tr
 
 def validate_run_reconciliation_summary(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
     return normalise_to_schema(df, RUN_RECONCILIATION_SUMMARY_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_lifecycle_integrity_report(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, LIFECYCLE_INTEGRITY_REPORT_SCHEMA, keep_extra_columns=keep_extra_columns)
 
 
 def validate_event_log(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:

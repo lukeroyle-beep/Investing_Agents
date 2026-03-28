@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import pandas as pd
 from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import append_validation_event
+from shared.io_utils import write_csv_with_schema
 from shared.invariants import (
     InvariantFailure,
     InvariantResult,
@@ -16,6 +17,7 @@ from shared.invariants import (
 )
 from shared.paths import DATA_DIR
 from shared.run_context import get_or_create_run_id
+from shared.schemas import LIFECYCLE_INTEGRITY_REPORT_SCHEMA
 
 
 STATE_PATH = str(DATA_DIR / "portfolio_state.csv")
@@ -107,7 +109,12 @@ def write_report(issues: List[Dict[str, Any]]) -> None:
             ]
         )
 
-    report_df.to_csv(REPORT_PATH, index=False)
+    write_csv_with_schema(
+        report_df,
+        REPORT_PATH,
+        schema=LIFECYCLE_INTEGRITY_REPORT_SCHEMA,
+        keep_extra_columns=False,
+    )
 
 
 def write_snapshot(df: pd.DataFrame) -> None:
