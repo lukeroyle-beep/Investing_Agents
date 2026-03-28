@@ -4,6 +4,7 @@ from datetime import datetime, UTC
 
 import pandas as pd
 
+from agents.shared.event_log import append_artifact_written_event
 from shared.io_utils import write_csv
 from shared.paths import FINAL_SHORTLIST_PATH, data_path
 from shared.run_context import get_or_create_run_id
@@ -12,6 +13,7 @@ from shared.schemas import validate_trade_journal
 
 FINAL_SHORTLIST_FILE = FINAL_SHORTLIST_PATH
 JOURNAL_FILE = data_path("trade_journal.csv")
+AGENT_NAME = "Journal Agent"
 
 
 def load_final_shortlist() -> pd.DataFrame:
@@ -93,6 +95,18 @@ def main() -> None:
 
     total_entries = len(combined_df)
     new_entries = len(new_entries_df)
+    append_artifact_written_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        entity_type="journal",
+        entity_id="trade_journal",
+        message="Trade journal updated.",
+        details={
+            "output_path": str(JOURNAL_FILE),
+            "new_entries": new_entries,
+            "total_entries": total_entries,
+        },
+    )
 
     print("\nJournal Agent finished.")
     print(f"Saved journal to: {JOURNAL_FILE}")

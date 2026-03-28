@@ -6,6 +6,7 @@ from typing import Optional
 
 import pandas as pd
 
+from agents.shared.event_log import append_artifact_written_event
 from shared.io_utils import read_csv_with_schema, write_csv, write_csv_with_schema
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
@@ -22,6 +23,7 @@ DATA_DIR = "data"
 
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 ALERTS_PATH = os.path.join(DATA_DIR, "position_alerts.csv")
+AGENT_NAME = "Position Tracking Agent"
 
 
 def utc_now_iso() -> str:
@@ -225,6 +227,21 @@ def run_position_tracking_agent() -> None:
 
     if state_df.empty:
         write_portfolio_state(state_df)
+        append_artifact_written_event(
+            run_id=run_id,
+            agent_name=AGENT_NAME,
+            entity_type="portfolio",
+            entity_id="portfolio_state",
+            message="Position tracking completed with no positions to update.",
+            details={
+                "portfolio_state_path": STATE_PATH,
+                "position_alerts_path": ALERTS_PATH,
+                "total_positions": 0,
+                "active_positions_updated": 0,
+                "exit_required_positions": 0,
+                "alerts_added": 0,
+            },
+        )
         print("Position Tracking Agent finished.")
         print(f"Saved portfolio state to: {STATE_PATH}")
         print(f"Saved position alerts to: {ALERTS_PATH}")
@@ -278,6 +295,21 @@ def run_position_tracking_agent() -> None:
 
     out_df = pd.DataFrame(output_rows)
     write_portfolio_state(out_df)
+    append_artifact_written_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        entity_type="portfolio",
+        entity_id="portfolio_state",
+        message="Position tracking mark-to-market update completed.",
+        details={
+            "portfolio_state_path": STATE_PATH,
+            "position_alerts_path": ALERTS_PATH,
+            "total_positions": total_positions,
+            "active_positions_updated": active_count,
+            "exit_required_positions": exit_required_count,
+            "alerts_added": alert_count,
+        },
+    )
 
     print("Position Tracking Agent finished.")
     print(f"Saved portfolio state to: {STATE_PATH}")

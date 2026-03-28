@@ -1,6 +1,7 @@
 from shared.event_log import (
     EVENT_LOG_COLUMNS,
     EVENT_LOG_PATH,
+    append_artifact_written_event,
     append_cash_adjusted_event,
     append_event,
     append_equity_snapshot_recorded_event,

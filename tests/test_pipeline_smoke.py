@@ -186,6 +186,11 @@ def test_pipeline_smoke_control_integrity(isolated_workspace, monkeypatch) -> No
     assert invariant_failures == []
 
     reconciliation_df = pd.read_csv(data_dir / "run_reconciliation_summary.csv")
+    event_log_df = pd.read_csv(data_dir / "event_log.csv")
     assert len(reconciliation_df) == 1
     assert reconciliation_df.iloc[0]["run_id"] == PIPELINE_RUN_ID
     assert reconciliation_df.iloc[0]["status"] == "success"
+    assert (
+        (event_log_df["event_type"] == "artifact_written")
+        & (event_log_df["agent_name"] == "Position Tracking Agent")
+    ).any()

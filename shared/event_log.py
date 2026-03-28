@@ -16,6 +16,7 @@ EVENT_LOG_PATH = DATA_DIR / "event_log.csv"
 EVENT_LOG_SCHEMA = get_file_schema("event_log.csv")
 EVENT_LOG_COLUMNS = EVENT_LOG_SCHEMA.canonical_column_order
 TARGET_EVENT_TYPES = {
+    "artifact_written",
     "fill_processed",
     "position_opened",
     "position_closed",
@@ -300,6 +301,32 @@ def append_fill_processed_event(
         event_type="fill_processed",
         entity_type="fill",
         entity_id=fill_id,
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+    )
+
+
+def append_artifact_written_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    entity_type: str,
+    entity_id: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    position_id: str = "",
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="artifact_written",
+        entity_type=entity_type,
+        entity_id=entity_id,
         severity=severity,
         message=message,
         details=details,

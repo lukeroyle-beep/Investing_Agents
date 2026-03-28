@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 
+from agents.shared.event_log import append_artifact_written_event
 from shared.io_utils import (
     load_yaml,
     normalise_columns,
@@ -16,6 +17,8 @@ from shared.io_utils import (
 from shared.paths import ADVISORY_TRADES_PATH, config_path, data_path
 from shared.run_context import get_or_create_run_id
 from shared.schemas import validate_advisory_trades
+
+AGENT_NAME = "Advisory Agent"
 
 
 def utc_now_iso() -> str:
@@ -233,6 +236,20 @@ def run() -> None:
     ready_count = int((out_df["advice_status"] == "ready_for_manual_review").sum()) if not out_df.empty else 0
     hold_count = int((out_df["advice_status"] == "hold_for_review").sum()) if not out_df.empty else 0
     blocked_count = int((out_df["advice_status"] == "blocked").sum()) if not out_df.empty else 0
+    append_artifact_written_event(
+        run_id=run_id,
+        agent_name=AGENT_NAME,
+        entity_type="advisory",
+        entity_id="advisory_trades",
+        message="Advisory trade output generated.",
+        details={
+            "output_path": str(ADVISORY_TRADES_PATH),
+            "row_count": len(out_df),
+            "ready_for_manual_review_count": ready_count,
+            "hold_for_review_count": hold_count,
+            "blocked_count": blocked_count,
+        },
+    )
 
     print("Advisory Agent finished.")
     print(f"Saved trade advice to: {ADVISORY_TRADES_PATH}")
