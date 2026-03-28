@@ -6,7 +6,16 @@ from typing import Optional
 
 import pandas as pd
 
-from shared.schemas import validate_position_alerts
+from shared.io_utils import read_csv_with_schema, write_csv_with_schema
+from shared.portfolio_state_helpers import (
+    ACTIVE_POSITION_STATUSES,
+    CLOSED_POSITION_STATUS,
+    normalise_position_status,
+)
+from shared.schemas import (
+    PORTFOLIO_STATE_SCHEMA,
+    validate_position_alerts,
+)
 
 
 DATA_DIR = "data"
@@ -23,76 +32,21 @@ def current_run_id() -> str:
     return "RUN_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def safe_read_csv(path: str, required: bool = True) -> pd.DataFrame:
-    if not os.path.exists(path):
-        if required:
-            raise FileNotFoundError(f"Required file not found: {path}")
-        return pd.DataFrame()
-    return pd.read_csv(path)
+def read_portfolio_state() -> pd.DataFrame:
+    return read_csv_with_schema(
+        STATE_PATH,
+        schema=PORTFOLIO_STATE_SCHEMA,
+        empty_ok=False,
+    )
 
 
-def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    aliases = {
-        "average_entry_price": "entry_price",
-        "current_qty": "quantity",
-    }
-
-    for old_col, new_col in aliases.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
-
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-        "closed_at",
-        "exit_price",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
-    ]
-
-    for col in required_columns:
-        if col not in df.columns:
-            if col in {
-                "quantity",
-                "entry_price",
-                "current_price",
-                "market_value",
-                "pnl_abs",
-                "pnl_pct",
-                "realised_pnl_abs",
-                "fees_total",
-                "highest_price_since_entry",
-                "lowest_price_since_entry",
-            }:
-                df[col] = pd.NA
-            elif col == "exit_flag":
-                df[col] = False
-            elif col == "exit_reason":
-                df[col] = ""
-            else:
-                df[col] = pd.NA
-
-    df["exit_flag"] = df["exit_flag"].fillna(False)
-    df["exit_reason"] = df["exit_reason"].fillna("")
-
-    return df
+def write_portfolio_state(df: pd.DataFrame) -> None:
+    write_csv_with_schema(
+        df,
+        STATE_PATH,
+        schema=PORTFOLIO_STATE_SCHEMA,
+        keep_extra_columns=False,
+    )
 
 
 def ensure_alerts_file() -> pd.DataFrame:
@@ -265,13 +219,12 @@ def preserve_closed_position(row: pd.Series) -> pd.Series:
 def run_position_tracking_agent() -> None:
     run_id = current_run_id()
 
-    state_df = safe_read_csv(STATE_PATH, required=True)
-    state_df = normalise_state_columns(state_df)
+    state_df = read_portfolio_state()
 
     alerts_df = ensure_alerts_file()
 
     if state_df.empty:
-        state_df.to_csv(STATE_PATH, index=False)
+        write_portfolio_state(state_df)
         print("Position Tracking Agent finished.")
         print(f"Saved portfolio state to: {STATE_PATH}")
         print(f"Saved position alerts to: {ALERTS_PATH}")
@@ -291,9 +244,9 @@ def run_position_tracking_agent() -> None:
     alert_count = 0
 
     for _, row in state_df.iterrows():
-        status = str(row.get("status")).strip().lower()
+        status = normalise_position_status(row.get("status"))
 
-        if status in {"open", "exit_required"}:
+        if status in ACTIVE_POSITION_STATUSES:
             active_count += 1
             original_status = status
 
@@ -314,7 +267,7 @@ def run_position_tracking_agent() -> None:
                 )
                 alert_count += 1
 
-        elif status == "closed":
+        elif status == CLOSED_POSITION_STATUS:
             output_rows.append(preserve_closed_position(row))
 
         else:
@@ -324,8 +277,7 @@ def run_position_tracking_agent() -> None:
             )
 
     out_df = pd.DataFrame(output_rows)
-    out_df = normalise_state_columns(out_df)
-    out_df.to_csv(STATE_PATH, index=False)
+    write_portfolio_state(out_df)
 
     print("Position Tracking Agent finished.")
     print(f"Saved portfolio state to: {STATE_PATH}")
