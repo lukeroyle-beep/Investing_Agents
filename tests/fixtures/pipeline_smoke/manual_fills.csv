@@ -1,0 +1,2 @@
+fill_id,ticker,side,action,quantity,fill_price,fees,fill_timestamp
+FILL_PIPE_001,MSFT,long,buy,1,200.0,1.5,2026-03-28T10:00:00+00:00
