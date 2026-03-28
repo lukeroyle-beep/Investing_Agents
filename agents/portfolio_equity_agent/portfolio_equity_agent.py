@@ -5,7 +5,14 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from agents.shared.event_log import append_event
+from agents.shared.event_log import append_equity_snapshot_recorded_event
+from shared.schema_registry import get_file_schema
+from shared.schemas import (
+    validate_cash_state,
+    validate_performance_summary,
+    validate_portfolio_equity_history,
+    validate_portfolio_state,
+)
 from shared.run_context import get_or_create_run_id
 
 
@@ -17,6 +24,8 @@ EQUITY_SNAPSHOT_PATH = os.path.join(DATA_DIR, "portfolio_equity.csv")
 EQUITY_HISTORY_PATH = os.path.join(DATA_DIR, "portfolio_equity_history.csv")
 PERFORMANCE_SUMMARY_PATH = os.path.join(DATA_DIR, "performance_summary.csv")
 AGENT_NAME = "Portfolio Equity Agent"
+CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
+PORTFOLIO_EQUITY_HISTORY_FILE_SCHEMA = get_file_schema("portfolio_equity_history.csv")
 
 
 def utc_now_iso() -> str:
@@ -29,57 +38,15 @@ def read_csv_required(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def normalise_state_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    aliases = {
-        "average_entry_price": "entry_price",
-        "current_qty": "quantity",
-    }
-
-    for old_col, new_col in aliases.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
-
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-        "closed_at",
-        "exit_price",
-    ]
-
-    for col in required_columns:
-        if col not in df.columns:
-            if col in {"market_value", "pnl_abs", "pnl_pct", "realised_pnl_abs", "fees_total"}:
-                df[col] = 0.0
-            else:
-                df[col] = pd.NA
-
-    return df
-
-
 def ensure_cash_state() -> pd.DataFrame:
     if os.path.exists(CASH_STATE_PATH):
-        return pd.read_csv(CASH_STATE_PATH)
+        return validate_cash_state(pd.read_csv(CASH_STATE_PATH), keep_extra_columns=False)
 
     df = pd.DataFrame(
-        [{"as_of": utc_now_iso(), "cash_balance": 100000.0}]
+        [{"as_of": utc_now_iso(), "cash_balance": 100000.0}],
+        columns=CASH_STATE_SCHEMA.canonical_column_order,
     )
+    df = validate_cash_state(df, keep_extra_columns=False)
     df.to_csv(CASH_STATE_PATH, index=False)
     return df
 
@@ -88,15 +55,12 @@ def emit_portfolio_equity_snapshot_event(run_id: str, snapshot_row: pd.Series) -
     """
     Append one event-log row for a portfolio equity snapshot.
     """
-    append_event(
+    append_equity_snapshot_recorded_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="portfolio_equity_snapshot",
-        entity_type="portfolio",
-        entity_id="portfolio_equity",
         severity="info",
         message="Portfolio equity snapshot generated",
-        metadata={
+        details={
             "timestamp": snapshot_row.get("timestamp"),
             "cash_balance": snapshot_row.get("cash_balance"),
             "open_market_value": snapshot_row.get("open_market_value"),
@@ -179,7 +143,7 @@ def run_portfolio_equity_agent() -> None:
     run_id = get_or_create_run_id()
 
     state_df = read_csv_required(STATE_PATH)
-    state_df = normalise_state_columns(state_df)
+    state_df = validate_portfolio_state(state_df)
 
     cash_state_df = ensure_cash_state()
 
@@ -210,7 +174,8 @@ def run_portfolio_equity_agent() -> None:
                 "open_positions": len(active_df),
                 "closed_positions": len(closed_df),
             }
-        ]
+        ],
+        columns=PORTFOLIO_EQUITY_HISTORY_FILE_SCHEMA.canonical_column_order[:11],
     )
 
     if os.path.exists(EQUITY_HISTORY_PATH):
@@ -220,8 +185,10 @@ def run_portfolio_equity_agent() -> None:
         history_df = snapshot.copy()
 
     history_df = apply_drawdown_metrics(history_df)
+    history_df = validate_portfolio_equity_history(history_df, keep_extra_columns=False)
     snapshot = history_df.tail(1).copy()
     performance_summary_df = build_performance_summary(history_df)
+    performance_summary_df = validate_performance_summary(performance_summary_df, keep_extra_columns=False)
 
     snapshot.to_csv(EQUITY_SNAPSHOT_PATH, index=False)
     history_df.to_csv(EQUITY_HISTORY_PATH, index=False)

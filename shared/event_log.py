@@ -8,27 +8,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from shared.schema_registry import get_file_schema
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 EVENT_LOG_PATH = DATA_DIR / "event_log.csv"
-
-EVENT_LOG_COLUMNS = [
-    "event_id",
-    "run_id",
-    "event_time",
-    "agent_name",
-    "event_type",
-    "entity_type",
-    "entity_id",
-    "ticker",
-    "position_id",
-    "order_id",
-    "severity",
-    "message",
-    "before_json",
-    "after_json",
-    "metadata_json",
-]
+EVENT_LOG_SCHEMA = get_file_schema("event_log.csv")
+EVENT_LOG_COLUMNS = EVENT_LOG_SCHEMA.canonical_column_order
+TARGET_EVENT_TYPES = {
+    "fill_processed",
+    "position_opened",
+    "position_closed",
+    "cash_adjusted",
+    "exit_decision_generated",
+    "equity_snapshot_recorded",
+    "validation_passed",
+    "validation_failed",
+    "run_started",
+    "run_completed",
+    "run_failed",
+}
 
 
 def _utc_now_iso() -> str:
@@ -65,11 +64,58 @@ def _json_dumps(value: Optional[Dict[str, Any]]) -> str:
     )
 
 
+def _merge_metadata(base: Optional[Dict[str, Any]], extra: Optional[Dict[str, Any]]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if base:
+        merged.update(base)
+    if extra:
+        merged.update(extra)
+    return merged
+
+
+def _build_metadata_envelope(
+    *,
+    entity_type: str,
+    entity_id: str,
+    ticker: str = "",
+    position_id: str = "",
+    order_id: str = "",
+    details: Optional[Dict[str, Any]] = None,
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "schema_version": "1.0",
+        "entity": {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+        },
+        "details": details or {},
+    }
+
+    refs = {}
+    if str(ticker).strip():
+        refs["ticker"] = str(ticker).strip()
+    if str(position_id).strip():
+        refs["position_id"] = str(position_id).strip()
+    if str(order_id).strip():
+        refs["order_id"] = str(order_id).strip()
+    if refs:
+        envelope["refs"] = refs
+
+    if before_state is not None:
+        envelope["before_state"] = before_state
+    if after_state is not None:
+        envelope["after_state"] = after_state
+
+    return envelope
+
+
 def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _ensure_event_log_exists() -> None:
+def ensure_event_log_exists() -> None:
     _ensure_data_dir()
     if not EVENT_LOG_PATH.exists():
         with EVENT_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
@@ -102,7 +148,7 @@ def append_event(
     """
     Append one immutable event row to the event log.
     """
-    _ensure_event_log_exists()
+    ensure_event_log_exists()
 
     event_id = _build_event_id(
         run_id=run_id,
@@ -136,6 +182,54 @@ def append_event(
     return event_id
 
 
+def append_standard_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    event_type: str,
+    entity_type: str,
+    entity_id: str,
+    severity: str = "info",
+    message: str = "",
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    position_id: str = "",
+    order_id: str = "",
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    if event_type not in TARGET_EVENT_TYPES:
+        raise ValueError(f"Unsupported event taxonomy value: {event_type}")
+
+    metadata_envelope = _build_metadata_envelope(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        ticker=ticker,
+        position_id=position_id,
+        order_id=order_id,
+        details=_merge_metadata(details, metadata),
+        before_state=before_state,
+        after_state=after_state,
+    )
+
+    return append_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type=event_type,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        ticker=ticker,
+        position_id=position_id,
+        order_id=order_id,
+        severity=severity,
+        message=message,
+        before_state=before_state,
+        after_state=after_state,
+        metadata=metadata_envelope,
+    )
+
+
 def append_validation_event(
     *,
     run_id: str,
@@ -144,7 +238,7 @@ def append_validation_event(
     message: str,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
-    return append_event(
+    return append_standard_event(
         run_id=run_id,
         agent_name=agent_name,
         event_type="validation_passed" if passed else "validation_failed",
@@ -152,7 +246,7 @@ def append_validation_event(
         entity_id="portfolio_state",
         severity="info" if passed else "error",
         message=message,
-        metadata=metadata or {},
+        details=metadata or {},
     )
 
 
@@ -172,7 +266,7 @@ def append_state_change_event(
     message: str = "",
     metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
-    return append_event(
+    return append_standard_event(
         run_id=run_id,
         agent_name=agent_name,
         event_type=event_type,
@@ -185,5 +279,179 @@ def append_state_change_event(
         message=message,
         before_state=before_state,
         after_state=after_state,
-        metadata=metadata or {},
+        details=metadata or {},
+    )
+
+
+def append_fill_processed_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    fill_id: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    position_id: str = "",
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="fill_processed",
+        entity_type="fill",
+        entity_id=fill_id,
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+    )
+
+
+def append_position_opened_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    position_id: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="position_opened",
+        entity_type="position",
+        entity_id=position_id,
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+        before_state=before_state,
+        after_state=after_state,
+    )
+
+
+def append_position_closed_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    position_id: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="position_closed",
+        entity_type="position",
+        entity_id=position_id,
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+        before_state=before_state,
+        after_state=after_state,
+    )
+
+
+def append_cash_adjusted_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    position_id: str = "",
+    before_state: Optional[Dict[str, Any]] = None,
+    after_state: Optional[Dict[str, Any]] = None,
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="cash_adjusted",
+        entity_type="cash",
+        entity_id="cash_state",
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+        before_state=before_state,
+        after_state=after_state,
+    )
+
+
+def append_exit_decision_generated_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    position_id: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    ticker: str = "",
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="exit_decision_generated",
+        entity_type="position",
+        entity_id=position_id,
+        severity=severity,
+        message=message,
+        details=details,
+        ticker=ticker,
+        position_id=position_id,
+    )
+
+
+def append_equity_snapshot_recorded_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    severity: str = "info",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="equity_snapshot_recorded",
+        entity_type="portfolio",
+        entity_id="portfolio_equity",
+        severity=severity,
+        message=message,
+        details=details,
+    )
+
+
+def append_run_lifecycle_event(
+    *,
+    run_id: str,
+    event_type: str,
+    message: str,
+    details: Optional[Dict[str, Any]] = None,
+    severity: str = "info",
+    agent_name: str = "Pipeline Runner",
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type=event_type,
+        entity_type="run",
+        entity_id=run_id,
+        severity=severity,
+        message=message,
+        details=details,
     )

@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from pandas.errors import EmptyDataError
 
-from agents.shared.event_log import append_event
+from agents.shared.event_log import append_exit_decision_generated_event
 from shared.run_context import get_or_create_run_id
 
 
@@ -321,17 +321,14 @@ def emit_exit_decision_event(run_id: str, decision: dict[str, Any]) -> None:
     """
     Append one event-log row for an Exit Agent decision.
     """
-    append_event(
+    append_exit_decision_generated_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="exit_decision_generated",
-        entity_type="position",
-        entity_id=str(decision.get("position_id", "")).strip() or "unknown_position",
+        position_id=str(decision.get("position_id", "")).strip() or "unknown_position",
         ticker=str(decision.get("ticker", "")).strip(),
-        position_id=str(decision.get("position_id", "")).strip(),
         severity="info",
         message=f"Exit decision generated: {decision.get('exit_action', '')}",
-        metadata={
+        details={
             "exit_action": decision.get("exit_action"),
             "reason": decision.get("reason"),
             "status": decision.get("status"),

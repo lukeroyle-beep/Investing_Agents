@@ -5,27 +5,13 @@ import json
 import sys
 from pathlib import Path
 
+from shared.schema_registry import get_file_schema
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 EVENT_LOG_PATH = DATA_DIR / "event_log.csv"
-
-REQUIRED_COLUMNS = [
-    "event_id",
-    "run_id",
-    "event_time",
-    "agent_name",
-    "event_type",
-    "entity_type",
-    "entity_id",
-    "ticker",
-    "position_id",
-    "order_id",
-    "severity",
-    "message",
-    "before_json",
-    "after_json",
-    "metadata_json",
-]
+EVENT_LOG_SCHEMA = get_file_schema("event_log.csv")
+REQUIRED_COLUMNS = EVENT_LOG_SCHEMA.required_columns
 
 
 def fail(message: str) -> None:

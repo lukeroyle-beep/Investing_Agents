@@ -5,6 +5,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Iterable
 
+from shared.event_log import append_run_lifecycle_event
+from shared.run_reconciliation import print_run_reconciliation_summary, write_run_reconciliation_summary
 from shared.run_context import get_or_create_run_id
 from shared.run_history import complete_run_record, fail_run_record, start_run_record
 
@@ -54,9 +56,25 @@ def run_pipeline(steps: Iterable[tuple[str, str]]) -> None:
         run_module(label, module_path)
 
 
+def emit_reconciliation_summary(run_id: str) -> None:
+    try:
+        row = write_run_reconciliation_summary(run_id)
+        print_run_reconciliation_summary(row)
+    except Exception as exc:
+        print("\nRun reconciliation summary could not be generated.")
+        print(f"Reason: {exc}")
+
+
 def main() -> None:
     run_id = get_or_create_run_id()
-    start_run_record(run_id=run_id, started_at=utc_now_iso())
+    started_at = utc_now_iso()
+    start_run_record(run_id=run_id, started_at=started_at)
+    append_run_lifecycle_event(
+        run_id=run_id,
+        event_type="run_started",
+        message="Pipeline run started",
+        details={"started_at": started_at},
+    )
 
     try:
         run_pipeline(PIPELINE_STEPS)
@@ -67,18 +85,39 @@ def main() -> None:
         if message.endswith(" failed."):
             failed_agent = message[:-8]
 
+        completed_at = utc_now_iso()
         fail_run_record(
             run_id=run_id,
-            completed_at=utc_now_iso(),
+            completed_at=completed_at,
             failed_agent=failed_agent,
             error_message=message,
         )
+        append_run_lifecycle_event(
+            run_id=run_id,
+            event_type="run_failed",
+            message="Pipeline run failed",
+            severity="error",
+            details={
+                "completed_at": completed_at,
+                "failed_agent": failed_agent,
+                "error_message": message,
+            },
+        )
+        emit_reconciliation_summary(run_id)
         raise
 
+    completed_at = utc_now_iso()
     complete_run_record(
         run_id=run_id,
-        completed_at=utc_now_iso(),
+        completed_at=completed_at,
     )
+    append_run_lifecycle_event(
+        run_id=run_id,
+        event_type="run_completed",
+        message="Pipeline run completed successfully",
+        details={"completed_at": completed_at},
+    )
+    emit_reconciliation_summary(run_id)
     print("\nPipeline completed successfully.")
 
 

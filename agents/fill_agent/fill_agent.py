@@ -9,10 +9,14 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import (
-    append_event,
-    append_state_change_event,
+    append_cash_adjusted_event,
+    append_fill_processed_event,
+    append_position_closed_event,
+    append_position_opened_event,
     ensure_event_log_exists,
 )
+from shared.schema_registry import get_file_schema
+from shared.schemas import validate_cash_ledger, validate_cash_state, validate_processed_fills
 
 
 DATA_DIR = "data"
@@ -25,6 +29,9 @@ CASH_LEDGER_PATH = os.path.join(DATA_DIR, "cash_ledger.csv")
 
 DEFAULT_STARTING_CASH = 100000.0
 AGENT_NAME = "Fill Agent"
+CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
+CASH_LEDGER_SCHEMA = get_file_schema("cash_ledger.csv")
+PROCESSED_FILLS_SCHEMA = get_file_schema("processed_fills.csv")
 
 
 def utc_now_iso() -> str:
@@ -84,29 +91,18 @@ def safe_read_csv_or_default(
 def ensure_cash_files() -> tuple[pd.DataFrame, pd.DataFrame]:
     cash_state_df = safe_read_csv_or_default(
         CASH_STATE_PATH,
-        columns=["as_of", "cash_balance"],
+        columns=CASH_STATE_SCHEMA.canonical_column_order,
         default_df=pd.DataFrame(
             [{"as_of": utc_now_iso(), "cash_balance": DEFAULT_STARTING_CASH}]
         ),
     )
+    cash_state_df = validate_cash_state(cash_state_df, keep_extra_columns=False)
 
     cash_ledger_df = safe_read_csv_or_default(
         CASH_LEDGER_PATH,
-        columns=[
-            "ledger_id",
-            "run_id",
-            "timestamp",
-            "event_type",
-            "position_id",
-            "ticker",
-            "side",
-            "action",
-            "amount",
-            "fees",
-            "cash_balance_after",
-            "notes",
-        ],
+        columns=CASH_LEDGER_SCHEMA.canonical_column_order,
     )
+    cash_ledger_df = validate_cash_ledger(cash_ledger_df, keep_extra_columns=False)
 
     return cash_state_df, cash_ledger_df
 
@@ -190,10 +186,11 @@ def ensure_state_file() -> pd.DataFrame:
 
 
 def ensure_processed_fills_file() -> pd.DataFrame:
-    return safe_read_csv_or_default(
+    df = safe_read_csv_or_default(
         PROCESSED_FILLS_PATH,
-        columns=["fill_id", "processed_at", "run_id"],
+        columns=PROCESSED_FILLS_SCHEMA.canonical_column_order,
     )
+    return validate_processed_fills(df, keep_extra_columns=False)
 
 
 def ensure_manual_fills_file() -> pd.DataFrame:
@@ -281,9 +278,11 @@ def serialise_row_state(row: pd.Series | dict) -> dict[str, object]:
 
 
 def write_cash_balance(balance: float) -> None:
-    pd.DataFrame(
+    cash_state_df = pd.DataFrame(
         [{"as_of": utc_now_iso(), "cash_balance": balance}]
-    ).to_csv(CASH_STATE_PATH, index=False)
+    )
+    cash_state_df = validate_cash_state(cash_state_df, keep_extra_columns=False)
+    cash_state_df.to_csv(CASH_STATE_PATH, index=False)
 
 
 def append_cash_ledger_row(
@@ -315,9 +314,11 @@ def append_cash_ledger_row(
                 "cash_balance_after": cash_balance_after,
                 "notes": notes,
             }
-        ]
+        ],
+        columns=CASH_LEDGER_SCHEMA.canonical_column_order,
     )
     out = pd.concat([ledger_df, new_row], ignore_index=True)
+    out = validate_cash_ledger(out, keep_extra_columns=False)
     out.to_csv(CASH_LEDGER_PATH, index=False)
     return out
 
@@ -409,18 +410,15 @@ def open_long_position(
         notes=f"Opened {quantity} shares at {fill_price}",
     )
 
-    append_state_change_event(
+    append_position_opened_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="position_opened",
-        entity_type="position",
-        entity_id=position_id,
-        ticker=ticker,
         position_id=position_id,
+        ticker=ticker,
         message=f"Opened long position for {ticker}",
         before_state={},
         after_state=position_after,
-        metadata={
+        details={
             "fill_id": str(row["fill_id"]),
             "action": "buy",
             "side": side,
@@ -429,18 +427,15 @@ def open_long_position(
             "fees": fees,
         },
     )
-    append_event(
+    append_cash_adjusted_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="cash_adjusted",
-        entity_type="cash",
-        entity_id="cash_state",
         ticker=ticker,
         position_id=position_id,
         message=f"Cash debited for opening {ticker}",
         before_state={"cash_balance": round(cash_balance_before, 2)},
         after_state={"cash_balance": round(cash_balance, 2)},
-        metadata={
+        details={
             "fill_id": str(row["fill_id"]),
             "action": "buy",
             "gross_cost": round(gross_cost, 2),
@@ -518,18 +513,15 @@ def close_long_position(
         notes=f"Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
     )
 
-    append_state_change_event(
+    append_position_closed_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="position_closed",
-        entity_type="position",
-        entity_id=str(position["position_id"]),
-        ticker=ticker,
         position_id=str(position["position_id"]),
+        ticker=ticker,
         message=f"Closed long position for {ticker}",
         before_state=position_before,
         after_state=position_after,
-        metadata={
+        details={
             "fill_id": str(row["fill_id"]),
             "action": "sell",
             "side": side,
@@ -539,18 +531,15 @@ def close_long_position(
             "realised_pnl_abs": round(realised_pnl, 2),
         },
     )
-    append_event(
+    append_cash_adjusted_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="cash_adjusted",
-        entity_type="cash",
-        entity_id="cash_state",
         ticker=ticker,
         position_id=str(position["position_id"]),
         message=f"Cash credited for closing {ticker}",
         before_state={"cash_balance": round(cash_balance_before, 2)},
         after_state={"cash_balance": round(cash_balance, 2)},
-        metadata={
+        details={
             "fill_id": str(row["fill_id"]),
             "action": "sell",
             "gross_proceeds": round(gross_proceeds, 2),
@@ -564,9 +553,11 @@ def close_long_position(
 
 def append_processed_fill(processed_df: pd.DataFrame, fill_id: str, run_id: str) -> pd.DataFrame:
     new_row = pd.DataFrame(
-        [{"fill_id": fill_id, "processed_at": utc_now_iso(), "run_id": run_id}]
+        [{"fill_id": fill_id, "processed_at": utc_now_iso(), "run_id": run_id}],
+        columns=PROCESSED_FILLS_SCHEMA.canonical_column_order,
     )
     out = pd.concat([processed_df, new_row], ignore_index=True)
+    out = validate_processed_fills(out, keep_extra_columns=False)
     out.to_csv(PROCESSED_FILLS_PATH, index=False)
     return out
 
@@ -625,15 +616,13 @@ def run_fill_agent() -> None:
 
         processed_df = append_processed_fill(processed_df, fill_id, run_id)
         processed_ids.add(fill_id)
-        append_event(
+        append_fill_processed_event(
             run_id=run_id,
             agent_name=AGENT_NAME,
-            event_type="fill_processed",
-            entity_type="fill",
-            entity_id=fill_id,
+            fill_id=fill_id,
             ticker=str(row["ticker"]).upper(),
             message=f"Processed fill {fill_id}",
-            metadata={
+            details={
                 "side": side,
                 "action": action,
                 "quantity": float(row["quantity"]),

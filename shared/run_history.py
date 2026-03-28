@@ -6,17 +6,11 @@ import pandas as pd
 
 from shared.io_utils import ensure_parent_dir
 from shared.paths import RUN_HISTORY_PATH
+from shared.schema_registry import get_file_schema
 
 
-RUN_HISTORY_COLUMNS = [
-    "run_id",
-    "started_at",
-    "completed_at",
-    "status",
-    "failed_agent",
-    "error_message",
-    "notes",
-]
+RUN_HISTORY_SCHEMA = get_file_schema("run_history.csv")
+RUN_HISTORY_COLUMNS = RUN_HISTORY_SCHEMA.canonical_column_order
 
 
 def ensure_run_history_file() -> Path:

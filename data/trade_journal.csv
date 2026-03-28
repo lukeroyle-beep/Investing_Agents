@@ -341,3 +341,7 @@ OKTA,Okta,risk_off,3,watch,approved,clear,RUN_20260323T115755Z,2026-03-23T11:59:
 PANW,Palo Alto Networks,risk_off,3,watch,approved,clear,RUN_20260323T115755Z,2026-03-23T11:59:02.219800+00:00,open,,,
 T,AT&T,risk_off,3,watch,approved,clear,RUN_20260323T115755Z,2026-03-23T11:59:02.219800+00:00,open,,,
 NET,Cloudflare,risk_off,3,watch,caution,overextended,RUN_20260323T115755Z,2026-03-23T11:59:02.219800+00:00,open,,,
+CVX,Chevron,risk_off,4,watch,approved,clear,RUN_20260328T113617Z,2026-03-28T11:37:36.856942+00:00,open,,,
+T,AT&T,risk_off,4,watch,approved,clear,RUN_20260328T113617Z,2026-03-28T11:37:36.856942+00:00,open,,,
+PFE,Pfizer,risk_off,3,watch,approved,clear,RUN_20260328T113617Z,2026-03-28T11:37:36.856942+00:00,open,,,
+XOM,Exxon Mobil,risk_off,5,actionable,caution,overextended,RUN_20260328T113617Z,2026-03-28T11:37:36.856942+00:00,open,,,

@@ -5,6 +5,13 @@ from typing import Any
 
 import pandas as pd
 
+from shared.schema_registry import (
+    DATETIME_TYPE_NAMES,
+    NUMERIC_TYPE_NAMES,
+    TEXT_TYPE_NAMES,
+    get_file_schema,
+)
+
 
 @dataclass(frozen=True)
 class SchemaSpec:
@@ -49,6 +56,33 @@ ALLOWED_REVIEW_STATUS_VALUES = {
     "filled",
     "closed",
 }
+
+
+def _schema_spec_from_registry(
+    *,
+    file_name: str,
+    name: str,
+    default_values: dict[str, Any] | None = None,
+    allowed_values: dict[str, set[str]] | None = None,
+    uppercase_columns: list[str] | None = None,
+    lowercase_columns: list[str] | None = None,
+) -> SchemaSpec:
+    entry = get_file_schema(file_name)
+
+    return SchemaSpec(
+        name=name,
+        required_columns=list(entry.required_columns),
+        optional_columns=list(entry.optional_columns),
+        numeric_columns=entry.columns_with_types(*NUMERIC_TYPE_NAMES),
+        text_columns=entry.columns_with_types(*TEXT_TYPE_NAMES),
+        datetime_columns=entry.columns_with_types(*DATETIME_TYPE_NAMES),
+        default_values=default_values or {},
+        allowed_values=allowed_values or {},
+        uppercase_columns=uppercase_columns or [],
+        lowercase_columns=lowercase_columns or [],
+        column_order=list(entry.canonical_column_order),
+        alias_columns=dict(entry.column_aliases),
+    )
 
 
 ADVISORY_TRADES_SCHEMA = SchemaSpec(
@@ -124,58 +158,9 @@ ADVISORY_TRADES_SCHEMA = SchemaSpec(
     ],
 )
 
-PORTFOLIO_STATE_SCHEMA = SchemaSpec(
+PORTFOLIO_STATE_SCHEMA = _schema_spec_from_registry(
+    file_name="portfolio_state.csv",
     name="portfolio_state",
-    required_columns=[
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "entry_date",
-        "entry_price",
-        "quantity",
-        "capital_allocated",
-        "stop_loss",
-        "take_profit",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "regime_at_entry",
-        "sector",
-        "signal_score",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-    ],
-    numeric_columns=[
-        "entry_price",
-        "quantity",
-        "capital_allocated",
-        "stop_loss",
-        "take_profit",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "signal_score",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
-    ],
-    text_columns=[
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "entry_date",
-        "regime_at_entry",
-        "sector",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-    ],
     uppercase_columns=["ticker"],
     lowercase_columns=["side", "status", "exit_reason"],
     allowed_values={
@@ -183,39 +168,10 @@ PORTFOLIO_STATE_SCHEMA = SchemaSpec(
         "status": ALLOWED_POSITION_STATUS_VALUES,
     },
     default_values={
+        "exit_flag": "",
         "exit_reason": "",
         "run_id": "",
     },
-    alias_columns={
-        "entry_price": ["average_entry_price"],
-        "pnl_abs": ["unrealised_pnl_abs"],
-        "pnl_pct": ["unrealised_pnl_pct"],
-        "last_updated": ["last_updated_at"],
-    },
-    column_order=[
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "entry_date",
-        "entry_price",
-        "quantity",
-        "capital_allocated",
-        "stop_loss",
-        "take_profit",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "regime_at_entry",
-        "sector",
-        "signal_score",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
-        "exit_reason",
-        "last_updated",
-        "run_id",
-    ],
 )
 
 PORTFOLIO_MONITOR_SCHEMA = SchemaSpec(
@@ -325,13 +281,40 @@ EXIT_ADVICE_SCHEMA = SchemaSpec(
 
 PROCESSED_FILLS_SCHEMA = SchemaSpec(
     name="processed_fills",
-    required_columns=["fill_id", "processed_at", "run_id"],
-    text_columns=["fill_id", "processed_at", "run_id"],
-    default_values={
-        "processed_at": "",
-        "run_id": "",
-    },
-    column_order=["fill_id", "processed_at", "run_id"],
+    required_columns=get_file_schema("processed_fills.csv").required_columns,
+    text_columns=get_file_schema("processed_fills.csv").columns_with_types(*TEXT_TYPE_NAMES),
+    default_values={"processed_at": "", "run_id": ""},
+    column_order=get_file_schema("processed_fills.csv").canonical_column_order,
+)
+
+CASH_STATE_SCHEMA = _schema_spec_from_registry(
+    file_name="cash_state.csv",
+    name="cash_state",
+)
+
+CASH_LEDGER_SCHEMA = _schema_spec_from_registry(
+    file_name="cash_ledger.csv",
+    name="cash_ledger",
+)
+
+PORTFOLIO_EQUITY_HISTORY_SCHEMA = _schema_spec_from_registry(
+    file_name="portfolio_equity_history.csv",
+    name="portfolio_equity_history",
+)
+
+PERFORMANCE_SUMMARY_SCHEMA = _schema_spec_from_registry(
+    file_name="performance_summary.csv",
+    name="performance_summary",
+)
+
+RUN_RECONCILIATION_SUMMARY_SCHEMA = _schema_spec_from_registry(
+    file_name="run_reconciliation_summary.csv",
+    name="run_reconciliation_summary",
+)
+
+EVENT_LOG_SCHEMA = _schema_spec_from_registry(
+    file_name="event_log.csv",
+    name="event_log",
 )
 
 TRADE_JOURNAL_SCHEMA = SchemaSpec(
@@ -545,3 +528,27 @@ def validate_processed_fills(df: pd.DataFrame, keep_extra_columns: bool = True) 
 
 def validate_trade_journal(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
     return normalise_to_schema(df, TRADE_JOURNAL_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_cash_state(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, CASH_STATE_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_cash_ledger(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, CASH_LEDGER_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_portfolio_equity_history(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, PORTFOLIO_EQUITY_HISTORY_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_performance_summary(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, PERFORMANCE_SUMMARY_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_run_reconciliation_summary(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, RUN_RECONCILIATION_SUMMARY_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_event_log(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, EVENT_LOG_SCHEMA, keep_extra_columns=keep_extra_columns)

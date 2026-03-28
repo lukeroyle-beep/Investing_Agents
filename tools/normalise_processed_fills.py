@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pandas as pd
-from pathlib import Path
 
 from shared.paths import PROCESSED_FILLS_PATH
+from shared.schema_registry import get_file_schema
+from shared.schemas import validate_processed_fills
 
-REQUIRED_COLUMNS = ["fill_id", "processed_at", "run_id"]
+PROCESSED_FILLS_SCHEMA = get_file_schema("processed_fills.csv")
+REQUIRED_COLUMNS = PROCESSED_FILLS_SCHEMA.canonical_column_order
 
 
 def main() -> None:
@@ -19,19 +21,7 @@ def main() -> None:
 
     df = pd.read_csv(path)
 
-    if "fill_id" not in df.columns:
-        df["fill_id"] = ""
-
-    if "processed_at" not in df.columns:
-        df["processed_at"] = ""
-
-    if "run_id" not in df.columns:
-        df["run_id"] = ""
-
-    df = df[REQUIRED_COLUMNS].copy()
-    df["fill_id"] = df["fill_id"].fillna("").astype(str).str.strip()
-    df["processed_at"] = df["processed_at"].fillna("").astype(str).str.strip()
-    df["run_id"] = df["run_id"].fillna("").astype(str).str.strip()
+    df = validate_processed_fills(df, keep_extra_columns=False)
 
     df = df[df["fill_id"] != ""].copy()
     df = df.drop_duplicates(subset=["fill_id"], keep="first")

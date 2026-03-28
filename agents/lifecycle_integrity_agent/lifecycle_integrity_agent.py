@@ -2,34 +2,31 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Dict, List
 
 import pandas as pd
 from pandas.errors import EmptyDataError
 
-from agents.shared.event_log import append_event
+from agents.shared.event_log import append_validation_event
+from shared.invariants import (
+    InvariantFailure,
+    InvariantResult,
+    build_invariant_context,
+    evaluate_all_invariants,
+)
+from shared.paths import DATA_DIR
 from shared.run_context import get_or_create_run_id
 
 
-DATA_DIR = "data"
-STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
-REPORT_PATH = os.path.join(DATA_DIR, "lifecycle_integrity_report.csv")
-SNAPSHOT_PATH = os.path.join(DATA_DIR, "portfolio_state_prev_snapshot.csv")
+STATE_PATH = str(DATA_DIR / "portfolio_state.csv")
+REPORT_PATH = str(DATA_DIR / "lifecycle_integrity_report.csv")
+SNAPSHOT_PATH = str(DATA_DIR / "portfolio_state_prev_snapshot.csv")
+CASH_STATE_PATH = str(DATA_DIR / "cash_state.csv")
+EQUITY_HISTORY_PATH = str(DATA_DIR / "portfolio_equity_history.csv")
+PROCESSED_FILLS_PATH = str(DATA_DIR / "processed_fills.csv")
+CASH_LEDGER_PATH = str(DATA_DIR / "cash_ledger.csv")
+RUN_HISTORY_PATH = str(DATA_DIR / "run_history.csv")
 AGENT_NAME = "Lifecycle Integrity Agent"
-
-VALID_STATUSES = {"open", "exit_required", "closed"}
-VALID_SIDES = {"long", "short"}
-
-IMMUTABLE_CLOSED_FIELDS = [
-    "status",
-    "quantity",
-    "entry_price",
-    "entry_date",
-    "closed_at",
-    "exit_price",
-    "realised_pnl_abs",
-    "fees_total",
-]
 
 
 def utc_now_iso() -> str:
@@ -55,355 +52,36 @@ def safe_read_csv(path: str, required: bool = True) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    aliases = {
-        "average_entry_price": "entry_price",
-        "current_qty": "quantity",
-    }
-
-    for old_col, new_col in aliases.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
-
-    required_columns = [
-        "position_id",
-        "ticker",
-        "side",
-        "status",
-        "quantity",
-        "entry_price",
-        "entry_date",
-        "current_price",
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-        "exit_flag",
-        "exit_reason",
-        "run_id",
-        "last_updated",
-        "closed_at",
-        "exit_price",
-        "highest_price_since_entry",
-        "lowest_price_since_entry",
-    ]
-
-    numeric_default_zero = {
-        "market_value",
-        "pnl_abs",
-        "pnl_pct",
-        "realised_pnl_abs",
-        "fees_total",
-    }
-
-    for col in required_columns:
-        if col not in df.columns:
-            if col in numeric_default_zero:
-                df[col] = 0.0
-            elif col == "exit_flag":
-                df[col] = False
-            elif col == "exit_reason":
-                df[col] = ""
-            else:
-                df[col] = pd.NA
-
-    df["exit_flag"] = df["exit_flag"].fillna(False)
-    df["exit_reason"] = df["exit_reason"].fillna("")
-
-    return df
-
-
 def append_issue(
     issues: List[Dict[str, Any]],
+    record_type: str,
     severity: str,
+    invariant_name: str | None,
     rule: str,
     position_id: str | None,
     ticker: str | None,
     detail: str,
+    total_checks: int | None = None,
+    passed_checks: int | None = None,
+    warning_count: int | None = None,
+    failure_count: int | None = None,
 ) -> None:
     issues.append(
         {
             "checked_at": utc_now_iso(),
+            "record_type": record_type,
             "severity": severity,
+            "invariant_name": invariant_name,
             "rule": rule,
             "position_id": position_id,
             "ticker": ticker,
             "detail": detail,
+            "total_checks": total_checks,
+            "passed_checks": passed_checks,
+            "warning_count": warning_count,
+            "failure_count": failure_count,
         }
     )
-
-
-def normalise_scalar(value: Any) -> Any:
-    if pd.isna(value):
-        return None
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, (int, float)):
-        return round(float(value), 10)
-
-    text = str(value).strip()
-    if text == "":
-        return None
-
-    return text
-
-
-def values_equal(a: Any, b: Any) -> bool:
-    return normalise_scalar(a) == normalise_scalar(b)
-
-
-def validate_state(df: pd.DataFrame) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-
-    # 1. Duplicate position_id
-    dup_position_ids = df[df["position_id"].duplicated(keep=False)]
-    for _, row in dup_position_ids.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="duplicate_position_id",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="position_id appears more than once in portfolio_state.csv",
-        )
-
-    # 2. Invalid status
-    invalid_status_rows = df[~df["status"].isin(VALID_STATUSES)]
-    for _, row in invalid_status_rows.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="invalid_status",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail=f"Invalid status: {row.get('status')}",
-        )
-
-    # 3. Invalid side
-    invalid_side_rows = df[~df["side"].isin(VALID_SIDES)]
-    for _, row in invalid_side_rows.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="invalid_side",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail=f"Invalid side: {row.get('side')}",
-        )
-
-    # 4. Active positions must have valid quantity and entry_price
-    active_rows = df[df["status"].isin(["open", "exit_required"])].copy()
-
-    active_qty = pd.to_numeric(active_rows["quantity"], errors="coerce")
-    invalid_qty_rows = active_rows[active_qty.isna() | (active_qty <= 0)]
-    for _, row in invalid_qty_rows.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="invalid_active_quantity",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Active position has missing or non-positive quantity",
-        )
-
-    active_entry = pd.to_numeric(active_rows["entry_price"], errors="coerce")
-    invalid_entry_rows = active_rows[active_entry.isna() | (active_entry <= 0)]
-    for _, row in invalid_entry_rows.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="invalid_active_entry_price",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Active position has missing or non-positive entry_price",
-        )
-
-    # 5. exit_flag must align with status
-    for _, row in df.iterrows():
-        status = row.get("status")
-        raw_exit_flag = row.get("exit_flag")
-
-        if pd.isna(raw_exit_flag):
-            exit_flag = ""
-        elif isinstance(raw_exit_flag, bool):
-            exit_flag = str(raw_exit_flag).lower()
-        else:
-            exit_flag = str(raw_exit_flag).strip().lower()
-
-        if status == "open" and exit_flag == "true":
-            append_issue(
-                issues,
-                severity="critical",
-                rule="exit_flag_status_mismatch",
-                position_id=str(row.get("position_id")),
-                ticker=str(row.get("ticker")),
-                detail="status=open but exit_flag=true",
-            )
-
-        if status == "exit_required" and exit_flag != "true":
-            append_issue(
-                issues,
-                severity="critical",
-                rule="exit_flag_status_mismatch",
-                position_id=str(row.get("position_id")),
-                ticker=str(row.get("ticker")),
-                detail="status=exit_required but exit_flag is not true",
-            )
-
-        if status == "closed" and exit_flag == "true":
-            append_issue(
-                issues,
-                severity="critical",
-                rule="exit_flag_status_mismatch",
-                position_id=str(row.get("position_id")),
-                ticker=str(row.get("ticker")),
-                detail="status=closed but exit_flag=true",
-            )
-
-    # 6. Closed positions must have exit_price and closed_at
-    closed_rows = df[df["status"] == "closed"].copy()
-
-    closed_exit_price = pd.to_numeric(closed_rows["exit_price"], errors="coerce")
-    invalid_closed_exit_price = closed_rows[closed_exit_price.isna() | (closed_exit_price <= 0)]
-    for _, row in invalid_closed_exit_price.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="closed_missing_exit_price",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Closed position missing valid exit_price",
-        )
-
-    invalid_closed_at = closed_rows[closed_rows["closed_at"].isna()]
-    for _, row in invalid_closed_at.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="closed_missing_closed_at",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Closed position missing closed_at timestamp",
-        )
-
-    # 7. Closed positions must have zero market value
-    closed_market_value = pd.to_numeric(closed_rows["market_value"], errors="coerce").fillna(0.0)
-    invalid_closed_market_value = closed_rows[closed_market_value != 0.0]
-    for _, row in invalid_closed_market_value.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="closed_nonzero_market_value",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Closed position has non-zero market_value",
-        )
-
-    # 8. Closed positions must retain valid quantity
-    closed_quantity = pd.to_numeric(closed_rows["quantity"], errors="coerce")
-    invalid_closed_quantity = closed_rows[closed_quantity.isna() | (closed_quantity <= 0)]
-    for _, row in invalid_closed_quantity.iterrows():
-        append_issue(
-            issues,
-            severity="critical",
-            rule="closed_invalid_quantity",
-            position_id=str(row.get("position_id")),
-            ticker=str(row.get("ticker")),
-            detail="Closed position has missing or non-positive quantity",
-        )
-
-    # 9. No duplicate active positions for same ticker and side
-    active_dupes = (
-        active_rows.groupby(["ticker", "side"])
-        .size()
-        .reset_index(name="count")
-    )
-    active_dupes = active_dupes[active_dupes["count"] > 1]
-
-    for _, dup in active_dupes.iterrows():
-        dup_rows = active_rows[
-            (active_rows["ticker"] == dup["ticker"]) &
-            (active_rows["side"] == dup["side"])
-        ]
-        for _, row in dup_rows.iterrows():
-            append_issue(
-                issues,
-                severity="critical",
-                rule="duplicate_active_ticker_side",
-                position_id=str(row.get("position_id")),
-                ticker=str(row.get("ticker")),
-                detail=f"More than one active position for ticker={dup['ticker']} side={dup['side']}",
-            )
-
-    return issues
-
-
-def validate_closed_position_immutability(
-    current_df: pd.DataFrame,
-    previous_df: pd.DataFrame,
-) -> List[Dict[str, Any]]:
-    issues: List[Dict[str, Any]] = []
-
-    if previous_df.empty:
-        return issues
-
-    prev_closed = previous_df[previous_df["status"] == "closed"].copy()
-    curr_by_id = current_df.set_index("position_id", drop=False)
-
-    if prev_closed.empty:
-        return issues
-
-    for _, prev_row in prev_closed.iterrows():
-        position_id = str(prev_row["position_id"])
-
-        if position_id not in curr_by_id.index:
-            append_issue(
-                issues,
-                severity="critical",
-                rule="closed_position_missing_in_current_state",
-                position_id=position_id,
-                ticker=str(prev_row.get("ticker")),
-                detail="Previously closed position is missing from current portfolio_state.csv",
-            )
-            continue
-
-        curr_row = curr_by_id.loc[position_id]
-
-        # If duplicate index somehow returns DataFrame, treat as critical corruption
-        if isinstance(curr_row, pd.DataFrame):
-            append_issue(
-                issues,
-                severity="critical",
-                rule="duplicate_position_id_on_snapshot_compare",
-                position_id=position_id,
-                ticker=str(prev_row.get("ticker")),
-                detail="Snapshot comparison found duplicate position_id in current state",
-            )
-            continue
-
-        for field in IMMUTABLE_CLOSED_FIELDS:
-            prev_value = prev_row.get(field)
-            curr_value = curr_row.get(field)
-
-            if not values_equal(prev_value, curr_value):
-                append_issue(
-                    issues,
-                    severity="critical",
-                    rule="closed_position_field_mutated",
-                    position_id=position_id,
-                    ticker=str(curr_row.get("ticker")),
-                    detail=(
-                        f"Closed position immutable field changed: {field}. "
-                        f"previous={normalise_scalar(prev_value)} current={normalise_scalar(curr_value)}"
-                    ),
-                )
-
-    return issues
 
 
 def write_report(issues: List[Dict[str, Any]]) -> None:
@@ -414,11 +92,17 @@ def write_report(issues: List[Dict[str, Any]]) -> None:
             [
                 {
                     "checked_at": utc_now_iso(),
+                    "record_type": "summary",
                     "severity": "info",
+                    "invariant_name": None,
                     "rule": "no_issues",
                     "position_id": None,
                     "ticker": None,
                     "detail": "No lifecycle integrity issues detected",
+                    "total_checks": 0,
+                    "passed_checks": 0,
+                    "warning_count": 0,
+                    "failure_count": 0,
                 }
             ]
         )
@@ -435,6 +119,8 @@ def emit_validation_summary_event(
     run_id: str,
     issues: List[Dict[str, Any]],
     critical_count: int,
+    warning_count: int,
+    passed_count: int,
     passed: bool,
 ) -> None:
     """
@@ -449,13 +135,10 @@ def emit_validation_summary_event(
         }
     )
 
-    append_event(
+    append_validation_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
-        event_type="validation_passed" if passed else "validation_failed",
-        entity_type="system",
-        entity_id="portfolio_state",
-        severity="info" if passed else "error",
+        passed=passed,
         message=(
             "Lifecycle Integrity validation passed"
             if passed
@@ -464,6 +147,8 @@ def emit_validation_summary_event(
         metadata={
             "validation_stage": "final_summary",
             "total_issue_count": len(issues),
+            "passed_check_count": passed_count,
+            "warning_check_count": warning_count,
             "critical_issue_count": critical_count,
             "report_path": REPORT_PATH,
             "affected_position_ids": affected_position_ids,
@@ -471,26 +156,124 @@ def emit_validation_summary_event(
     )
 
 
+def _failures_to_issue_rows(failures: list[InvariantFailure]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+
+    for failure in failures:
+        append_issue(
+            issues=issues,
+            record_type="detail",
+            severity=failure.severity,
+            invariant_name=failure.invariant_name,
+            rule=failure.invariant_name,
+            position_id=failure.position_id,
+            ticker=failure.ticker,
+            detail=failure.message,
+        )
+
+    return issues
+
+
+def _build_report_rows(results: list[InvariantResult]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    total_checks = len(results)
+    passed_checks = sum(1 for result in results if result.passed)
+    warning_count = sum(1 for result in results if result.has_warning and not result.has_hard_failure)
+    failure_count = sum(1 for result in results if result.has_hard_failure)
+
+    append_issue(
+        issues=issues,
+        record_type="summary",
+        severity="info" if failure_count == 0 else "error",
+        invariant_name=None,
+        rule="summary",
+        position_id=None,
+        ticker=None,
+        detail=(
+            "Lifecycle Integrity summary: "
+            f"passed_checks={passed_checks}, warnings={warning_count}, failures={failure_count}"
+        ),
+        total_checks=total_checks,
+        passed_checks=passed_checks,
+        warning_count=warning_count,
+        failure_count=failure_count,
+    )
+
+    for result in results:
+        if result.passed:
+            append_issue(
+                issues=issues,
+                record_type="check",
+                severity="info",
+                invariant_name=result.invariant_name,
+                rule=result.invariant_name,
+                position_id=None,
+                ticker=None,
+                detail="Invariant passed.",
+            )
+            continue
+
+        if result.has_warning and not result.has_hard_failure:
+            append_issue(
+                issues=issues,
+                record_type="check",
+                severity="warning",
+                invariant_name=result.invariant_name,
+                rule=result.invariant_name,
+                position_id=None,
+                ticker=None,
+                detail="Invariant produced warnings.",
+            )
+        else:
+            append_issue(
+                issues=issues,
+                record_type="check",
+                severity="critical",
+                invariant_name=result.invariant_name,
+                rule=result.invariant_name,
+                position_id=None,
+                ticker=None,
+                detail="Invariant failed.",
+            )
+
+    issues.extend(_failures_to_issue_rows([failure for result in results for failure in result.failures]))
+    return issues
+
+
 def run_lifecycle_integrity_agent() -> None:
     run_id = get_or_create_run_id()
     current_df = safe_read_csv(STATE_PATH, required=True)
-    current_df = normalise_columns(current_df)
-
     previous_df = safe_read_csv(SNAPSHOT_PATH, required=False)
-    if not previous_df.empty:
-        previous_df = normalise_columns(previous_df)
+    cash_state_df = safe_read_csv(CASH_STATE_PATH, required=False)
+    equity_history_df = safe_read_csv(EQUITY_HISTORY_PATH, required=False)
+    processed_fills_df = safe_read_csv(PROCESSED_FILLS_PATH, required=False)
+    cash_ledger_df = safe_read_csv(CASH_LEDGER_PATH, required=False)
+    run_history_df = safe_read_csv(RUN_HISTORY_PATH, required=False)
 
-    issues = []
-    issues.extend(validate_state(current_df))
-    issues.extend(validate_closed_position_immutability(current_df, previous_df))
+    invariant_context = build_invariant_context(
+        current_state=current_df,
+        previous_state=previous_df,
+        cash_state=cash_state_df,
+        equity_history=equity_history_df,
+        processed_fills=processed_fills_df,
+        cash_ledger=cash_ledger_df,
+        run_history=run_history_df,
+    )
+    current_df = invariant_context.current_state
+    results = evaluate_all_invariants(invariant_context)
+    issues = _build_report_rows(results)
 
     write_report(issues)
 
-    critical_count = sum(1 for issue in issues if issue["severity"] == "critical")
+    critical_count = sum(1 for result in results if result.has_hard_failure)
+    warning_count = sum(1 for result in results if result.has_warning and not result.has_hard_failure)
+    passed_count = sum(1 for result in results if result.passed)
 
     print("Lifecycle Integrity Agent finished.")
     print(f"Saved integrity report to: {REPORT_PATH}")
     print(f"Saved prior-state snapshot to: {SNAPSHOT_PATH}")
+    print(f"Passed checks: {passed_count}")
+    print(f"Warnings found: {warning_count}")
     print(f"Critical issues found: {critical_count}")
 
     if critical_count > 0:
@@ -498,6 +281,8 @@ def run_lifecycle_integrity_agent() -> None:
             run_id=run_id,
             issues=issues,
             critical_count=critical_count,
+            warning_count=warning_count,
+            passed_count=passed_count,
             passed=False,
         )
         raise RuntimeError(
@@ -510,6 +295,8 @@ def run_lifecycle_integrity_agent() -> None:
         run_id=run_id,
         issues=issues,
         critical_count=critical_count,
+        warning_count=warning_count,
+        passed_count=passed_count,
         passed=True,
     )
     write_snapshot(current_df)
