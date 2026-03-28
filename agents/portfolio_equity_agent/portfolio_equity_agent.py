@@ -21,7 +21,6 @@ DATA_DIR = "data"
 
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
-EQUITY_SNAPSHOT_PATH = os.path.join(DATA_DIR, "portfolio_equity.csv")
 EQUITY_HISTORY_PATH = os.path.join(DATA_DIR, "portfolio_equity_history.csv")
 PERFORMANCE_SUMMARY_PATH = os.path.join(DATA_DIR, "performance_summary.csv")
 AGENT_NAME = "Portfolio Equity Agent"
@@ -191,13 +190,11 @@ def run_portfolio_equity_agent() -> None:
     performance_summary_df = build_performance_summary(history_df)
     performance_summary_df = validate_performance_summary(performance_summary_df, keep_extra_columns=False)
 
-    snapshot.to_csv(EQUITY_SNAPSHOT_PATH, index=False)
     history_df.to_csv(EQUITY_HISTORY_PATH, index=False)
     performance_summary_df.to_csv(PERFORMANCE_SUMMARY_PATH, index=False)
     emit_portfolio_equity_snapshot_event(run_id=run_id, snapshot_row=snapshot.iloc[0])
 
     print("Portfolio Equity Agent finished.")
-    print(f"Saved equity snapshot to: {EQUITY_SNAPSHOT_PATH}")
     print(f"Saved equity history to: {EQUITY_HISTORY_PATH}")
     print(f"Saved performance summary to: {PERFORMANCE_SUMMARY_PATH}")
     print("")

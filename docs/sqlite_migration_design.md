@@ -20,7 +20,6 @@ These represent the latest canonical or near-canonical state.
 
 - `data/portfolio_state.csv`
 - `data/cash_state.csv`
-- `data/portfolio_equity.csv`
 
 ### Append-only ledger files
 These record economic or processing history and should remain append-only in database form.
@@ -47,6 +46,9 @@ These are reproducible from stronger sources and should be treated as derived ta
 - `data/lifecycle_integrity_report.csv`
 - `data/exit_advice.csv`
 - `data/position_alerts.csv`
+
+Note:
+- `data/portfolio_equity.csv` is a retired legacy snapshot and should be replaced by the latest row of `data/portfolio_equity_history.csv` plus `data/performance_summary.csv`.
 
 ### Input / staging files that likely remain external for a while
 These are not good first candidates for authoritative DB ownership.
@@ -109,15 +111,6 @@ Suggested columns:
 
 Constraint:
 - single-row table enforced by fixed `state_id = 1`
-
-### `portfolio_equity_snapshot`
-Purpose: latest one-row snapshot, replacing `portfolio_equity.csv`.
-
-Suggested columns:
-- same fields as latest row of `portfolio_equity_history`
-- optional fixed key `snapshot_id INTEGER PRIMARY KEY CHECK (snapshot_id = 1)`
-
-This can also be omitted if the latest history row is always queried instead.
 
 ## 2. Append-Only Ledger Tables
 
@@ -329,7 +322,6 @@ Portfolio Equity Agent transaction:
 - read canonical current state
 - compute snapshot
 - insert into `portfolio_equity_history`
-- refresh latest `portfolio_equity_snapshot` or equivalent
 - refresh `performance_summary`
 - append `equity_snapshot_recorded` event
 

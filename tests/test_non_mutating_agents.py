@@ -26,6 +26,7 @@ def test_portfolio_equity_agent_does_not_mutate_state_inputs(isolated_workspace,
     data_dir = isolated_workspace / "data"
     portfolio_state_path = data_dir / "portfolio_state.csv"
     cash_state_path = data_dir / "cash_state.csv"
+    equity_snapshot_path = data_dir / "portfolio_equity.csv"
 
     monkeypatch.setattr(portfolio_equity_agent, "get_or_create_run_id", lambda: "RUN_EQUITY_TEST")
 
@@ -44,3 +45,4 @@ def test_portfolio_equity_agent_does_not_mutate_state_inputs(isolated_workspace,
     assert cash_before == cash_after
     assert (data_dir / "portfolio_equity_history.csv").exists()
     assert (data_dir / "performance_summary.csv").exists()
+    assert not equity_snapshot_path.exists()
