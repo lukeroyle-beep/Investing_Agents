@@ -4,6 +4,7 @@ import pandas as pd
 from pandas.testing import assert_frame_equal
 
 import shared.event_log as shared_event_log
+from shared.paths import data_path
 from agents.fill_agent import fill_agent
 
 
@@ -116,3 +117,7 @@ def test_event_log_appends_without_rewriting_existing_rows(isolated_workspace) -
         second_df.head(1).reset_index(drop=True),
         check_dtype=False,
     )
+
+
+def test_event_log_default_path_matches_shared_data_dir() -> None:
+    assert shared_event_log.EVENT_LOG_PATH == data_path("event_log.csv")

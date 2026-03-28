@@ -5,15 +5,13 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, Optional
 
+from shared.paths import DATA_DIR, data_path
 from shared.sqlite_sidecar import append_event_log_row
 from shared.schema_registry import get_file_schema
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
-EVENT_LOG_PATH = DATA_DIR / "event_log.csv"
+EVENT_LOG_PATH = data_path("event_log.csv")
 EVENT_LOG_SCHEMA = get_file_schema("event_log.csv")
 EVENT_LOG_COLUMNS = EVENT_LOG_SCHEMA.canonical_column_order
 TARGET_EVENT_TYPES = {

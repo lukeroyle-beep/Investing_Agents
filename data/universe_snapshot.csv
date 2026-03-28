@@ -1,92 +1,92 @@
 ticker,name,latest_close,ma20,ma50,return_20d_pct,return_60d_pct,volatility_20d_pct,above_ma20,above_ma50,ma20_above_ma50,positive_20d_return,positive_60d_return,acceptable_volatility,score,lead_status,checked_at
-CSCO,Cisco,79.92,79.08,78.94,0.58,3.79,1.63,True,True,True,True,True,True,6,pass,2026-03-28T14:28:59.905342+00:00
-CVX,Chevron,211.15,196.91,184.48,13.06,39.99,1.28,True,True,True,True,True,True,6,pass,2026-03-28T14:29:10.819198+00:00
-T,AT&T,29.1,28.21,27.11,3.89,18.67,1.46,True,True,True,True,True,True,6,pass,2026-03-28T14:29:14.972138+00:00
-XOM,Exxon Mobil,170.99,156.76,148.55,12.12,42.27,1.4,True,True,True,True,True,True,6,pass,2026-03-28T14:29:10.440748+00:00
-ARM,Arm Holdings,144.13,128.09,122.07,13.09,30.01,4.9,True,True,True,True,True,False,5,pass,2026-03-28T14:29:24.457901+00:00
-NET,Cloudflare,203.02,206.3,190.08,17.9,1.7,3.07,False,True,True,True,True,True,5,pass,2026-03-28T14:29:25.379251+00:00
-PFE,Pfizer,27.04,27.01,26.76,-2.21,10.02,1.4,True,True,True,False,True,True,5,pass,2026-03-28T14:29:09.394032+00:00
-VZ,Verizon,50.31,50.58,47.31,0.34,25.76,0.97,False,True,True,True,True,True,5,pass,2026-03-28T14:29:15.310542+00:00
-JNJ,Johnson & Johnson,240.45,240.77,236.27,-3.21,16.83,0.95,False,True,True,False,True,True,4,watch,2026-03-28T14:29:08.980417+00:00
-AMAT,Applied Materials,337.17,350.52,344.13,-9.44,29.86,3.39,False,False,True,False,True,True,3,watch,2026-03-28T14:29:00.978217+00:00
-AMD,Advanced Micro Devices,201.99,200.92,213.92,0.89,-6.2,3.54,True,False,False,True,False,True,3,watch,2026-03-28T14:28:57.361001+00:00
-COST,Costco,983.86,990.37,985.21,-2.66,13.81,0.95,False,False,True,False,True,True,3,watch,2026-03-28T14:29:16.428896+00:00
-DDOG,Datadog,114.48,123.79,122.44,2.25,-16.73,3.4,False,False,True,True,False,True,3,watch,2026-03-28T14:29:25.076599+00:00
-DE,Deere,566.64,585.86,578.19,-10.02,20.99,1.47,False,False,True,False,True,True,3,watch,2026-03-28T14:29:11.582994+00:00
-HON,Honeywell,223.12,233.11,232.2,-8.4,14.19,1.49,False,False,True,False,True,True,3,watch,2026-03-28T14:29:12.797378+00:00
-KO,Coca-Cola,75.71,76.61,76.26,-6.53,8.79,0.95,False,False,True,False,True,True,3,watch,2026-03-28T14:29:15.689033+00:00
-LMT,Lockheed Martin,615.84,644.1,630.09,-5.93,26.86,1.55,False,False,True,False,True,True,3,watch,2026-03-28T14:29:13.164453+00:00
-NFLX,Netflix,93.43,95.13,87.47,-2.92,-0.37,1.35,False,True,True,False,False,True,3,watch,2026-03-28T14:28:57.663868+00:00
-NOC,Northrop Grumman,679.0,724.65,705.28,-6.26,18.55,1.98,False,False,True,False,True,True,3,watch,2026-03-28T14:29:13.554278+00:00
-PLTR,Palantir,143.06,152.36,148.97,4.28,-20.89,3.14,False,False,True,True,False,True,3,watch,2026-03-28T14:29:02.335962+00:00
-RTX,RTX,189.71,202.52,200.37,-6.37,3.44,1.82,False,False,True,False,True,True,3,watch,2026-03-28T14:29:13.921749+00:00
-SBUX,Starbucks,86.81,96.13,95.73,-11.44,2.49,2.12,False,False,True,False,True,True,3,watch,2026-03-28T14:29:18.210888+00:00
-ZM,Zoom Communications,77.71,76.37,83.68,5.1,-9.95,1.96,True,False,False,True,False,True,3,watch,2026-03-28T14:29:23.532261+00:00
-ABNB,Airbnb,122.87,131.19,129.01,-9.06,-10.25,2.25,False,False,True,False,False,True,2,watch,2026-03-28T14:29:19.193762+00:00
-CAT,Caterpillar,695.4,705.91,706.11,-6.39,20.72,2.12,False,False,False,False,True,True,2,watch,2026-03-28T14:29:11.196459+00:00
-CMCSA,Comcast,28.33,30.07,30.25,-8.49,2.04,1.74,False,False,False,False,True,True,2,watch,2026-03-28T14:29:14.625522+00:00
-DAL,Delta Air Lines,64.83,62.91,66.7,-1.32,-6.25,2.81,True,False,False,False,False,True,2,watch,2026-03-28T14:29:20.214160+00:00
-DOCU,DocuSign,45.71,47.36,48.58,1.42,-33.83,2.43,False,False,False,True,False,True,2,watch,2026-03-28T14:29:23.194007+00:00
-MAR,Marriott International,317.54,325.38,330.29,-7.08,1.34,1.77,False,False,False,False,True,True,2,watch,2026-03-28T14:29:19.522617+00:00
-MCD,McDonald's,305.9,320.83,320.16,-9.81,-0.14,1.04,False,False,True,False,False,True,2,watch,2026-03-28T14:29:17.903111+00:00
-MU,Micron Technology,357.22,406.51,404.7,-13.37,22.07,4.47,False,False,True,False,True,False,2,watch,2026-03-28T14:29:01.324117+00:00
-OKTA,Okta,73.23,77.94,81.71,1.01,-16.24,3.8,False,False,False,True,False,True,2,watch,2026-03-28T14:29:26.269848+00:00
-PEP,PepsiCo,153.04,156.96,157.54,-9.03,7.11,1.02,False,False,False,False,True,True,2,watch,2026-03-28T14:29:16.080283+00:00
-RIVN,Rivian,14.77,15.5,15.45,-3.65,-24.6,3.77,False,False,True,False,False,True,2,watch,2026-03-28T14:29:21.949388+00:00
-ROKU,Roku,87.15,95.86,95.25,-11.44,-21.36,3.03,False,False,True,False,False,True,2,watch,2026-03-28T14:29:22.879213+00:00
-TXN,Texas Instruments,190.33,194.89,205.49,-10.27,9.21,1.86,False,False,False,False,True,True,2,watch,2026-03-28T14:29:00.649968+00:00
-WMT,Walmart,122.89,123.76,123.83,-3.76,10.03,1.31,False,False,False,False,True,True,2,watch,2026-03-28T14:29:16.778105+00:00
-AAL,American Airlines,10.3,11.08,12.93,-21.19,-32.81,2.75,False,False,False,False,False,True,1,reject,2026-03-28T14:29:20.854944+00:00
-AAPL,Apple,248.8,255.38,260.21,-5.82,-8.81,1.02,False,False,False,False,False,True,1,reject,2026-03-28T14:28:54.992341+00:00
-ABBV,AbbVie,209.4,219.63,221.7,-9.77,-8.12,1.52,False,False,False,False,False,True,1,reject,2026-03-28T14:29:10.052140+00:00
-ADBE,Adobe,234.84,258.32,269.18,-10.51,-33.38,2.54,False,False,False,False,False,True,1,reject,2026-03-28T14:28:58.759385+00:00
-AI,C3.ai,7.76,8.78,10.26,-2.39,-43.85,3.59,False,False,False,False,False,True,1,reject,2026-03-28T14:29:23.835416+00:00
-AMZN,Amazon,199.34,210.53,217.2,-5.08,-14.27,1.96,False,False,False,False,False,True,1,reject,2026-03-28T14:28:56.320584+00:00
-AVGO,Broadcom,300.68,322.67,326.72,-5.71,-13.87,2.49,False,False,False,False,False,True,1,reject,2026-03-28T14:28:58.386277+00:00
-AXP,American Express,292.27,301.51,330.08,-5.38,-21.55,1.19,False,False,False,False,False,True,1,reject,2026-03-28T14:29:07.962410+00:00
-BA,Boeing,190.52,210.59,228.0,-16.27,-12.81,2.33,False,False,False,False,False,True,1,reject,2026-03-28T14:29:12.353509+00:00
-BAC,Bank of America,46.97,48.06,50.83,-5.21,-14.55,1.26,False,False,False,False,False,True,1,reject,2026-03-28T14:29:06.552668+00:00
-BKNG,Booking Holdings,4062.14,4312.09,4472.6,-3.96,-24.98,2.71,False,False,False,False,False,True,1,reject,2026-03-28T14:29:18.878640+00:00
-BRK-B,Berkshire Hathaway,468.49,486.31,490.29,-7.22,-6.99,1.39,False,False,False,False,False,True,1,reject,2026-03-28T14:29:08.249260+00:00
-CELH,Celsius Holdings,33.94,42.33,47.27,-36.69,-26.44,3.38,False,False,False,False,False,True,1,reject,2026-03-28T14:29:27.215198+00:00
-COIN,Coinbase,161.14,193.83,188.92,-8.37,-30.42,5.08,False,False,True,False,False,False,1,reject,2026-03-28T14:29:05.075141+00:00
-CRM,Salesforce,179.31,193.45,199.35,-7.95,-32.57,2.42,False,False,False,False,False,True,1,reject,2026-03-28T14:28:59.274604+00:00
-CRWD,CrowdStrike,369.58,415.97,418.16,-0.65,-22.3,2.97,False,False,False,False,False,True,1,reject,2026-03-28T14:29:02.017978+00:00
-DIS,Disney,92.42,99.59,104.67,-12.84,-19.49,0.88,False,False,False,False,False,True,1,reject,2026-03-28T14:29:14.289450+00:00
-DUOL,Duolingo,95.35,99.19,115.56,-5.59,-46.17,3.15,False,False,False,False,False,True,1,reject,2026-03-28T14:29:26.900018+00:00
-F,Ford,11.37,12.02,13.06,-19.3,-13.13,2.01,False,False,False,False,False,True,1,reject,2026-03-28T14:29:21.278942+00:00
-GE,GE Aerospace,282.81,308.98,313.92,-17.25,-9.16,2.19,False,False,False,False,False,True,1,reject,2026-03-28T14:29:11.975897+00:00
-GM,General Motors,72.98,74.96,79.04,-7.06,-11.15,1.7,False,False,False,False,False,True,1,reject,2026-03-28T14:29:21.631312+00:00
-GOOGL,Alphabet,274.34,300.52,313.44,-11.94,-12.53,1.61,False,False,False,False,False,True,1,reject,2026-03-28T14:28:57.012790+00:00
-GS,Goldman Sachs,802.89,823.62,883.32,-6.1,-8.74,1.78,False,False,False,False,False,True,1,reject,2026-03-28T14:29:05.808526+00:00
-HD,Home Depot,321.65,342.75,364.57,-14.95,-6.51,1.56,False,False,False,False,False,True,1,reject,2026-03-28T14:29:17.169213+00:00
-HIMS,Hims & Hers Health,19.38,21.23,22.02,33.47,-41.34,10.93,False,False,False,True,False,False,1,reject,2026-03-28T14:29:26.607491+00:00
-INTC,Intel,43.13,45.11,46.45,-5.44,15.63,4.05,False,False,False,False,True,False,1,reject,2026-03-28T14:28:58.052298+00:00
-JPM,JPMorgan Chase,282.84,290.01,300.22,-5.81,-12.15,1.12,False,False,False,False,False,True,1,reject,2026-03-28T14:29:05.452937+00:00
-LCID,Lucid Group,9.4,10.11,10.28,-6.0,-13.76,3.9,False,False,False,False,False,True,1,reject,2026-03-28T14:29:22.280945+00:00
-LLY,Eli Lilly,878.24,957.08,1006.54,-16.52,-18.53,1.79,False,False,False,False,False,True,1,reject,2026-03-28T14:29:08.597590+00:00
-LOW,Lowe's,230.31,242.19,262.16,-12.95,-4.87,1.82,False,False,False,False,False,True,1,reject,2026-03-28T14:29:17.536768+00:00
-MA,Mastercard,484.24,506.25,520.54,-6.37,-16.01,1.41,False,False,False,False,False,True,1,reject,2026-03-28T14:29:07.535049+00:00
-META,Meta,525.72,620.79,643.11,-18.82,-20.99,2.44,False,False,False,False,False,True,1,reject,2026-03-28T14:28:56.695522+00:00
-MS,Morgan Stanley,158.39,161.23,171.31,-4.88,-11.07,1.6,False,False,False,False,False,True,1,reject,2026-03-28T14:29:06.170392+00:00
-MSFT,Microsoft,356.77,392.82,410.02,-9.16,-26.65,1.26,False,False,False,False,False,True,1,reject,2026-03-28T14:28:55.367945+00:00
-NKE,Nike,51.37,55.11,59.94,-16.84,-15.49,1.29,False,False,False,False,False,True,1,reject,2026-03-28T14:29:18.560795+00:00
-NVDA,Nvidia,167.52,179.43,183.48,-5.45,-10.67,2.05,False,False,False,False,False,True,1,reject,2026-03-28T14:28:55.668165+00:00
-ORCL,Oracle,139.66,151.77,157.32,-3.95,-28.99,3.05,False,False,False,False,False,True,1,reject,2026-03-28T14:28:59.607843+00:00
-PANW,Palo Alto Networks,147.02,161.99,164.83,-1.28,-21.32,2.46,False,False,False,False,False,True,1,reject,2026-03-28T14:29:01.703951+00:00
-PYPL,PayPal,43.59,45.34,46.53,-5.38,-26.02,2.04,False,False,False,False,False,True,1,reject,2026-03-28T14:29:03.556395+00:00
-QCOM,Qualcomm,127.11,132.74,140.92,-10.14,-26.33,1.31,False,False,False,False,False,True,1,reject,2026-03-28T14:29:00.241769+00:00
-RCL,Royal Caribbean,261.8,278.82,298.42,-15.36,-6.57,3.22,False,False,False,False,False,True,1,reject,2026-03-28T14:29:19.884070+00:00
-SHOP,Shopify,111.85,123.88,126.01,-7.36,-31.69,3.18,False,False,False,False,False,True,1,reject,2026-03-28T14:29:03.252369+00:00
-SNOW,Snowflake,152.8,171.64,179.95,-9.27,-31.19,3.21,False,False,False,False,False,True,1,reject,2026-03-28T14:29:02.631417+00:00
-SOFI,SoFi Technologies,15.23,17.63,20.17,-14.25,-42.66,2.22,False,False,False,False,False,True,1,reject,2026-03-28T14:29:22.596656+00:00
-TEAM,Atlassian,65.12,74.72,90.72,-13.32,-60.03,3.71,False,False,False,False,False,True,1,reject,2026-03-28T14:29:25.680849+00:00
-TSLA,Tesla,361.83,390.78,408.64,-10.11,-20.38,2.22,False,False,False,False,False,True,1,reject,2026-03-28T14:28:56.005324+00:00
-UAL,United Airlines,88.44,93.24,103.58,-16.8,-20.7,2.99,False,False,False,False,False,True,1,reject,2026-03-28T14:29:20.539226+00:00
-UBER,Uber,69.18,74.28,75.8,-8.27,-15.76,2.18,False,False,False,False,False,True,1,reject,2026-03-28T14:29:02.938213+00:00
-UNH,UnitedHealth,259.02,280.25,289.69,-10.99,-21.41,1.46,False,False,False,False,False,True,1,reject,2026-03-28T14:29:09.735330+00:00
-V,Visa,295.52,309.25,317.71,-7.69,-16.26,1.14,False,False,False,False,False,True,1,reject,2026-03-28T14:29:07.227181+00:00
-WFC,Wells Fargo,77.19,78.57,84.5,-5.23,-17.75,1.57,False,False,False,False,False,True,1,reject,2026-03-28T14:29:06.920165+00:00
-ZS,Zscaler,133.16,152.09,171.19,-9.41,-41.45,2.94,False,False,False,False,False,True,1,reject,2026-03-28T14:29:25.974898+00:00
-MDB,MongoDB,235.51,264.18,323.79,-28.3,-44.09,5.76,False,False,False,False,False,False,0,reject,2026-03-28T14:29:24.760838+00:00
-SMCI,Super Micro Computer,21.97,28.65,30.36,-32.17,-25.9,8.39,False,False,False,False,False,False,0,reject,2026-03-28T14:29:24.132010+00:00
+CSCO,Cisco,79.92,79.08,78.94,0.58,3.79,1.63,True,True,True,True,True,True,6,pass,2026-03-28T15:04:55.365867+00:00
+CVX,Chevron,211.15,196.91,184.48,13.06,39.99,1.28,True,True,True,True,True,True,6,pass,2026-03-28T15:05:06.782054+00:00
+T,AT&T,29.1,28.21,27.11,3.89,18.67,1.46,True,True,True,True,True,True,6,pass,2026-03-28T15:05:12.260861+00:00
+XOM,Exxon Mobil,170.99,156.76,148.55,12.12,42.27,1.4,True,True,True,True,True,True,6,pass,2026-03-28T15:05:06.358121+00:00
+ARM,Arm Holdings,144.13,128.09,122.07,13.09,30.01,4.9,True,True,True,True,True,False,5,pass,2026-03-28T15:05:21.919556+00:00
+NET,Cloudflare,203.02,206.3,190.08,17.9,1.7,3.07,False,True,True,True,True,True,5,pass,2026-03-28T15:05:22.899536+00:00
+PFE,Pfizer,27.04,27.01,26.76,-2.21,10.02,1.4,True,True,True,False,True,True,5,pass,2026-03-28T15:05:05.236630+00:00
+VZ,Verizon,50.31,50.58,47.31,0.34,25.76,0.97,False,True,True,True,True,True,5,pass,2026-03-28T15:05:12.599081+00:00
+JNJ,Johnson & Johnson,240.45,240.77,236.27,-3.21,16.83,0.95,False,True,True,False,True,True,4,watch,2026-03-28T15:05:04.862194+00:00
+AMAT,Applied Materials,337.17,350.52,344.13,-9.44,29.86,3.39,False,False,True,False,True,True,3,watch,2026-03-28T15:04:56.476315+00:00
+AMD,Advanced Micro Devices,201.99,200.92,213.92,0.89,-6.2,3.54,True,False,False,True,False,True,3,watch,2026-03-28T15:04:53.102512+00:00
+COST,Costco,983.86,990.37,985.21,-2.66,13.81,0.95,False,False,True,False,True,True,3,watch,2026-03-28T15:05:13.712231+00:00
+DDOG,Datadog,114.48,123.79,122.44,2.25,-16.73,3.4,False,False,True,True,False,True,3,watch,2026-03-28T15:05:22.593787+00:00
+DE,Deere,566.64,585.86,578.19,-10.02,20.99,1.47,False,False,True,False,True,True,3,watch,2026-03-28T15:05:07.664754+00:00
+HON,Honeywell,223.12,233.11,232.2,-8.4,14.19,1.49,False,False,True,False,True,True,3,watch,2026-03-28T15:05:09.567027+00:00
+KO,Coca-Cola,75.71,76.61,76.26,-6.53,8.79,0.95,False,False,True,False,True,True,3,watch,2026-03-28T15:05:12.990781+00:00
+LMT,Lockheed Martin,615.84,644.1,630.09,-5.93,26.86,1.55,False,False,True,False,True,True,3,watch,2026-03-28T15:05:10.024347+00:00
+NFLX,Netflix,93.43,95.13,87.47,-2.92,-0.37,1.35,False,True,True,False,False,True,3,watch,2026-03-28T15:04:53.405074+00:00
+NOC,Northrop Grumman,679.0,724.65,705.28,-6.26,18.55,1.98,False,False,True,False,True,True,3,watch,2026-03-28T15:05:10.587524+00:00
+PLTR,Palantir,143.06,152.36,148.97,4.28,-20.89,3.14,False,False,True,True,False,True,3,watch,2026-03-28T15:04:57.820504+00:00
+RTX,RTX,189.71,202.52,200.37,-6.37,3.44,1.82,False,False,True,False,True,True,3,watch,2026-03-28T15:05:10.998985+00:00
+SBUX,Starbucks,86.81,96.13,95.73,-11.44,2.49,2.12,False,False,True,False,True,True,3,watch,2026-03-28T15:05:15.569232+00:00
+ZM,Zoom Communications,77.71,76.37,83.68,5.1,-9.95,1.96,True,False,False,True,False,True,3,watch,2026-03-28T15:05:20.976259+00:00
+ABNB,Airbnb,122.87,131.19,129.01,-9.06,-10.25,2.25,False,False,True,False,False,True,2,watch,2026-03-28T15:05:16.688751+00:00
+CAT,Caterpillar,695.4,705.91,706.11,-6.39,20.72,2.12,False,False,False,False,True,True,2,watch,2026-03-28T15:05:07.225890+00:00
+CMCSA,Comcast,28.33,30.07,30.25,-8.49,2.04,1.74,False,False,False,False,True,True,2,watch,2026-03-28T15:05:11.870129+00:00
+DAL,Delta Air Lines,64.83,62.91,66.7,-1.32,-6.25,2.81,True,False,False,False,False,True,2,watch,2026-03-28T15:05:17.729954+00:00
+DOCU,DocuSign,45.71,47.36,48.58,1.42,-33.83,2.43,False,False,False,True,False,True,2,watch,2026-03-28T15:05:20.671194+00:00
+MAR,Marriott International,317.54,325.38,330.29,-7.08,1.34,1.77,False,False,False,False,True,True,2,watch,2026-03-28T15:05:17.046539+00:00
+MCD,McDonald's,305.9,320.83,320.16,-9.81,-0.14,1.04,False,False,True,False,False,True,2,watch,2026-03-28T15:05:15.192680+00:00
+MU,Micron Technology,357.22,406.51,404.7,-13.37,22.07,4.47,False,False,True,False,True,False,2,watch,2026-03-28T15:04:56.855009+00:00
+OKTA,Okta,73.23,77.94,81.71,1.01,-16.24,3.8,False,False,False,True,False,True,2,watch,2026-03-28T15:05:23.825559+00:00
+PEP,PepsiCo,153.04,156.96,157.54,-9.03,7.11,1.02,False,False,False,False,True,True,2,watch,2026-03-28T15:05:13.346008+00:00
+RIVN,Rivian,14.77,15.5,15.45,-3.65,-24.6,3.77,False,False,True,False,False,True,2,watch,2026-03-28T15:05:19.448999+00:00
+ROKU,Roku,87.15,95.86,95.25,-11.44,-21.36,3.03,False,False,True,False,False,True,2,watch,2026-03-28T15:05:20.359108+00:00
+TXN,Texas Instruments,190.33,194.89,205.49,-10.27,9.21,1.86,False,False,False,False,True,True,2,watch,2026-03-28T15:04:56.102547+00:00
+WMT,Walmart,122.89,123.76,123.83,-3.76,10.03,1.31,False,False,False,False,True,True,2,watch,2026-03-28T15:05:14.123374+00:00
+AAL,American Airlines,10.3,11.08,12.93,-21.19,-32.81,2.75,False,False,False,False,False,True,1,reject,2026-03-28T15:05:18.409236+00:00
+AAPL,Apple,248.8,255.38,260.21,-5.82,-8.81,1.02,False,False,False,False,False,True,1,reject,2026-03-28T15:04:50.703675+00:00
+ABBV,AbbVie,209.4,219.63,221.7,-9.77,-8.12,1.52,False,False,False,False,False,True,1,reject,2026-03-28T15:05:05.933564+00:00
+ADBE,Adobe,234.84,258.32,269.18,-10.51,-33.38,2.54,False,False,False,False,False,True,1,reject,2026-03-28T15:04:54.421496+00:00
+AI,C3.ai,7.76,8.78,10.26,-2.39,-43.85,3.59,False,False,False,False,False,True,1,reject,2026-03-28T15:05:21.297643+00:00
+AMZN,Amazon,199.34,210.53,217.2,-5.08,-14.27,1.96,False,False,False,False,False,True,1,reject,2026-03-28T15:04:52.115916+00:00
+AVGO,Broadcom,300.68,322.67,326.72,-5.71,-13.87,2.49,False,False,False,False,False,True,1,reject,2026-03-28T15:04:54.096305+00:00
+AXP,American Express,292.27,301.51,330.08,-5.38,-21.55,1.19,False,False,False,False,False,True,1,reject,2026-03-28T15:05:03.703337+00:00
+BA,Boeing,190.52,210.59,228.0,-16.27,-12.81,2.33,False,False,False,False,False,True,1,reject,2026-03-28T15:05:08.551667+00:00
+BAC,Bank of America,46.97,48.06,50.83,-5.21,-14.55,1.26,False,False,False,False,False,True,1,reject,2026-03-28T15:05:02.087469+00:00
+BKNG,Booking Holdings,4062.14,4312.09,4472.6,-3.96,-24.98,2.71,False,False,False,False,False,True,1,reject,2026-03-28T15:05:16.344538+00:00
+BRK-B,Berkshire Hathaway,468.49,486.31,490.29,-7.22,-6.99,1.39,False,False,False,False,False,True,1,reject,2026-03-28T15:05:04.045507+00:00
+CELH,Celsius Holdings,33.94,42.33,47.27,-36.69,-26.44,3.38,False,False,False,False,False,True,1,reject,2026-03-28T15:05:24.777359+00:00
+COIN,Coinbase,161.14,193.83,188.92,-8.37,-30.42,5.08,False,False,True,False,False,False,1,reject,2026-03-28T15:05:00.578907+00:00
+CRM,Salesforce,179.31,193.45,199.35,-7.95,-32.57,2.42,False,False,False,False,False,True,1,reject,2026-03-28T15:04:54.734083+00:00
+CRWD,CrowdStrike,369.58,415.97,418.16,-0.65,-22.3,2.97,False,False,False,False,False,True,1,reject,2026-03-28T15:04:57.508275+00:00
+DIS,Disney,92.42,99.59,104.67,-12.84,-19.49,0.88,False,False,False,False,False,True,1,reject,2026-03-28T15:05:11.396944+00:00
+DUOL,Duolingo,95.35,99.19,115.56,-5.59,-46.17,3.15,False,False,False,False,False,True,1,reject,2026-03-28T15:05:24.460976+00:00
+F,Ford,11.37,12.02,13.06,-19.3,-13.13,2.01,False,False,False,False,False,True,1,reject,2026-03-28T15:05:18.810228+00:00
+GE,GE Aerospace,282.81,308.98,313.92,-17.25,-9.16,2.19,False,False,False,False,False,True,1,reject,2026-03-28T15:05:08.087651+00:00
+GM,General Motors,72.98,74.96,79.04,-7.06,-11.15,1.7,False,False,False,False,False,True,1,reject,2026-03-28T15:05:19.132471+00:00
+GOOGL,Alphabet,274.34,300.52,313.44,-11.94,-12.53,1.61,False,False,False,False,False,True,1,reject,2026-03-28T15:04:52.775338+00:00
+GS,Goldman Sachs,802.89,823.62,883.32,-6.1,-8.74,1.78,False,False,False,False,False,True,1,reject,2026-03-28T15:05:01.399096+00:00
+HD,Home Depot,321.65,342.75,364.57,-14.95,-6.51,1.56,False,False,False,False,False,True,1,reject,2026-03-28T15:05:14.478555+00:00
+HIMS,Hims & Hers Health,19.38,21.23,22.02,33.47,-41.34,10.93,False,False,False,True,False,False,1,reject,2026-03-28T15:05:24.133120+00:00
+INTC,Intel,43.13,45.11,46.45,-5.44,15.63,4.05,False,False,False,False,True,False,1,reject,2026-03-28T15:04:53.733189+00:00
+JPM,JPMorgan Chase,282.84,290.01,300.22,-5.81,-12.15,1.12,False,False,False,False,False,True,1,reject,2026-03-28T15:05:00.967549+00:00
+LCID,Lucid Group,9.4,10.11,10.28,-6.0,-13.76,3.9,False,False,False,False,False,True,1,reject,2026-03-28T15:05:19.754485+00:00
+LLY,Eli Lilly,878.24,957.08,1006.54,-16.52,-18.53,1.79,False,False,False,False,False,True,1,reject,2026-03-28T15:05:04.394301+00:00
+LOW,Lowe's,230.31,242.19,262.16,-12.95,-4.87,1.82,False,False,False,False,False,True,1,reject,2026-03-28T15:05:14.820188+00:00
+MA,Mastercard,484.24,506.25,520.54,-6.37,-16.01,1.41,False,False,False,False,False,True,1,reject,2026-03-28T15:05:03.153539+00:00
+META,Meta,525.72,620.79,643.11,-18.82,-20.99,2.44,False,False,False,False,False,True,1,reject,2026-03-28T15:04:52.448357+00:00
+MS,Morgan Stanley,158.39,161.23,171.31,-4.88,-11.07,1.6,False,False,False,False,False,True,1,reject,2026-03-28T15:05:01.756196+00:00
+MSFT,Microsoft,356.77,392.82,410.02,-9.16,-26.65,1.26,False,False,False,False,False,True,1,reject,2026-03-28T15:04:51.052423+00:00
+NKE,Nike,51.37,55.11,59.94,-16.84,-15.49,1.29,False,False,False,False,False,True,1,reject,2026-03-28T15:05:15.994803+00:00
+NVDA,Nvidia,167.52,179.43,183.48,-5.45,-10.67,2.05,False,False,False,False,False,True,1,reject,2026-03-28T15:04:51.384279+00:00
+ORCL,Oracle,139.66,151.77,157.32,-3.95,-28.99,3.05,False,False,False,False,False,True,1,reject,2026-03-28T15:04:55.050530+00:00
+PANW,Palo Alto Networks,147.02,161.99,164.83,-1.28,-21.32,2.46,False,False,False,False,False,True,1,reject,2026-03-28T15:04:57.159934+00:00
+PYPL,PayPal,43.59,45.34,46.53,-5.38,-26.02,2.04,False,False,False,False,False,True,1,reject,2026-03-28T15:04:59.082563+00:00
+QCOM,Qualcomm,127.11,132.74,140.92,-10.14,-26.33,1.31,False,False,False,False,False,True,1,reject,2026-03-28T15:04:55.710065+00:00
+RCL,Royal Caribbean,261.8,278.82,298.42,-15.36,-6.57,3.22,False,False,False,False,False,True,1,reject,2026-03-28T15:05:17.397124+00:00
+SHOP,Shopify,111.85,123.88,126.01,-7.36,-31.69,3.18,False,False,False,False,False,True,1,reject,2026-03-28T15:04:58.764827+00:00
+SNOW,Snowflake,152.8,171.64,179.95,-9.27,-31.19,3.21,False,False,False,False,False,True,1,reject,2026-03-28T15:04:58.136948+00:00
+SOFI,SoFi Technologies,15.23,17.63,20.17,-14.25,-42.66,2.22,False,False,False,False,False,True,1,reject,2026-03-28T15:05:20.052073+00:00
+TEAM,Atlassian,65.12,74.72,90.72,-13.32,-60.03,3.71,False,False,False,False,False,True,1,reject,2026-03-28T15:05:23.204549+00:00
+TSLA,Tesla,361.83,390.78,408.64,-10.11,-20.38,2.22,False,False,False,False,False,True,1,reject,2026-03-28T15:04:51.754766+00:00
+UAL,United Airlines,88.44,93.24,103.58,-16.8,-20.7,2.99,False,False,False,False,False,True,1,reject,2026-03-28T15:05:18.073652+00:00
+UBER,Uber,69.18,74.28,75.8,-8.27,-15.76,2.18,False,False,False,False,False,True,1,reject,2026-03-28T15:04:58.450253+00:00
+UNH,UnitedHealth,259.02,280.25,289.69,-10.99,-21.41,1.46,False,False,False,False,False,True,1,reject,2026-03-28T15:05:05.585144+00:00
+V,Visa,295.52,309.25,317.71,-7.69,-16.26,1.14,False,False,False,False,False,True,1,reject,2026-03-28T15:05:02.816763+00:00
+WFC,Wells Fargo,77.19,78.57,84.5,-5.23,-17.75,1.57,False,False,False,False,False,True,1,reject,2026-03-28T15:05:02.452005+00:00
+ZS,Zscaler,133.16,152.09,171.19,-9.41,-41.45,2.94,False,False,False,False,False,True,1,reject,2026-03-28T15:05:23.511758+00:00
+MDB,MongoDB,235.51,264.18,323.79,-28.3,-44.09,5.76,False,False,False,False,False,False,0,reject,2026-03-28T15:05:22.278611+00:00
+SMCI,Super Micro Computer,21.97,28.65,30.36,-32.17,-25.9,8.39,False,False,False,False,False,False,0,reject,2026-03-28T15:05:21.613357+00:00
