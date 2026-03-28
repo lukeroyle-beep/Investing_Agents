@@ -9,6 +9,7 @@ import run_pipeline
 import shared.event_log as shared_event_log
 import shared.run_history as shared_run_history
 import shared.run_reconciliation as shared_run_reconciliation
+import shared.sqlite_sidecar as sqlite_sidecar
 from agents.exit_agent import exit_agent
 from agents.fill_agent import fill_agent
 from agents.lifecycle_integrity_agent import lifecycle_integrity_agent
@@ -194,3 +195,12 @@ def test_pipeline_smoke_control_integrity(isolated_workspace, monkeypatch) -> No
         (event_log_df["event_type"] == "artifact_written")
         & (event_log_df["agent_name"] == "Position Tracking Agent")
     ).any()
+
+    assert sqlite_sidecar.fetch_row_count("run_history") == len(run_history_df)
+    assert sqlite_sidecar.fetch_row_count("run_reconciliation_summary") == len(reconciliation_df)
+    assert sqlite_sidecar.fetch_row_count("event_log") == len(event_log_df)
+    assert sqlite_sidecar.fetch_row_count("processed_fills") == len(final_processed)
+    assert sqlite_sidecar.fetch_row_count("cash_ledger") == len(final_ledger)
+    assert sqlite_sidecar.fetch_row_count("portfolio_equity_history") == len(
+        pd.read_csv(data_dir / "portfolio_equity_history.csv")
+    )

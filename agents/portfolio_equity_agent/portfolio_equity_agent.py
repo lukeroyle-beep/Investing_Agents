@@ -16,6 +16,7 @@ from shared.schemas import (
     validate_portfolio_state,
 )
 from shared.run_context import get_or_create_run_id
+from shared.sqlite_sidecar import upsert_portfolio_equity_history_row
 
 
 DATA_DIR = "data"
@@ -193,6 +194,7 @@ def run_portfolio_equity_agent() -> None:
 
     write_csv(history_df, EQUITY_HISTORY_PATH)
     write_csv(performance_summary_df, PERFORMANCE_SUMMARY_PATH)
+    upsert_portfolio_equity_history_row(snapshot.iloc[0].to_dict())
     emit_portfolio_equity_snapshot_event(run_id=run_id, snapshot_row=snapshot.iloc[0])
 
     print("Portfolio Equity Agent finished.")

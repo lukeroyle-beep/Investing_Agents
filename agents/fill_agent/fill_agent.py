@@ -23,6 +23,8 @@ from shared.schemas import (
     validate_portfolio_state,
     validate_processed_fills,
 )
+from shared.sqlite_sidecar import append_cash_ledger_row as append_cash_ledger_row_sqlite
+from shared.sqlite_sidecar import append_processed_fill_row as append_processed_fill_row_sqlite
 
 
 DATA_DIR = "data"
@@ -257,6 +259,7 @@ def append_cash_ledger_row(
     out = pd.concat([ledger_df, new_row], ignore_index=True)
     out = validate_cash_ledger(out, keep_extra_columns=False)
     write_csv(out, CASH_LEDGER_PATH)
+    append_cash_ledger_row_sqlite(new_row.iloc[0].to_dict())
     return out
 
 
@@ -496,6 +499,7 @@ def append_processed_fill(processed_df: pd.DataFrame, fill_id: str, run_id: str)
     out = pd.concat([processed_df, new_row], ignore_index=True)
     out = validate_processed_fills(out, keep_extra_columns=False)
     write_csv(out, PROCESSED_FILLS_PATH)
+    append_processed_fill_row_sqlite(new_row.iloc[0].to_dict())
     return out
 
 

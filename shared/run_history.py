@@ -7,6 +7,7 @@ import pandas as pd
 from shared.io_utils import ensure_parent_dir, write_csv_file
 from shared.paths import RUN_HISTORY_PATH
 from shared.schema_registry import get_file_schema
+from shared.sqlite_sidecar import upsert_run_history_row
 
 
 RUN_HISTORY_SCHEMA = get_file_schema("run_history.csv")
@@ -43,6 +44,11 @@ def _write_run_history(df: pd.DataFrame) -> None:
     output_df = df.copy()
     output_df = output_df[RUN_HISTORY_COLUMNS].fillna("").astype(str).copy()
     write_csv_file(output_df, RUN_HISTORY_PATH)
+
+
+def _row_payload(df: pd.DataFrame, idx: int) -> dict[str, str]:
+    row = df.loc[idx, RUN_HISTORY_COLUMNS]
+    return {column: str(row.get(column, "")) for column in RUN_HISTORY_COLUMNS}
 
 
 def _find_matching_run_index(df: pd.DataFrame, run_id: str) -> int:
@@ -106,6 +112,7 @@ def start_run_record(run_id: str, started_at: str) -> None:
 
     output_df = pd.concat([df, new_row], ignore_index=True)
     _write_run_history(output_df)
+    upsert_run_history_row(_row_payload(output_df, len(output_df) - 1))
 
 
 def complete_run_record(run_id: str, completed_at: str) -> None:
@@ -122,6 +129,7 @@ def complete_run_record(run_id: str, completed_at: str) -> None:
     df.at[idx, "status"] = "success"
 
     _write_run_history(df)
+    upsert_run_history_row(_row_payload(df, idx))
 
 
 def fail_run_record(
@@ -145,3 +153,4 @@ def fail_run_record(
     df.at[idx, "error_message"] = str(error_message).strip()
 
     _write_run_history(df)
+    upsert_run_history_row(_row_payload(df, idx))

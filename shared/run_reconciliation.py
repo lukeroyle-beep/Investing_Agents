@@ -14,6 +14,7 @@ from shared.paths import (
 )
 from shared.schema_registry import get_file_schema
 from shared.schemas import validate_run_reconciliation_summary
+from shared.sqlite_sidecar import upsert_run_reconciliation_row
 
 
 EVENT_LOG_PATH = data_path("event_log.csv")
@@ -264,6 +265,7 @@ def _upsert_reconciliation_row(row: dict[str, object]) -> pd.DataFrame:
 
     combined_df = validate_run_reconciliation_summary(combined_df, keep_extra_columns=False)
     write_csv_file(combined_df, RUN_RECONCILIATION_SUMMARY_PATH)
+    upsert_run_reconciliation_row(row)
     return combined_df
 
 

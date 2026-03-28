@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from shared.sqlite_sidecar import append_event_log_row
 from shared.schema_registry import get_file_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -180,6 +181,7 @@ def append_event(
         writer = csv.DictWriter(f, fieldnames=EVENT_LOG_COLUMNS)
         writer.writerow(row)
 
+    append_event_log_row(row)
     return event_id
 
 
