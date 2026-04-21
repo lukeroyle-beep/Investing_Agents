@@ -1,0 +1,340 @@
+# Advisory Portfolio Engine
+
+A deterministic, advisory-only portfolio engine with controlled mutation, lifecycle enforcement, audit logging, reconciliation, and shadow database persistence.
+
+This project is designed to move beyond a loose chain of scripts into a state-governed portfolio system with clear authority over state, explicit controls around mutation, and a credible path to stronger operational resilience.
+
+## Core characteristics
+
+- Deterministic orchestration through `run_pipeline.py`
+- Advisory-only execution model with manual sign-off required
+- No broker execution or automatic order submission
+- Canonical portfolio state held in `portfolio_state.csv`
+- Hard mutation boundary where the Fill Agent is the only component allowed to alter economic state
+- Explicit lifecycle progression: `open` → `exit_required` → `closed`
+- Closed-position immutability to protect historical economic facts
+- Shared schema, validation, and invariant controls across agents
+- Append-only audit logging with timestamps, run identifiers, and before/after state where relevant
+- Run reconciliation for cash, Profit and Loss (PnL), equity, exposure, and activity checks
+- Portfolio performance memory including equity history, peak equity, drawdown tracking, and summary metrics
+- Atomic Comma-Separated Values (CSV) write discipline to reduce partial-write risk
+- SQLite (Structured Query Language Lite) shadow persistence with parity checks while CSV remains authoritative
+- Test coverage for idempotency, lifecycle enforcement, invariants, non-mutating agents, and end-to-end smoke paths
+
+## Architecture summary
+
+The engine is built around one central principle:
+
+**economic state must have a single authority and a tightly controlled mutation path.**
+
+In practical terms, that means:
+
+- `portfolio_state.csv` is the single source of truth for positions and cash state
+- only the Fill Agent can mutate economic history
+- all other agents read state and produce advice, analytics, or controls
+- lifecycle transitions are validated and enforced
+- closed positions cannot be silently rewritten
+- every run can be audited and reconciled
+
+This is what allows complexity to grow without turning the system into an opaque or untrustworthy process.
+
+## System flow
+
+A typical pipeline run follows this sequence:
+
+1. Universe
+2. Signal
+3. Macro
+4. News
+5. Risk
+6. Portfolio
+7. Advisory
+8. Fill
+9. Lifecycle Integrity
+10. Position Tracking
+11. Lifecycle Integrity
+12. Exit
+13. Portfolio Equity
+14. Journal
+
+This sequencing is intentional.
+
+Mutation is separated from analysis and control. Validation gates sit around the state transition boundary so invalid state does not propagate downstream.
+
+## Agent responsibilities
+
+### Universe Agent
+Builds the investable opportunity set and outputs watchlists, leads, rejects, and universe snapshots.
+
+### Signal Agent
+Evaluates technical or systematic setups and produces ranked signal candidates.
+
+### Macro Agent
+Assesses broad market regime and supporting proxy indicators.
+
+### News Agent
+Flags news-sensitive instruments and applies severity-aware review logic.
+
+### Risk Agent
+Applies portfolio and trade-level controls, including vetoes, caution states, and shortlist approval.
+
+### Portfolio Agent
+Constructs candidate trades and position proposals while respecting portfolio limits and regime-aware constraints.
+
+### Advisory Agent
+Produces advisory trade outputs only. It does not execute trades. It enforces governance rules such as open-position blocks and news-based holds.
+
+### Fill Agent
+The only economic mutator in the system. It processes fills and updates canonical portfolio state, cash, and realised outcomes.
+
+### Lifecycle Integrity Agent
+Validates lifecycle rules, invariant compliance, and historical integrity. It acts as a hard control gate.
+
+### Position Tracking Agent
+Updates mark-to-market fields and monitoring outputs for active positions only.
+
+### Exit Agent
+Produces exit advice based on current position conditions and system rules without mutating state.
+
+### Portfolio Equity Agent
+Calculates portfolio-level equity, history, peak equity, and drawdown metrics.
+
+### Journal Agent
+Records end-of-run outputs and supports operating review.
+
+## Governance model
+
+The governance model is intentionally strict.
+
+### Execution mode
+- Advisory-only
+- No automatic broker interaction
+- Manual sign-off required before any real-world execution
+
+### State authority
+- `portfolio_state.csv` is canonical
+- CSV remains authoritative even with SQLite shadow persistence
+- the Fill Agent is the only component allowed to alter economic state
+
+### Lifecycle rules
+Positions must move through the following states only:
+
+- `open`
+- `exit_required`
+- `closed`
+
+Invalid transitions should fail validation.
+
+### Closed-position immutability
+Once a position is closed, key historical fields must not change. This protects economic truth and prevents silent corruption of realised history.
+
+### Validation discipline
+Shared schemas and invariants are used to remove agent-by-agent interpretation drift and provide one consistent control layer.
+
+## Persistence model
+
+The storage design is conservative by intent.
+
+### Authoritative layer
+- CSV files remain the operational source of truth
+- atomic writes reduce the risk of partial file corruption
+
+### Shadow layer
+- SQLite receives dual writes for persistence hardening
+- parity checks verify equivalence between CSV and SQLite outputs
+- mutation authority has not been moved to SQLite
+
+This preserves operational simplicity while building confidence in stronger persistence.
+
+## Audit and reconciliation
+
+Every pipeline run is designed to be explainable.
+
+### Event logging
+The system maintains append-only audit logs with:
+
+- event identifiers
+- run identifiers
+- timestamps
+- agent names
+- event types
+- severity
+- entity references such as ticker, position, or order identifiers
+- before/after JSON (JavaScript Object Notation) payloads where relevant
+- metadata payloads where relevant
+
+### Run reconciliation
+After each run, the system can reconcile:
+
+- fills processed
+- positions opened
+- positions closed
+- positions marked `exit_required`
+- cash movement
+- realised PnL
+- unrealised PnL
+- equity movement
+- exposure change
+- validation warnings or failures
+
+This provides a practical control against silent drift.
+
+## Performance tracking
+
+The engine retains portfolio performance memory across runs, including:
+
+- portfolio equity snapshots
+- equity history
+- peak equity
+- drawdown in absolute terms
+- drawdown in percentage terms
+- one-row summary metrics for quick review
+
+This creates a persistent operating record rather than a single-run snapshot.
+
+## Testing and control coverage
+
+The current test and validation layer covers the most important control surfaces, including:
+
+- idempotency checks
+- invariant enforcement
+- lifecycle enforcement
+- non-mutating agent guarantees
+- end-to-end smoke coverage
+- parity validation between CSV and SQLite
+
+The purpose of this layer is not just correctness. It is to prove repeatability and fail-closed behaviour.
+
+## Repository structure
+
+The exact structure may evolve, but the current build is organised around:
+
+```text
+agents/
+  universe_agent/
+  signal_agent/
+  macro_agent/
+  news_agent/
+  risk_agent/
+  portfolio_agent/
+  advisory_agent/
+  fill_agent/
+  lifecycle_integrity_agent/
+  position_tracking_agent/
+  exit_agent/
+  portfolio_equity_agent/
+  journal_agent/
+  shared/
+config/
+data/
+docs/
+scripts/
+run_pipeline.py
+```
+
+## Operating principles
+
+This project should be expanded conservatively.
+
+### What is already strong
+- deterministic orchestration
+- canonical state authority
+- strict mutation boundary
+- lifecycle enforcement
+- immutable closed history
+- append-only auditability
+- reconciliation discipline
+- shadow database persistence with parity checking
+
+### What still matters most
+The main risk is no longer lack of architecture. The main risk is operational slippage.
+
+That means:
+
+- adding new features too early
+- weakening validation discipline
+- broadening mutation authority prematurely
+- assuming resilience before interrupted-run and recovery paths are proven
+
+## Recommended next steps
+
+### 1. Prove repeatability
+Run the pipeline repeatedly against controlled fixtures and stable inputs to prove:
+
+- no unintended state drift when no new fills occur
+- stable CSV and SQLite parity
+- closed-position immutability
+- stable idempotent behaviour
+- reconciliation consistency across repeated runs
+
+### 2. Prove fail-closed behaviour
+Deliberately trigger faults and confirm the system stops cleanly for cases such as:
+
+- malformed schemas
+- invalid lifecycle transitions
+- snapshot mismatches
+- duplicate or conflicting fills
+- parity failures
+- missing critical files
+
+### 3. Add interrupted-run recovery discipline
+Introduce explicit rules for:
+
+- interrupted run detection
+- safe replay versus manual intervention
+- duplicate fill prevention after crash or stop
+- continuation blocking when state safety is uncertain
+
+### 4. Write the operator runbook
+Document:
+
+- clean-machine bootstrap
+- pre-run checklist
+- post-run checklist
+- failure triage
+- parity-failure handling
+- backup and restore rules
+- manual repair boundaries
+
+### 5. Keep storage migration conservative
+Use SQLite first for read-side analytics and reporting. Do not move mutation authority until parity proof is sustained over time.
+
+### 6. Expand strategy only after operational proof
+Once repeatability, fail-closed behaviour, and recovery controls are proven, then expand:
+
+- signal quality
+- portfolio construction sophistication
+- data source breadth
+- analytics depth
+- reporting automation
+
+## Intended use
+
+This system is intended for advisory portfolio workflows where:
+
+- recommendations are generated systematically
+- controls are explicit and testable
+- execution remains human-approved
+- traceability matters as much as output quality
+
+It is not designed as an autonomous live trading engine in its current form.
+
+## Status
+
+Current build status:
+
+- advisory-only portfolio engine: **implemented**
+- deterministic orchestration: **implemented**
+- controlled mutation boundary: **implemented**
+- lifecycle enforcement: **implemented**
+- audit logging and reconciliation: **implemented**
+- performance history and drawdown tracking: **implemented**
+- atomic CSV write discipline: **implemented**
+- SQLite shadow persistence with parity checks: **implemented**
+- operational hardening and recovery discipline: **next priority**
+
+## Disclaimer
+
+This repository is for portfolio analysis, governance, and advisory workflow development.
+
+It does not constitute financial advice. Any real-world execution should remain subject to manual review, independent judgement, and appropriate risk controls.
