@@ -198,6 +198,25 @@ def validate_fill_row(row: pd.Series) -> None:
         raise ValueError("fill_timestamp is required")
 
 
+def validate_fill_batch(fills_df: pd.DataFrame) -> None:
+    """Validate all candidate fills before any state/cash mutation is attempted."""
+    for _, row in fills_df.iterrows():
+        validate_fill_row(row)
+
+    if fills_df.empty:
+        return
+
+    fill_ids = fills_df["fill_id"].astype(str).str.strip()
+    duplicate_ids = sorted(
+        fill_id for fill_id in fill_ids[fill_ids.duplicated()].unique() if fill_id
+    )
+    if duplicate_ids:
+        raise ValueError(
+            "Duplicate fill_id values found in manual fills before processing: "
+            f"{duplicate_ids}"
+        )
+
+
 def get_cash_balance(cash_state_df: pd.DataFrame) -> float:
     if cash_state_df.empty:
         return DEFAULT_STARTING_CASH
@@ -521,9 +540,9 @@ def run_fill_agent() -> None:
         print(f"Ending cash balance: {cash_balance:.2f}")
         return
 
-    for _, row in fills_df.iterrows():
-        validate_fill_row(row)
+    validate_fill_batch(fills_df)
 
+    for _, row in fills_df.iterrows():
         fill_id = str(row["fill_id"])
         if fill_id in processed_ids:
             continue
