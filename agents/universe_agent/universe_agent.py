@@ -1,5 +1,6 @@
 import os
-from datetime import datetime, UTC
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 import yfinance as yf
@@ -7,20 +8,93 @@ import yfinance as yf
 
 UNIVERSE_FILE = os.path.join("data_sources", "stock_universe.csv")
 
+REQUIRED_SOURCE_COLUMNS = [
+    "ticker",
+    "name",
+    "asset_class",
+    "region",
+    "exchange",
+    "source",
+]
+OPTIONAL_SOURCE_COLUMNS = ["index_membership", "currency", "sector", "notes"]
+SOURCE_COLUMN_ORDER = REQUIRED_SOURCE_COLUMNS + OPTIONAL_SOURCE_COLUMNS
 
-def load_assets():
-    df = pd.read_csv(UNIVERSE_FILE)
+ALLOWED_ASSET_CLASSES = {
+    "equity",
+    "etf",
+    "commodity_proxy",
+    "futures",
+    "fx",
+    "crypto",
+}
 
-    df["ticker"] = df["ticker"].astype(str).str.strip().str.upper()
-    df["name"] = df["name"].astype(str).str.strip()
 
-    df = df.drop_duplicates(subset=["ticker"], keep="first")
-    df = df[df["ticker"] != ""]
+def _clean_text(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.strip()
 
+
+def normalise_universe_source(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise and validate the authoritative CSV universe source.
+
+    The CSV remains the source of truth. This helper keeps the first occurrence
+    for duplicate tickers after normalisation so accidental duplicate rows do
+    not fan out into repeated yfinance calls or downstream candidates.
+    """
+
+    missing = [col for col in REQUIRED_SOURCE_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"Universe source missing required columns: {missing}")
+
+    output_df = df.copy()
+
+    for col in OPTIONAL_SOURCE_COLUMNS:
+        if col not in output_df.columns:
+            output_df[col] = ""
+
+    for col in SOURCE_COLUMN_ORDER:
+        output_df[col] = _clean_text(output_df[col])
+
+    output_df["ticker"] = output_df["ticker"].str.upper()
+    output_df["asset_class"] = output_df["asset_class"].str.lower()
+    output_df["source"] = output_df["source"].str.lower()
+    output_df["currency"] = output_df["currency"].str.upper()
+
+    blank_required: dict[str, int] = {}
+    for col in REQUIRED_SOURCE_COLUMNS:
+        blank_count = int((output_df[col] == "").sum())
+        if blank_count:
+            blank_required[col] = blank_count
+
+    if blank_required:
+        raise ValueError(f"Universe source has blank required metadata: {blank_required}")
+
+    invalid_asset_classes = sorted(
+        set(output_df["asset_class"]) - ALLOWED_ASSET_CLASSES
+    )
+    if invalid_asset_classes:
+        raise ValueError(
+            "Universe source has invalid asset_class values: "
+            f"{invalid_asset_classes}. Allowed values: {sorted(ALLOWED_ASSET_CLASSES)}"
+        )
+
+    output_df = output_df.drop_duplicates(subset=["ticker"], keep="first")
+    output_df = output_df.sort_values(by=["asset_class", "region", "ticker"]).reset_index(
+        drop=True
+    )
+
+    return output_df[SOURCE_COLUMN_ORDER]
+
+
+def load_assets(path: str | os.PathLike[str] = UNIVERSE_FILE) -> list[dict]:
+    df = pd.read_csv(Path(path), keep_default_na=False)
+    df = normalise_universe_source(df)
     return df.to_dict(orient="records")
 
 
-def fetch_asset_data(ticker, name):
+def fetch_asset_data(asset):
+    ticker = asset["ticker"]
+    name = asset["name"]
+
     try:
         data = yf.download(
             ticker,
@@ -89,6 +163,13 @@ def fetch_asset_data(ticker, name):
         return {
             "ticker": ticker,
             "name": name,
+            "asset_class": asset["asset_class"],
+            "region": asset["region"],
+            "exchange": asset["exchange"],
+            "source": asset["source"],
+            "index_membership": asset.get("index_membership", ""),
+            "currency": asset.get("currency", ""),
+            "sector": asset.get("sector", ""),
             "latest_close": round(latest_close, 2),
             "ma20": round(ma20, 2),
             "ma50": round(ma50, 2),
@@ -120,7 +201,7 @@ def main():
         name = asset["name"]
 
         print(f"Checking {ticker} ({name})...")
-        result = fetch_asset_data(ticker, name)
+        result = fetch_asset_data(asset)
 
         if result:
             results.append(result)

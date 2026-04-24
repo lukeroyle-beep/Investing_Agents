@@ -1,94 +1,62 @@
-ticker,name
-AAPL,Apple
-MSFT,Microsoft
-NVDA,Nvidia
-TSLA,Tesla
-AMZN,Amazon
-META,Meta
-GOOGL,Alphabet
-AMD,Advanced Micro Devices
-NFLX,Netflix
-INTC,Intel
-AVGO,Broadcom
-ADBE,Adobe
-CRM,Salesforce
-ORCL,Oracle
-CSCO,Cisco
-QCOM,Qualcomm
-TXN,Texas Instruments
-AMAT,Applied Materials
-MU,Micron Technology
-PANW,Palo Alto Networks
-CRWD,CrowdStrike
-PLTR,Palantir
-SNOW,Snowflake
-UBER,Uber
-SHOP,Shopify
-PYPL,PayPal
-SQ,Block
-COIN,Coinbase
-JPM,JPMorgan Chase
-GS,Goldman Sachs
-MS,Morgan Stanley
-BAC,Bank of America
-WFC,Wells Fargo
-V,Visa
-MA,Mastercard
-AXP,American Express
-BRK-B,Berkshire Hathaway
-LLY,Eli Lilly
-JNJ,Johnson & Johnson
-PFE,Pfizer
-UNH,UnitedHealth
-ABBV,AbbVie
-XOM,Exxon Mobil
-CVX,Chevron
-CAT,Caterpillar
-DE,Deere
-GE,GE Aerospace
-BA,Boeing
-HON,Honeywell
-LMT,Lockheed Martin
-NOC,Northrop Grumman
-RTX,RTX
-DIS,Disney
-CMCSA,Comcast
-T,AT&T
-VZ,Verizon
-KO,Coca-Cola
-PEP,PepsiCo
-COST,Costco
-WMT,Walmart
-HD,Home Depot
-LOW,Lowe's
-MCD,McDonald's
-SBUX,Starbucks
-NKE,Nike
-BKNG,Booking Holdings
-ABNB,Airbnb
-MAR,Marriott International
-RCL,Royal Caribbean
-DAL,Delta Air Lines
-UAL,United Airlines
-AAL,American Airlines
-F,Ford
-GM,General Motors
-RIVN,Rivian
-LCID,Lucid Group
-SOFI,SoFi Technologies
-ROKU,Roku
-DOCU,DocuSign
-ZM,Zoom Communications
-AI,C3.ai
-SMCI,Super Micro Computer
-ARM,Arm Holdings
-MDB,MongoDB
-DDOG,Datadog
-NET,Cloudflare
-TEAM,Atlassian
-ZS,Zscaler
-OKTA,Okta
-MDB,MongoDB
-HIMS,Hims & Hers Health
-DUOL,Duolingo
-CELH,Celsius Holdings
+ticker,name,asset_class,region,exchange,source,index_membership,currency,sector,notes
+AAPL,Apple Inc,equity,US,NASDAQ,curated,S&P 500,USD,Information Technology,US mega-cap representative
+MSFT,Microsoft Corp,equity,US,NASDAQ,curated,S&P 500,USD,Information Technology,US mega-cap representative
+NVDA,NVIDIA Corp,equity,US,NASDAQ,curated,S&P 500,USD,Information Technology,AI semiconductor bellwether
+AMZN,Amazon.com Inc,equity,US,NASDAQ,curated,S&P 500,USD,Consumer Discretionary,US mega-cap representative
+GOOGL,Alphabet Inc Class A,equity,US,NASDAQ,curated,S&P 500,USD,Communication Services,US mega-cap representative
+META,Meta Platforms Inc,equity,US,NASDAQ,curated,S&P 500,USD,Communication Services,US mega-cap representative
+JPM,JPMorgan Chase & Co,equity,US,NYSE,curated,S&P 500,USD,Financials,US bank representative
+LLY,Eli Lilly and Co,equity,US,NYSE,curated,S&P 500,USD,Health Care,US healthcare representative
+XOM,Exxon Mobil Corp,equity,US,NYSE,curated,S&P 500,USD,Energy,US energy representative
+TSLA,Tesla Inc,equity,US,NASDAQ,curated,S&P 500,USD,Consumer Discretionary,High beta US growth
+BRK-B,Berkshire Hathaway Inc Class B,equity,US,NYSE,curated,S&P 500,USD,Financials,Yahoo ticker uses hyphen
+SHOP,Shopify Inc,equity,Canada,NYSE,curated,TSX 60,USD,Information Technology,North America ex-US growth
+ASML.AS,ASML Holding NV,equity,Europe,Euronext Amsterdam,curated,AEX,EUR,Information Technology,European semiconductor equipment
+SAP.DE,SAP SE,equity,Europe,XETRA,curated,DAX,EUR,Information Technology,German software large cap
+SIE.DE,Siemens AG,equity,Europe,XETRA,curated,DAX,EUR,Industrials,German industrial large cap
+MC.PA,LVMH Moet Hennessy Louis Vuitton SE,equity,Europe,Euronext Paris,curated,CAC 40,EUR,Consumer Discretionary,French luxury large cap
+NESN.SW,Nestle SA,equity,Europe,SIX Swiss Exchange,curated,SMI,CHF,Consumer Staples,Swiss defensive large cap
+AZN.L,AstraZeneca PLC,equity,UK,London Stock Exchange,curated,FTSE 100,GBX,Health Care,UK pharma large cap
+SHEL.L,Shell PLC,equity,UK,London Stock Exchange,curated,FTSE 100,GBX,Energy,UK energy large cap
+HSBA.L,HSBC Holdings PLC,equity,UK,London Stock Exchange,curated,FTSE 100,GBX,Financials,UK bank large cap
+ULVR.L,Unilever PLC,equity,UK,London Stock Exchange,curated,FTSE 100,GBX,Consumer Staples,UK defensive large cap
+BP.L,BP PLC,equity,UK,London Stock Exchange,curated,FTSE 100,GBX,Energy,UK energy large cap
+7203.T,Toyota Motor Corp,equity,Japan,Tokyo Stock Exchange,curated,Nikkei 225,JPY,Consumer Discretionary,Japanese auto large cap
+9984.T,SoftBank Group Corp,equity,Japan,Tokyo Stock Exchange,curated,Nikkei 225,JPY,Communication Services,Japanese technology holding company
+BHP.AX,BHP Group Ltd,equity,Australia,ASX,curated,ASX 200,AUD,Materials,Australian resources large cap
+TSM,Taiwan Semiconductor Manufacturing Co ADR,equity,Global,NYSE,curated,ADR,USD,Information Technology,Global semiconductor ADR
+SPY,SPDR S&P 500 ETF Trust,etf,US,NYSE Arca,curated,S&P 500,USD,Broad Market,Broad US equity ETF
+QQQ,Invesco QQQ Trust,etf,US,NASDAQ,curated,Nasdaq 100,USD,Broad Market,US growth/technology ETF
+IWM,iShares Russell 2000 ETF,etf,US,NYSE Arca,curated,Russell 2000,USD,Broad Market,US small-cap ETF
+DIA,SPDR Dow Jones Industrial Average ETF Trust,etf,US,NYSE Arca,curated,Dow Jones Industrial Average,USD,Broad Market,US blue-chip ETF
+VEA,Vanguard FTSE Developed Markets ETF,etf,Global,NYSE Arca,curated,FTSE Developed All Cap ex US,USD,Broad Market,Developed ex-US ETF
+VWO,Vanguard FTSE Emerging Markets ETF,etf,Global,NYSE Arca,curated,FTSE Emerging Markets,USD,Broad Market,Emerging markets ETF
+EWU,iShares MSCI United Kingdom ETF,etf,UK,NYSE Arca,curated,MSCI United Kingdom,USD,Broad Market,UK equity ETF
+EZU,iShares MSCI Eurozone ETF,etf,Europe,Cboe,curated,MSCI EMU,USD,Broad Market,Eurozone equity ETF
+XLK,Technology Select Sector SPDR Fund,etf,US,NYSE Arca,curated,S&P 500 Technology,USD,Information Technology,US technology sector ETF
+XLF,Financial Select Sector SPDR Fund,etf,US,NYSE Arca,curated,S&P 500 Financials,USD,Financials,US financial sector ETF
+XLE,Energy Select Sector SPDR Fund,etf,US,NYSE Arca,curated,S&P 500 Energy,USD,Energy,US energy sector ETF
+XLV,Health Care Select Sector SPDR Fund,etf,US,NYSE Arca,curated,S&P 500 Health Care,USD,Health Care,US healthcare sector ETF
+TLT,iShares 20+ Year Treasury Bond ETF,etf,US,NASDAQ,curated,ICE U.S. Treasury 20+ Year Bond,USD,Fixed Income,Long-duration US Treasury ETF
+SH,ProShares Short S&P500,etf,US,NYSE Arca,curated,Inverse S&P 500,USD,Inverse,Unlevered inverse S&P 500 ETF
+PSQ,ProShares Short QQQ,etf,US,NYSE Arca,curated,Inverse Nasdaq 100,USD,Inverse,Unlevered inverse Nasdaq 100 ETF
+GLD,SPDR Gold Shares,commodity_proxy,US,NYSE Arca,curated,Gold Spot Proxy,USD,Precious Metals,Gold ETF proxy
+SLV,iShares Silver Trust,commodity_proxy,US,NYSE Arca,curated,Silver Spot Proxy,USD,Precious Metals,Silver ETF proxy
+USO,United States Oil Fund LP,commodity_proxy,US,NYSE Arca,curated,WTI Crude Oil Futures Proxy,USD,Energy,Oil ETF proxy
+UNG,United States Natural Gas Fund LP,commodity_proxy,US,NYSE Arca,curated,Natural Gas Futures Proxy,USD,Energy,Natural gas ETF proxy
+DBC,Invesco DB Commodity Index Tracking Fund,commodity_proxy,US,NYSE Arca,curated,DBIQ Optimum Yield Diversified Commodity Index,USD,Diversified Commodities,Broad commodity ETF proxy
+GC=F,Gold Futures,futures,Global,COMEX,curated,COMEX Gold Futures,USD,Precious Metals,Yahoo continuous front-month futures ticker
+CL=F,Crude Oil Futures WTI,futures,Global,NYMEX,curated,NYMEX WTI Crude Oil Futures,USD,Energy,Yahoo continuous front-month futures ticker
+NG=F,Natural Gas Futures,futures,Global,NYMEX,curated,NYMEX Natural Gas Futures,USD,Energy,Yahoo continuous front-month futures ticker
+ES=F,E-mini S&P 500 Futures,futures,US,CME,curated,CME E-mini S&P 500 Futures,USD,Equity Index,Yahoo continuous front-month futures ticker
+NQ=F,E-mini Nasdaq-100 Futures,futures,US,CME,curated,CME E-mini Nasdaq-100 Futures,USD,Equity Index,Yahoo continuous front-month futures ticker
+ZB=F,U.S. Treasury Bond Futures,futures,US,CBOT,curated,CBOT U.S. Treasury Bond Futures,USD,Rates,Yahoo continuous front-month futures ticker
+EURUSD=X,EUR/USD Spot FX,fx,Global,FX,curated,EURUSD,USD,Foreign Exchange,Yahoo FX ticker
+GBPUSD=X,GBP/USD Spot FX,fx,Global,FX,curated,GBPUSD,USD,Foreign Exchange,Yahoo FX ticker
+USDJPY=X,USD/JPY Spot FX,fx,Global,FX,curated,USDJPY,JPY,Foreign Exchange,Yahoo FX ticker
+GBPJPY=X,GBP/JPY Spot FX,fx,Global,FX,curated,GBPJPY,JPY,Foreign Exchange,Yahoo FX ticker
+EURGBP=X,EUR/GBP Spot FX,fx,Global,FX,curated,EURGBP,GBP,Foreign Exchange,Yahoo FX ticker
+AUDUSD=X,AUD/USD Spot FX,fx,Global,FX,curated,AUDUSD,USD,Foreign Exchange,Yahoo FX ticker
+BTC-USD,Bitcoin USD,crypto,Global,Crypto,curated,Bitcoin,USD,Crypto,Yahoo crypto ticker
+ETH-USD,Ethereum USD,crypto,Global,Crypto,curated,Ethereum,USD,Crypto,Yahoo crypto ticker
+SOL-USD,Solana USD,crypto,Global,Crypto,curated,Solana,USD,Crypto,Yahoo crypto ticker
