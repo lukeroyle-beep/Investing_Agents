@@ -2,16 +2,69 @@ import os
 from datetime import datetime, UTC
 
 import pandas as pd
+import yaml
+
+from shared.run_context import get_or_create_run_id
 
 
 FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
 MACRO_REGIME_FILE = os.path.join("data", "macro_regime.csv")
 NEWS_FLAGS_FILE = os.path.join("data", "news_flags.csv")
 PORTFOLIO_STATE_FILE = os.path.join("data", "portfolio_state.csv")
+GOVERNANCE_FILE = os.path.join("config", "governance.yaml")
 
 PORTFOLIO_CANDIDATES_FILE = os.path.join("data", "portfolio_candidates.csv")
 PORTFOLIO_ORDERS_FILE = os.path.join("data", "portfolio_orders.csv")
 PORTFOLIO_POSITIONS_FILE = os.path.join("data", "portfolio_positions.csv")
+
+PORTFOLIO_ORDER_COLUMNS = [
+    "run_id",
+    "ticker",
+    "name",
+    "direction",
+    "asset_type",
+    "entry_price",
+    "position_size_pct",
+    "capital_allocated",
+    "stop_loss_price",
+    "take_profit_price",
+    "recommendation_status",
+    "recommendation_notes",
+    "sector",
+    "market_regime",
+    "adjusted_setup_score",
+    "adjusted_setup_status",
+    "risk_decision",
+    "risk_notes",
+    "headline_count",
+    "categories_found",
+    "has_news",
+    "risk_budget_pct",
+    "stop_loss_pct",
+    "raw_position_size_pct",
+    "scaled_target_allocation_pct",
+    "portfolio_action",
+    "portfolio_checked_at",
+]
+
+PORTFOLIO_POSITION_COLUMNS = [
+    "run_id",
+    "ticker",
+    "name",
+    "sector",
+    "market_regime",
+    "adjusted_setup_score",
+    "risk_decision",
+    "risk_notes",
+    "risk_budget_pct",
+    "stop_loss_pct",
+    "raw_position_size_pct",
+    "scaled_target_allocation_pct",
+    "headline_count",
+    "categories_found",
+    "has_news",
+    "portfolio_checked_at",
+]
 
 
 SECTOR_MAP = {
@@ -68,6 +121,14 @@ def load_final_shortlist():
     return df
 
 
+def load_governance():
+    if not os.path.exists(GOVERNANCE_FILE):
+        return {}
+
+    with open(GOVERNANCE_FILE, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
 def load_macro_regime():
     if not os.path.exists(MACRO_REGIME_FILE):
         return "neutral"
@@ -110,6 +171,13 @@ def load_open_tickers():
         return set()
 
     return set(open_df["ticker"].astype(str).str.strip().str.upper().tolist())
+
+
+def write_empty_portfolio_outputs():
+    os.makedirs("data", exist_ok=True)
+    pd.DataFrame().to_csv(PORTFOLIO_CANDIDATES_FILE, index=False)
+    pd.DataFrame(columns=PORTFOLIO_ORDER_COLUMNS).to_csv(PORTFOLIO_ORDERS_FILE, index=False)
+    pd.DataFrame(columns=PORTFOLIO_POSITION_COLUMNS).to_csv(PORTFOLIO_POSITIONS_FILE, index=False)
 
 
 def get_regime_settings(market_regime):
@@ -194,13 +262,41 @@ def apply_sector_limits(candidates_df, max_positions, max_positions_per_sector):
     return pd.DataFrame(selected_rows).reset_index(drop=True)
 
 
+def build_portfolio_orders(selected_df, governance, run_id):
+    output_df = selected_df.copy()
+    default_take_profit_pct = float(governance.get("default_take_profit_pct", 12.0))
+    notional_portfolio_value = float(governance.get("notional_portfolio_value", 10000.0))
+
+    output_df["run_id"] = run_id
+    output_df["direction"] = "long"
+    output_df["asset_type"] = output_df["asset_class"] if "asset_class" in output_df.columns else "equity"
+    output_df["entry_price"] = output_df["latest_close"].astype(float).round(4)
+    output_df["position_size_pct"] = output_df["scaled_target_allocation_pct"].astype(float).round(2)
+    output_df["capital_allocated"] = (
+        notional_portfolio_value * (output_df["position_size_pct"] / 100.0)
+    ).round(2)
+    output_df["stop_loss_price"] = (
+        output_df["entry_price"] * (1.0 - (output_df["stop_loss_pct"].astype(float) / 100.0))
+    ).round(4)
+    output_df["take_profit_price"] = (
+        output_df["entry_price"] * (1.0 + (default_take_profit_pct / 100.0))
+    ).round(4)
+    output_df["recommendation_status"] = "ready_for_review"
+    output_df["recommendation_notes"] = output_df["risk_notes"].fillna("").astype(str)
+
+    return output_df[PORTFOLIO_ORDER_COLUMNS].copy()
+
+
 def main():
+    run_id = get_or_create_run_id()
     shortlist_df = load_final_shortlist()
 
     if shortlist_df.empty:
         print("No final shortlist found. Run the pipeline first.")
+        write_empty_portfolio_outputs()
         return
 
+    governance = load_governance()
     market_regime = load_macro_regime()
     regime_settings = get_regime_settings(market_regime)
 
@@ -214,6 +310,7 @@ def main():
 
     if candidates_df.empty:
         print("No portfolio candidates available after shortlist filtering.")
+        write_empty_portfolio_outputs()
         return
 
     candidates_df["ticker"] = candidates_df["ticker"].astype(str).str.strip().str.upper()
@@ -221,6 +318,7 @@ def main():
 
     if candidates_df.empty:
         print("No portfolio candidates available after excluding open positions.")
+        write_empty_portfolio_outputs()
         return
 
     candidates_df["risk_priority"] = candidates_df["risk_decision"].apply(risk_priority_value)
@@ -258,6 +356,7 @@ def main():
 
     if selected_df.empty:
         print("No positions selected for the portfolio.")
+        write_empty_portfolio_outputs()
         return
 
     risk_rows = []
@@ -282,27 +381,7 @@ def main():
     selected_df["portfolio_action"] = "buy"
     selected_df["portfolio_checked_at"] = datetime.now(UTC).isoformat()
 
-    orders_df = selected_df[
-        [
-            "ticker",
-            "name",
-            "sector",
-            "market_regime",
-            "adjusted_setup_score",
-            "adjusted_setup_status",
-            "risk_decision",
-            "risk_notes",
-            "headline_count",
-            "categories_found",
-            "has_news",
-            "risk_budget_pct",
-            "stop_loss_pct",
-            "raw_position_size_pct",
-            "scaled_target_allocation_pct",
-            "portfolio_action",
-            "portfolio_checked_at",
-        ]
-    ].copy()
+    orders_df = build_portfolio_orders(selected_df, governance, run_id)
 
     positions_df = selected_df[
         [
@@ -323,6 +402,7 @@ def main():
             "portfolio_checked_at",
         ]
     ].copy()
+    positions_df.insert(0, "run_id", run_id)
 
     os.makedirs("data", exist_ok=True)
 
@@ -336,6 +416,7 @@ def main():
     print(f"Saved portfolio positions to: {PORTFOLIO_POSITIONS_FILE}")
 
     print("\nRun summary:")
+    print(f"Run ID: {run_id}")
     print(f"Market regime: {market_regime}")
     print(f"Max positions allowed: {max_positions}")
     print(f"Capital deployment percent: {capital_deployment_pct}")

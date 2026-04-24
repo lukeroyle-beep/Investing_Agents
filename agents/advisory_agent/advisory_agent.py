@@ -14,7 +14,7 @@ from shared.io_utils import (
     safe_float,
     write_csv_with_run_id,
 )
-from shared.paths import ADVISORY_TRADES_PATH, config_path, data_path
+from shared.paths import ADVISORY_TRADES_PATH, PORTFOLIO_ORDERS_PATH, config_path, data_path
 from shared.run_context import get_or_create_run_id
 from shared.schemas import validate_advisory_trades
 
@@ -102,11 +102,17 @@ def run() -> None:
     if bool(governance.get("allow_order_submission", False)):
         raise ValueError("Governance breach: allow_order_submission must be false")
 
-    recommendations = read_csv_required(data_path("portfolio_recommendations.csv"))
+    recommendations = read_csv_required(PORTFOLIO_ORDERS_PATH)
     portfolio_state = read_csv_optional(data_path("portfolio_state.csv"))
     news_review = read_csv_optional(data_path("news_review.csv"))
 
     recommendations = normalise_columns(recommendations)
+    if "run_id" not in recommendations.columns:
+        raise ValueError("portfolio_orders.csv must include run_id for Advisory Agent handoff")
+
+    recommendations = recommendations[
+        recommendations["run_id"].astype(str).str.strip() == run_id
+    ].copy()
     portfolio_state = normalise_columns(portfolio_state)
     news_review = normalise_columns(news_review)
 
