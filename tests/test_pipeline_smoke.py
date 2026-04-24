@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from pandas.testing import assert_frame_equal
 
 import run_pipeline
@@ -93,6 +94,42 @@ def _patch_control_paths(isolated_workspace: Path, monkeypatch) -> None:
     )
     monkeypatch.setattr(lifecycle_integrity_agent, "CASH_LEDGER_PATH", str(data_dir / "cash_ledger.csv"))
     monkeypatch.setattr(lifecycle_integrity_agent, "RUN_HISTORY_PATH", str(data_dir / "run_history.csv"))
+
+
+def test_pipeline_marks_failed_run_terminal_when_agent_raises(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    _patch_control_paths(isolated_workspace, monkeypatch)
+
+    monkeypatch.chdir(isolated_workspace)
+    monkeypatch.setenv(RUN_ID_ENV_VAR, "RUN_PIPELINE_FAILURE")
+    monkeypatch.setattr(run_pipeline, "PIPELINE_STEPS", [("Synthetic Agent", "agents.synthetic_agent")])
+
+    def failing_run_module(label: str, module_path: str) -> None:
+        raise RuntimeError(f"{label} failed.")
+
+    monkeypatch.setattr(run_pipeline, "run_module", failing_run_module)
+
+    with pytest.raises(RuntimeError, match="Synthetic Agent failed"):
+        run_pipeline.main()
+
+    run_history_df = pd.read_csv(data_dir / "run_history.csv", dtype=str, keep_default_na=False)
+    assert len(run_history_df) == 1
+    assert run_history_df.iloc[0]["run_id"] == "RUN_PIPELINE_FAILURE"
+    assert run_history_df.iloc[0]["status"] == "failed"
+    assert run_history_df.iloc[0]["failed_agent"] == "Synthetic Agent"
+    assert run_history_df.iloc[0]["error_message"] == "Synthetic Agent failed."
+
+    event_log_df = pd.read_csv(data_dir / "event_log.csv", dtype=str, keep_default_na=False)
+    assert event_log_df["event_type"].tolist() == ["run_started", "run_failed"]
+    failed_event = event_log_df.iloc[-1]
+    assert failed_event["severity"] == "error"
+    assert failed_event["message"] == "Pipeline run failed"
+
+    reconciliation_df = pd.read_csv(data_dir / "run_reconciliation_summary.csv")
+    assert len(reconciliation_df) == 1
+    assert reconciliation_df.iloc[0]["run_id"] == "RUN_PIPELINE_FAILURE"
+    assert reconciliation_df.iloc[0]["status"] == "failed"
+    assert reconciliation_df.iloc[0]["failed_agent"] == "Synthetic Agent"
 
 
 def test_pipeline_smoke_control_integrity(isolated_workspace, monkeypatch) -> None:

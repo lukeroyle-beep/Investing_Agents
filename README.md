@@ -337,7 +337,8 @@ Current build status:
 - SQLite shadow persistence with parity checks: **implemented**
 - interrupted-run start guard: **implemented**
 - operator runbook and recovery discipline: **initial pass implemented**
-- broader operational hardening and fault-injection coverage: **next priority**
+- pipeline failure terminalization coverage: **implemented**
+- broader operational hardening and fault-injection coverage: **in progress**
 
 ## Disclaimer
 
