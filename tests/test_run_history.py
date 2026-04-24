@@ -67,3 +67,25 @@ def test_fail_run_record_allows_single_running_to_failed_transition(isolated_wor
     assert df.iloc[0]["status"] == "failed"
     assert df.iloc[0]["completed_at"] == "2026-03-28T10:04:00+00:00"
     assert df.iloc[0]["failed_agent"] == "Exit Agent"
+
+
+def test_start_run_record_fails_closed_when_previous_run_is_still_running(isolated_workspace, monkeypatch) -> None:
+    path = _patch_run_history_path(isolated_workspace, monkeypatch)
+    run_history.start_run_record(run_id="RUN_INTERRUPTED", started_at="2026-03-28T10:00:00+00:00")
+
+    with pytest.raises(RuntimeError, match="previous run-history records remain running: RUN_INTERRUPTED"):
+        run_history.start_run_record(run_id="RUN_NEXT", started_at="2026-03-28T10:05:00+00:00")
+
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    assert df["run_id"].tolist() == ["RUN_INTERRUPTED"]
+    assert df.iloc[0]["status"] == "running"
+
+
+def test_running_run_detection_ignores_current_run_id(isolated_workspace, monkeypatch) -> None:
+    _patch_run_history_path(isolated_workspace, monkeypatch)
+    run_history.start_run_record(run_id="RUN_CURRENT", started_at="2026-03-28T10:00:00+00:00")
+
+    run_history.assert_no_unresolved_running_runs(new_run_id="RUN_CURRENT")
+
+    running = run_history.find_running_run_records()
+    assert [row["run_id"] for row in running] == ["RUN_CURRENT"]

@@ -74,6 +74,50 @@ def _get_current_status(df: pd.DataFrame, idx: int) -> str:
     return str(df.at[idx, "status"]).strip().lower()
 
 
+def find_running_run_records() -> list[dict[str, str]]:
+    """
+    Return existing run-history rows that are still marked as running.
+
+    These rows represent an interrupted or concurrent pipeline run until an
+    operator deliberately resolves them. The pipeline must fail closed rather
+    than start a new economic-state mutation path while a previous run is still
+    unresolved.
+    """
+    df = _read_run_history()
+    if df.empty:
+        return []
+
+    running_rows = df[df["status"].astype(str).str.strip().str.lower() == "running"]
+    return [
+        {column: str(row.get(column, "")) for column in RUN_HISTORY_COLUMNS}
+        for _, row in running_rows.iterrows()
+    ]
+
+
+def assert_no_unresolved_running_runs(new_run_id: str | None = None) -> None:
+    """
+    Fail closed when a prior run is still marked running.
+
+    `new_run_id` is excluded so the caller can use this after a run row has
+    already been created for the current process. The normal start path calls it
+    before appending the new row.
+    """
+    normalised_new_run_id = str(new_run_id or "").strip()
+    unresolved = [
+        row
+        for row in find_running_run_records()
+        if str(row.get("run_id", "")).strip() != normalised_new_run_id
+    ]
+    if not unresolved:
+        return
+
+    run_ids = ", ".join(str(row.get("run_id", "")).strip() for row in unresolved)
+    raise RuntimeError(
+        "Cannot start a new pipeline run while previous run-history records "
+        f"remain running: {run_ids}. Resolve the interrupted run manually before retrying."
+    )
+
+
 def _require_running_status_for_terminal_update(df: pd.DataFrame, idx: int, run_id: str) -> None:
     current_status = _get_current_status(df, idx)
     if current_status != "running":
@@ -89,6 +133,8 @@ def start_run_record(run_id: str, started_at: str) -> None:
     df = _read_run_history()
     run_id = _require_non_blank(run_id, "run_id")
     started_at = _require_non_blank(started_at, "started_at")
+
+    assert_no_unresolved_running_runs(new_run_id=run_id)
 
     existing = df["run_id"].astype(str).str.strip()
     if (existing == run_id).any():

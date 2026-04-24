@@ -285,6 +285,10 @@ Introduce explicit rules for:
 - duplicate fill prevention after crash or stop
 - continuation blocking when state safety is uncertain
 
+Current implementation now fails closed when `run_history.csv` contains a prior
+`running` row. See `docs/operator_runbook.md` for the operator process before
+marking an interrupted run terminal or retrying the pipeline.
+
 ### 4. Write the operator runbook
 Document:
 
@@ -331,7 +335,9 @@ Current build status:
 - performance history and drawdown tracking: **implemented**
 - atomic CSV write discipline: **implemented**
 - SQLite shadow persistence with parity checks: **implemented**
-- operational hardening and recovery discipline: **next priority**
+- interrupted-run start guard: **implemented**
+- operator runbook and recovery discipline: **initial pass implemented**
+- broader operational hardening and fault-injection coverage: **next priority**
 
 ## Disclaimer
 
