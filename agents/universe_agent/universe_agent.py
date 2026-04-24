@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from shared.market_data import MarketDataProvider, fetch_price_history
+from shared.market_data import (
+    MarketDataProvider,
+    MarketDataResult,
+    fetch_price_history,
+    write_market_data_health_artifact,
+)
 
 
 UNIVERSE_FILE = os.path.join("data_sources", "stock_universe.csv")
@@ -91,7 +96,11 @@ def load_assets(path: str | os.PathLike[str] = UNIVERSE_FILE) -> list[dict]:
     return df.to_dict(orient="records")
 
 
-def fetch_asset_data(asset, market_data_provider: MarketDataProvider | None = None):
+def fetch_asset_data(
+    asset,
+    market_data_provider: MarketDataProvider | None = None,
+    health_results: list[MarketDataResult] | None = None,
+):
     ticker = asset["ticker"]
     name = asset["name"]
 
@@ -103,6 +112,8 @@ def fetch_asset_data(asset, market_data_provider: MarketDataProvider | None = No
             auto_adjust=True,
             provider=market_data_provider,
         )
+        if health_results is not None:
+            health_results.append(market_data)
         data = market_data.data
 
         if market_data.metadata.error:
@@ -203,25 +214,29 @@ def fetch_asset_data(asset, market_data_provider: MarketDataProvider | None = No
 def main():
     assets = load_assets()
     results = []
+    health_results: list[MarketDataResult] = []
 
     for asset in assets:
         ticker = asset["ticker"]
         name = asset["name"]
 
         print(f"Checking {ticker} ({name})...")
-        result = fetch_asset_data(asset)
+        result = fetch_asset_data(asset, health_results=health_results)
 
         if result:
             results.append(result)
 
+    os.makedirs("data", exist_ok=True)
+    health_path = os.path.join("data", "data_source_health.csv")
+    write_market_data_health_artifact(health_results, health_path)
+
     if not results:
         print("No results collected.")
+        print(f"Saved data-source health to: {health_path}")
         return
 
     df = pd.DataFrame(results)
     df = df.sort_values(by=["score", "ticker"], ascending=[False, True])
-
-    os.makedirs("data", exist_ok=True)
 
     snapshot_path = os.path.join("data", "universe_snapshot.csv")
     pass_path = os.path.join("data", "top_leads.csv")
@@ -243,6 +258,7 @@ def main():
     print(f"Saved top leads to: {pass_path}")
     print(f"Saved watchlist to: {watch_path}")
     print(f"Saved rejects to: {reject_path}")
+    print(f"Saved data-source health to: {health_path}")
 
     print("\nRun summary:")
     print(f"Total assets scanned: {total_count}")

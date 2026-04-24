@@ -48,7 +48,10 @@ def test_fetch_asset_data_uses_market_data_provider() -> None:
         )
     )
 
-    result = universe_agent.fetch_asset_data(_asset(), market_data_provider=provider)
+    health_results: list[MarketDataResult] = []
+    result = universe_agent.fetch_asset_data(
+        _asset(), market_data_provider=provider, health_results=health_results
+    )
 
     assert provider.calls == [
         {
@@ -62,6 +65,7 @@ def test_fetch_asset_data_uses_market_data_provider() -> None:
     assert result["ticker"] == "TEST"
     assert result["checked_at"] == "2026-04-24T07:00:00+00:00"
     assert result["score"] >= 5
+    assert health_results == [provider.result]
 
 
 def test_fetch_asset_data_skips_provider_errors() -> None:
