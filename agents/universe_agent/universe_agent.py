@@ -1,9 +1,9 @@
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-import yfinance as yf
+
+from shared.market_data import MarketDataProvider, fetch_price_history
 
 
 UNIVERSE_FILE = os.path.join("data_sources", "stock_universe.csv")
@@ -91,18 +91,26 @@ def load_assets(path: str | os.PathLike[str] = UNIVERSE_FILE) -> list[dict]:
     return df.to_dict(orient="records")
 
 
-def fetch_asset_data(asset):
+def fetch_asset_data(asset, market_data_provider: MarketDataProvider | None = None):
     ticker = asset["ticker"]
     name = asset["name"]
 
     try:
-        data = yf.download(
+        market_data = fetch_price_history(
             ticker,
             period="6mo",
             interval="1d",
             auto_adjust=True,
-            progress=False,
+            provider=market_data_provider,
         )
+        data = market_data.data
+
+        if market_data.metadata.error:
+            print(
+                f"Skipping {ticker} ({name}) - market data error: "
+                f"{market_data.metadata.error}"
+            )
+            return None
 
         if data.empty:
             print(f"Skipping {ticker} ({name}) - no data.")
@@ -184,7 +192,7 @@ def fetch_asset_data(asset):
             "acceptable_volatility": acceptable_volatility,
             "score": score,
             "lead_status": lead_status,
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": market_data.metadata.fetched_at,
         }
 
     except Exception as e:
