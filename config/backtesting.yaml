@@ -14,11 +14,17 @@ tickers:
   - PANW
   - DDOG
 
+benchmark_tickers:
+  - SPY
+  - QQQ
+
 start_date: "2022-01-01"
 end_date: ""
 
 initial_capital: 100000
 position_size_pct: 10.0
+transaction_cost_bps: 5.0
+slippage_bps: 5.0
 
 ma_fast_window: 20
 ma_slow_window: 50

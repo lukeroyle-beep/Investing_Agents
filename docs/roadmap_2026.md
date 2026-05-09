@@ -57,6 +57,7 @@ Exit criteria:
 ### M2 — Backtesting engine v1
 
 Target: 2026-05-08
+Status: complete locally — v1 implementation and tests passing as of 2026-05-09
 
 Deliverables:
 
