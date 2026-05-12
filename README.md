@@ -102,6 +102,19 @@ Calculates portfolio-level equity, history, peak equity, and drawdown metrics.
 ### Journal Agent
 Records end-of-run outputs and supports operating review.
 
+## Mission Control status model
+
+Mission Control lifecycle rows use `shared.mission_control_status` to project operational state into a compact dashboard status:
+
+- `closed` lifecycle rows always render as `Idle`
+- explicit or derived waits render as `Blocked`
+- `open` / `exit_required` rows with a busy `agent_status` or truthy `work_in_progress` render as `Busy`
+- all other rows render as `Idle`
+
+Blocked rows still count as WIP/utilisation, but are shown separately with `mission_control_blocked_cause` and `mission_control_blocked_since`. The roll-up chip format is deterministic: `Busy n | Blocked m | Idle k`.
+
+Expected optional fields, when available: `lifecycle`/`status`, `agent_status`, `work_in_progress`, `blocked_flag`, `blocked_reason`, `blocked_since`, `manual_signoff_required`, `external_approval_required` or `approval_status`, `waiting_on_data` or `data_status`, `news_review_status`, `risk_review_status`, and owner-engagement timestamps for stale `exit_required` rows.
+
 ## Governance model
 
 The governance model is intentionally strict.

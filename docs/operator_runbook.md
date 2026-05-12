@@ -75,8 +75,33 @@ If interruption happened after the Fill Agent started:
 - verify whether fills were already written to `processed_fills.csv`
 - verify whether `portfolio_state.csv` changed
 - verify whether matching audit events exist
+- verify whether matching cash movements exist in `cash_ledger.csv`
 - verify SQLite parity for affected rows
 - do not re-submit or replay the same fills until idempotency has been proven for that exact run context
+
+### Fill Agent interrupted-run recovery guard
+
+Before processing a fill from `manual_fills.csv`, the Fill Agent compares every unprocessed `fill_id` against existing economic evidence in `processed_fills.csv`, `event_log.csv`, `cash_ledger.csv`, `portfolio_state.csv`, and the SQLite sidecar when present.
+
+Recovery decision rule:
+
+- If the `fill_id` is present in canonical `processed_fills.csv`, replay is treated as already processed and the fill is skipped.
+- If the `fill_id` is missing from canonical `processed_fills.csv` and there is matching audit, cash-ledger, portfolio-state, or SQLite evidence that the fill already mutated state, the Fill Agent fails closed and names the evidence found.
+- If there is no processed marker and no mutation evidence, the Fill Agent may process the fill as first-time input.
+
+When the guard fails closed, do **not** auto-mark the fill processed and do **not** replay blindly. Manually reconcile `portfolio_state.csv`, `cash_ledger.csv`, `event_log.csv`, `processed_fills.csv`, and SQLite parity. Then either restore/repair the missing processed-fill marker under documented control, or restore the affected state from backup before retrying.
+
+## Data-source health and Mission Control holds
+
+Each market-data provider call should emit a row into `data/data_source_health.csv` with ticker, source, error, stale flag, retry count, fetch time, and provider `as_of` time.
+
+Current behaviour:
+
+- Universe Agent writes a fresh health artifact at the start of a pipeline run.
+- Signal, Macro, News, and Backtesting append their own provider checks instead of overwriting earlier evidence.
+- `shared.mission_control_data_health.build_data_source_health_card()` converts the artifact into an operator card: `OK`, `Hold`, or `Missing`.
+
+Operator rule: any provider error or stale row is a Mission Control hold until reviewed. Advisory output should not be treated as clean when the health card is `Hold` or `Missing`.
 
 ## Manual repair boundaries
 

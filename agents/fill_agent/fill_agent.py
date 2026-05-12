@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from shared.schemas import (
     validate_portfolio_state,
     validate_processed_fills,
 )
+import shared.sqlite_sidecar as sqlite_sidecar
 from shared.sqlite_sidecar import append_cash_ledger_row as append_cash_ledger_row_sqlite
 from shared.sqlite_sidecar import append_processed_fill_row as append_processed_fill_row_sqlite
 
@@ -217,6 +219,165 @@ def validate_fill_batch(fills_df: pd.DataFrame) -> None:
         )
 
 
+
+def _read_existing_csv(path: str, columns: list[str]) -> pd.DataFrame:
+    """Read existing CSV evidence without creating or rewriting files."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return pd.DataFrame(columns=columns)
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError:
+        return pd.DataFrame(columns=columns)
+
+
+def _read_sqlite_table_if_available(table_name: str) -> pd.DataFrame:
+    """Read SQLite sidecar evidence only when the sidecar already exists."""
+    if not os.path.exists(sqlite_sidecar.SQLITE_DB_PATH):
+        return pd.DataFrame()
+    try:
+        return sqlite_sidecar.fetch_table_df(table_name)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _event_row_mentions_fill(row: pd.Series, fill_id: str) -> bool:
+    if str(row.get("entity_id", "")).strip() == fill_id:
+        return True
+
+    metadata_raw = row.get("metadata_json", "")
+    if pd.isna(metadata_raw) or str(metadata_raw).strip() == "":
+        return False
+
+    try:
+        metadata = json.loads(str(metadata_raw))
+    except json.JSONDecodeError:
+        return fill_id in str(metadata_raw)
+
+    def _contains(value: object) -> bool:
+        if isinstance(value, dict):
+            return any(_contains(v) for v in value.values())
+        if isinstance(value, list):
+            return any(_contains(v) for v in value)
+        return str(value) == fill_id
+
+    return _contains(metadata)
+
+
+def _money_close(left: object, right: float) -> bool:
+    value = pd.to_numeric(left, errors="coerce")
+    return not pd.isna(value) and abs(float(value) - right) < 0.005
+
+
+def _expected_cash_ledger_values(row: pd.Series) -> tuple[str, float]:
+    action = str(row["action"]).strip().lower()
+    quantity = float(row["quantity"])
+    fill_price = float(row["fill_price"])
+    fees = float(row["fees"])
+    if action == "buy":
+        return "position_open", -(quantity * fill_price)
+    if action == "sell":
+        return "position_close", (quantity * fill_price) - fees
+    return "", 0.0
+
+
+def _cash_ledger_row_matches_fill(row: pd.Series, fill: pd.Series, fill_id: str) -> bool:
+    notes = row.get("notes", "")
+    if not pd.isna(notes) and fill_id in str(notes):
+        return True
+
+    expected_event_type, expected_amount = _expected_cash_ledger_values(fill)
+    if not expected_event_type:
+        return False
+
+    return (
+        str(row.get("ticker", "")).strip().upper() == str(fill["ticker"]).strip().upper()
+        and str(row.get("side", "")).strip().lower() == str(fill["side"]).strip().lower()
+        and str(row.get("action", "")).strip().lower() == str(fill["action"]).strip().lower()
+        and str(row.get("event_type", "")).strip().lower() == expected_event_type
+        and _money_close(row.get("amount", None), expected_amount)
+        and _money_close(row.get("fees", None), float(fill["fees"]))
+    )
+
+
+def _portfolio_row_matches_fill(row: pd.Series, fill: pd.Series) -> bool:
+    action = str(fill["action"]).strip().lower()
+    ticker_matches = str(row.get("ticker", "")).strip().upper() == str(fill["ticker"]).strip().upper()
+    side_matches = str(row.get("side", "")).strip().lower() == str(fill["side"]).strip().lower()
+    quantity_matches = _money_close(row.get("quantity", None), float(fill["quantity"]))
+    if not (ticker_matches and side_matches and quantity_matches):
+        return False
+
+    if action == "buy":
+        return (
+            _money_close(row.get("entry_price", None), float(fill["fill_price"]))
+            and str(row.get("entry_date", "")).strip() == str(fill["fill_timestamp"]).strip()
+        )
+    if action == "sell":
+        return (
+            str(row.get("status", "")).strip().lower() == "closed"
+            and _money_close(row.get("exit_price", None), float(fill["fill_price"]))
+            and str(row.get("closed_at", "")).strip() == str(fill["fill_timestamp"]).strip()
+        )
+    return False
+
+
+def _find_interrupted_fill_evidence(row: pd.Series) -> list[str]:
+    fill_id = str(row["fill_id"]).strip()
+    evidence: list[str] = []
+
+    event_log_df = _read_existing_csv(os.path.join(DATA_DIR, "event_log.csv"), get_file_schema("event_log.csv").canonical_column_order)
+    if not event_log_df.empty:
+        matches = event_log_df[event_log_df.apply(lambda event: _event_row_mentions_fill(event, fill_id), axis=1)]
+        for event_type in sorted(matches.get("event_type", pd.Series(dtype=str)).astype(str).unique()):
+            evidence.append(f"event_log.csv event_type={event_type}")
+
+    cash_ledger_df = _read_existing_csv(CASH_LEDGER_PATH, CASH_LEDGER_SCHEMA.canonical_column_order)
+    if not cash_ledger_df.empty and cash_ledger_df.apply(lambda ledger_row: _cash_ledger_row_matches_fill(ledger_row, row, fill_id), axis=1).any():
+        evidence.append("cash_ledger.csv matching cash movement")
+
+    portfolio_df = _read_existing_csv(STATE_PATH, PORTFOLIO_STATE_SCHEMA.canonical_column_order)
+    if not portfolio_df.empty and portfolio_df.apply(lambda state_row: _portfolio_row_matches_fill(state_row, row), axis=1).any():
+        evidence.append("portfolio_state.csv matching position mutation")
+
+    sqlite_processed_df = _read_sqlite_table_if_available("processed_fills")
+    if not sqlite_processed_df.empty and fill_id in set(sqlite_processed_df.get("fill_id", pd.Series(dtype=str)).astype(str)):
+        evidence.append("SQLite processed_fills row")
+
+    sqlite_event_log_df = _read_sqlite_table_if_available("event_log")
+    if not sqlite_event_log_df.empty:
+        sqlite_matches = sqlite_event_log_df[sqlite_event_log_df.apply(lambda event: _event_row_mentions_fill(event, fill_id), axis=1)]
+        for event_type in sorted(sqlite_matches.get("event_type", pd.Series(dtype=str)).astype(str).unique()):
+            evidence.append(f"SQLite event_log event_type={event_type}")
+
+    sqlite_cash_ledger_df = _read_sqlite_table_if_available("cash_ledger")
+    if not sqlite_cash_ledger_df.empty and sqlite_cash_ledger_df.apply(lambda ledger_row: _cash_ledger_row_matches_fill(ledger_row, row, fill_id), axis=1).any():
+        evidence.append("SQLite cash_ledger matching cash movement")
+
+    return sorted(set(evidence))
+
+
+def fail_if_unmarked_fill_has_existing_mutation(
+    fills_df: pd.DataFrame,
+    processed_ids: set[str],
+) -> None:
+    """Fail closed when replay input has economic evidence but lacks canonical marker."""
+    for _, row in fills_df.iterrows():
+        fill_id = str(row["fill_id"]).strip()
+        if fill_id in processed_ids:
+            continue
+        evidence = _find_interrupted_fill_evidence(row)
+        if evidence:
+            raise RuntimeError(
+                "Interrupted Fill Agent recovery guard: fill_id "
+                f"{fill_id} is absent from processed_fills.csv but existing mutation "
+                f"evidence was found ({'; '.join(evidence)}). "
+                "Manual recovery required: reconcile portfolio_state.csv, cash_ledger.csv, "
+                "event_log.csv, processed_fills.csv, and SQLite parity; then either restore/repair "
+                "the missing processed-fill marker under documented control or restore from backup. "
+                "Do not auto-replay this fill."
+            )
+
+
 def get_cash_balance(cash_state_df: pd.DataFrame) -> float:
     if cash_state_df.empty:
         return DEFAULT_STARTING_CASH
@@ -366,7 +527,7 @@ def open_long_position(
         amount=-gross_cost,
         fees=fees,
         cash_balance_after=cash_balance,
-        notes=f"Opened {quantity} shares at {fill_price}",
+        notes=f"fill_id={row['fill_id']}; Opened {quantity} shares at {fill_price}",
     )
 
     append_position_opened_event(
@@ -469,7 +630,7 @@ def close_long_position(
         amount=net_proceeds,
         fees=fees,
         cash_balance_after=cash_balance,
-        notes=f"Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
+        notes=f"fill_id={row['fill_id']}; Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
     )
 
     append_position_closed_event(
@@ -541,6 +702,7 @@ def run_fill_agent() -> None:
         return
 
     validate_fill_batch(fills_df)
+    fail_if_unmarked_fill_has_existing_mutation(fills_df, processed_ids)
 
     for _, row in fills_df.iterrows():
         fill_id = str(row["fill_id"])

@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import pytest
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
 from agents.fill_agent import fill_agent
+
+
+def _manual_fill(fill_id: str = "FILL001") -> dict[str, object]:
+    return {
+        "fill_id": fill_id,
+        "ticker": "AAPL",
+        "side": "long",
+        "action": "buy",
+        "quantity": 2,
+        "fill_price": 100.0,
+        "fees": 1.0,
+        "fill_timestamp": "2026-03-28T10:00:00+00:00",
+    }
 
 
 def test_fill_agent_is_idempotent(isolated_workspace, monkeypatch) -> None:
@@ -12,20 +26,7 @@ def test_fill_agent_is_idempotent(isolated_workspace, monkeypatch) -> None:
 
     monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_FILL_TEST")
 
-    pd.DataFrame(
-        [
-            {
-                "fill_id": "FILL001",
-                "ticker": "AAPL",
-                "side": "long",
-                "action": "buy",
-                "quantity": 2,
-                "fill_price": 100.0,
-                "fees": 1.0,
-                "fill_timestamp": "2026-03-28T10:00:00+00:00",
-            }
-        ]
-    ).to_csv(manual_fills_path, index=False)
+    pd.DataFrame([_manual_fill()]).to_csv(manual_fills_path, index=False)
 
     fill_agent.run_fill_agent()
 
@@ -52,3 +53,89 @@ def test_fill_agent_is_idempotent(isolated_workspace, monkeypatch) -> None:
     assert_frame_equal(first_cash, second_cash, check_dtype=False)
     assert_frame_equal(first_ledger, second_ledger, check_dtype=False)
     assert_frame_equal(first_event_log, second_event_log, check_dtype=False)
+
+
+def test_fill_agent_fails_closed_when_marker_missing_after_mutation(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    manual_fills_path = data_dir / "manual_fills.csv"
+
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_INTERRUPTED")
+    pd.DataFrame([_manual_fill("FILL_INTERRUPTED")]).to_csv(manual_fills_path, index=False)
+
+    fill_agent.run_fill_agent()
+    first_ledger = pd.read_csv(data_dir / "cash_ledger.csv")
+
+    pd.DataFrame(columns=["fill_id", "processed_at", "run_id"]).to_csv(
+        data_dir / "processed_fills.csv",
+        index=False,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        fill_agent.run_fill_agent()
+
+    message = str(excinfo.value)
+    assert "FILL_INTERRUPTED" in message
+    assert "absent from processed_fills.csv" in message
+    assert "Manual recovery required" in message
+    assert "restore/repair the missing processed-fill marker" in message
+    assert "Do not auto-replay" in message
+
+    second_ledger = pd.read_csv(data_dir / "cash_ledger.csv")
+    assert_frame_equal(first_ledger, second_ledger, check_dtype=False)
+
+
+def test_fill_agent_rejects_duplicate_fill_ids_before_mutation(isolated_workspace) -> None:
+    data_dir = isolated_workspace / "data"
+    manual_fills_path = data_dir / "manual_fills.csv"
+
+    pd.DataFrame([_manual_fill("DUP_FILL"), _manual_fill("DUP_FILL")]).to_csv(
+        manual_fills_path,
+        index=False,
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        fill_agent.run_fill_agent()
+
+    assert "Duplicate fill_id values" in str(excinfo.value)
+    ledger = pd.read_csv(data_dir / "cash_ledger.csv")
+    assert ledger.empty
+
+
+def test_fill_agent_replay_skips_fill_already_in_processed_fills(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    manual_fills_path = data_dir / "manual_fills.csv"
+
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_ALREADY_DONE")
+    pd.DataFrame([_manual_fill("FILL_DONE")]).to_csv(manual_fills_path, index=False)
+    pd.DataFrame(
+        [{"fill_id": "FILL_DONE", "processed_at": "2026-03-28T10:05:00+00:00", "run_id": "RUN_PRIOR"}]
+    ).to_csv(data_dir / "processed_fills.csv", index=False)
+
+    fill_agent.run_fill_agent()
+
+    processed = pd.read_csv(data_dir / "processed_fills.csv")
+    ledger = pd.read_csv(data_dir / "cash_ledger.csv")
+    event_log = pd.read_csv(data_dir / "event_log.csv")
+
+    assert processed["fill_id"].tolist() == ["FILL_DONE"]
+    assert ledger.empty
+    assert event_log.empty
+
+
+def test_fill_agent_processes_first_time_fill(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    manual_fills_path = data_dir / "manual_fills.csv"
+
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_FIRST_TIME")
+    pd.DataFrame([_manual_fill("FILL_FIRST")]).to_csv(manual_fills_path, index=False)
+
+    fill_agent.run_fill_agent()
+
+    processed = pd.read_csv(data_dir / "processed_fills.csv")
+    ledger = pd.read_csv(data_dir / "cash_ledger.csv")
+    event_log = pd.read_csv(data_dir / "event_log.csv")
+
+    assert processed["fill_id"].tolist() == ["FILL_FIRST"]
+    assert len(ledger) == 1
+    assert "FILL_FIRST" in ledger.iloc[0]["notes"]
+    assert len(event_log) == 3

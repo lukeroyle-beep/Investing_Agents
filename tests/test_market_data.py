@@ -11,6 +11,7 @@ from shared.market_data import (
     MarketDataResult,
     YFinanceMarketDataProvider,
     fetch_price_history,
+    append_market_data_health_artifact,
     write_market_data_health_artifact,
 )
 
@@ -233,3 +234,34 @@ def test_write_market_data_health_artifact(tmp_path) -> None:
             "as_of": "2026-04-23T00:00:00+00:00",
         }
     ]
+
+
+def test_append_market_data_health_artifact_preserves_existing_rows(tmp_path) -> None:
+    path = tmp_path / "health.csv"
+    first = MarketDataResult(
+        ticker="AAPL",
+        data=pd.DataFrame(),
+        metadata=MarketDataMetadata(
+            source="fake",
+            fetched_at="2026-04-24T07:00:00+00:00",
+            as_of="2026-04-23T00:00:00+00:00",
+        ),
+    )
+    second = MarketDataResult(
+        ticker="MSFT",
+        data=pd.DataFrame(),
+        metadata=MarketDataMetadata(
+            source="fake",
+            fetched_at="2026-04-24T07:01:00+00:00",
+            error="provider down",
+            retry_count=1,
+        ),
+    )
+
+    write_market_data_health_artifact([first], path)
+    append_market_data_health_artifact([second], path)
+
+    rows = pd.read_csv(path)
+    assert rows["ticker"].tolist() == ["AAPL", "MSFT"]
+    assert rows.iloc[1]["error"] == "provider down"
+    assert rows.iloc[1]["retry_count"] == 1

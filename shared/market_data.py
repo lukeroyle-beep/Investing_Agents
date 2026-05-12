@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 import pandas as pd
 
@@ -200,6 +200,17 @@ class FileMarketDataCache:
         return self.cache_dir / f"{safe_ticker}_{digest}.pkl"
 
 
+@dataclass(frozen=True)
+class NewsDataResult:
+    ticker: str
+    items: list[dict[str, Any]]
+    metadata: MarketDataMetadata
+
+    @property
+    def ok(self) -> bool:
+        return self.metadata.error is None
+
+
 class MarketDataProvider(Protocol):
     def fetch_history(
         self,
@@ -208,7 +219,12 @@ class MarketDataProvider(Protocol):
         period: str = "6mo",
         interval: str = "1d",
         auto_adjust: bool = True,
+        start: str | None = None,
+        end: str | None = None,
     ) -> MarketDataResult:
+        ...
+
+    def fetch_news(self, ticker: str, *, limit: int = 10) -> NewsDataResult:
         ...
 
 
@@ -225,6 +241,7 @@ class YFinanceMarketDataProvider:
         rate_limit_hook: RateLimitHook | None = None,
         sleep_func: SleepFunc | None = None,
         backoff_func: BackoffFunc | None = None,
+        ticker_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self._download_func = download_func
         self._now_func = now_func
@@ -235,6 +252,7 @@ class YFinanceMarketDataProvider:
         self._rate_limit_hook = rate_limit_hook
         self._sleep_func = sleep_func
         self._backoff_func = backoff_func or (lambda retry_count: 0.0)
+        self._ticker_factory = ticker_factory
 
     @property
     def download_func(self) -> DownloadFunc:
@@ -251,12 +269,14 @@ class YFinanceMarketDataProvider:
         period: str = "6mo",
         interval: str = "1d",
         auto_adjust: bool = True,
+        start: str | None = None,
+        end: str | None = None,
     ) -> MarketDataResult:
         retry_count = 0
         fetched_at = self._now_func().astimezone(UTC).isoformat()
         cached_data = self._get_cached(
             ticker,
-            period=period,
+            period=self._cache_period(period, start=start, end=end),
             interval=interval,
             auto_adjust=auto_adjust,
         )
@@ -280,13 +300,19 @@ class YFinanceMarketDataProvider:
             try:
                 if self._rate_limit_hook is not None:
                     self._rate_limit_hook(ticker, retry_count)
-                data = self.download_func(
-                    ticker,
-                    period=period,
-                    interval=interval,
-                    auto_adjust=auto_adjust,
-                    progress=False,
-                )
+                download_kwargs: dict[str, object] = {
+                    "interval": interval,
+                    "auto_adjust": auto_adjust,
+                    "progress": False,
+                }
+                if start or end:
+                    if start:
+                        download_kwargs["start"] = start
+                    if end:
+                        download_kwargs["end"] = end
+                else:
+                    download_kwargs["period"] = period
+                data = self.download_func(ticker, **download_kwargs)
                 if data is None:
                     data = pd.DataFrame()
                 as_of = _latest_index_timestamp(data)
@@ -301,7 +327,7 @@ class YFinanceMarketDataProvider:
                     self._cache.set(
                         ticker,
                         data,
-                        period=period,
+                        period=self._cache_period(period, start=start, end=end),
                         interval=interval,
                         auto_adjust=auto_adjust,
                         source=self._source,
@@ -353,6 +379,53 @@ class YFinanceMarketDataProvider:
             source=self._source,
         )
 
+    def fetch_news(self, ticker: str, *, limit: int = 10) -> NewsDataResult:
+        fetched_at = self._now_func().astimezone(UTC).isoformat()
+        try:
+            ticker_obj = self.ticker_factory(ticker)
+            raw_items = getattr(ticker_obj, "news", []) or []
+            items = list(raw_items[:limit])
+            as_of = self._latest_news_timestamp(items)
+            return NewsDataResult(
+                ticker=ticker,
+                items=items,
+                metadata=MarketDataMetadata(
+                    source=self._source,
+                    fetched_at=fetched_at,
+                    as_of=as_of,
+                    stale=self._is_stale(as_of),
+                ),
+            )
+        except Exception as exc:
+            return NewsDataResult(
+                ticker=ticker,
+                items=[],
+                metadata=MarketDataMetadata(
+                    source=self._source,
+                    fetched_at=fetched_at,
+                    error=str(exc),
+                ),
+            )
+
+    @property
+    def ticker_factory(self) -> Callable[[str], Any]:
+        if self._ticker_factory is None:
+            import yfinance as yf
+
+            self._ticker_factory = yf.Ticker
+        return self._ticker_factory
+
+    def _cache_period(self, period: str, *, start: str | None, end: str | None) -> str:
+        if start or end:
+            return f"start={start or ''}|end={end or ''}"
+        return period
+
+    def _latest_news_timestamp(self, items: list[dict[str, Any]]) -> str | None:
+        timestamps = [item.get("providerPublishTime") for item in items if item.get("providerPublishTime")]
+        if not timestamps:
+            return None
+        return datetime.fromtimestamp(max(timestamps), UTC).isoformat()
+
     def _is_stale(self, as_of: str | None) -> bool:
         if self._max_staleness_days is None or as_of is None:
             return False
@@ -373,17 +446,33 @@ def fetch_price_history(
     interval: str = "1d",
     auto_adjust: bool = True,
     provider: MarketDataProvider | None = None,
+    start: str | None = None,
+    end: str | None = None,
 ) -> MarketDataResult:
     resolved_provider = provider or _default_provider
-    return resolved_provider.fetch_history(
-        ticker,
-        period=period,
-        interval=interval,
-        auto_adjust=auto_adjust,
-    )
+    kwargs: dict[str, object] = {
+        "period": period,
+        "interval": interval,
+        "auto_adjust": auto_adjust,
+    }
+    if start is not None:
+        kwargs["start"] = start
+    if end is not None:
+        kwargs["end"] = end
+    return resolved_provider.fetch_history(ticker, **kwargs)
 
 
-def market_data_health_row(result: MarketDataResult) -> dict[str, object]:
+def fetch_news(
+    ticker: str,
+    *,
+    limit: int = 10,
+    provider: MarketDataProvider | None = None,
+) -> NewsDataResult:
+    resolved_provider = provider or _default_provider
+    return resolved_provider.fetch_news(ticker, limit=limit)
+
+
+def market_data_health_row(result: MarketDataResult | NewsDataResult) -> dict[str, object]:
     return {
         "ticker": result.ticker,
         "source": result.metadata.source,
@@ -396,10 +485,35 @@ def market_data_health_row(result: MarketDataResult) -> dict[str, object]:
 
 
 def write_market_data_health_artifact(
-    results: list[MarketDataResult],
+    results: list[MarketDataResult | NewsDataResult],
     path: str | os.PathLike[str] = "data/data_source_health.csv",
 ) -> None:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [market_data_health_row(result) for result in results]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows, columns=HEALTH_COLUMNS).to_csv(output_path, index=False)
+
+
+def append_market_data_health_artifact(
+    results: list[MarketDataResult | NewsDataResult],
+    path: str | os.PathLike[str] = "data/data_source_health.csv",
+) -> None:
+    """Append market-data source health rows without erasing earlier agent evidence.
+
+    Universe Agent starts each pipeline run by writing a fresh artifact. Later
+    agents append their provider calls so the run has one visible health file
+    covering price, news, and backtest fetches.
+    """
+    if not results:
+        return
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [market_data_health_row(result) for result in results]
+    pd.DataFrame(rows, columns=HEALTH_COLUMNS).to_csv(
+        output_path,
+        mode="a",
+        header=not output_path.exists(),
+        index=False,
+    )

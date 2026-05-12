@@ -2,7 +2,13 @@ import os
 from datetime import datetime, UTC
 
 import pandas as pd
-import yfinance as yf
+
+from shared.market_data import (
+    MarketDataProvider,
+    NewsDataResult,
+    append_market_data_health_artifact,
+    fetch_news,
+)
 
 
 FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
@@ -41,10 +47,24 @@ def classify_headline(headline):
     return "other"
 
 
-def fetch_news_for_ticker(ticker, name):
+def fetch_news_for_ticker(
+    ticker,
+    name,
+    market_data_provider: MarketDataProvider | None = None,
+    health_results: list[NewsDataResult] | None = None,
+):
     try:
-        ticker_obj = yf.Ticker(ticker)
-        news_items = ticker_obj.news
+        news_data = fetch_news(ticker, limit=10, provider=market_data_provider)
+        if health_results is not None:
+            health_results.append(news_data)
+        news_items = news_data.items
+
+        if news_data.metadata.error:
+            print(f"Error fetching news for {ticker} ({name}): {news_data.metadata.error}")
+            return []
+
+        if news_data.metadata.stale:
+            print(f"Warning: {ticker} ({name}) news data is stale as of {news_data.metadata.as_of}.")
 
         if not news_items:
             return []
@@ -73,7 +93,7 @@ def fetch_news_for_ticker(ticker, name):
                     "link": link,
                     "published_at": published_at,
                     "news_category": news_category,
-                    "checked_at": datetime.now(UTC).isoformat(),
+                    "checked_at": news_data.metadata.fetched_at,
                 }
             )
 
@@ -111,13 +131,14 @@ def main():
         return
 
     all_news_rows = []
+    health_results: list[NewsDataResult] = []
 
     for _, row in shortlist_df.iterrows():
         ticker = row["ticker"]
         name = row["name"]
 
         print(f"Checking news for {ticker} ({name})...")
-        news_rows = fetch_news_for_ticker(ticker, name)
+        news_rows = fetch_news_for_ticker(ticker, name, health_results=health_results)
         all_news_rows.extend(news_rows)
 
     if all_news_rows:
@@ -139,6 +160,8 @@ def main():
     flags_df = build_news_flags(news_df)
 
     os.makedirs("data", exist_ok=True)
+    append_market_data_health_artifact(health_results)
+
     news_df.to_csv(NEWS_REVIEW_FILE, index=False)
     flags_df.to_csv(NEWS_FLAGS_FILE, index=False)
 

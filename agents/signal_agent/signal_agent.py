@@ -2,7 +2,13 @@ import os
 from datetime import datetime, UTC
 
 import pandas as pd
-import yfinance as yf
+
+from shared.market_data import (
+    MarketDataProvider,
+    MarketDataResult,
+    append_market_data_health_artifact,
+    fetch_price_history,
+)
 
 
 TOP_LEADS_FILE = os.path.join("data", "top_leads.csv")
@@ -71,15 +77,30 @@ def calculate_atr(high_series, low_series, close_series, period=14):
     return float(atr.iloc[-1])
 
 
-def fetch_signal_data(ticker, name):
+def fetch_signal_data(
+    ticker,
+    name,
+    market_data_provider: MarketDataProvider | None = None,
+    health_results: list[MarketDataResult] | None = None,
+):
     try:
-        data = yf.download(
+        market_data = fetch_price_history(
             ticker,
             period="6mo",
             interval="1d",
             auto_adjust=True,
-            progress=False,
+            provider=market_data_provider,
         )
+        if health_results is not None:
+            health_results.append(market_data)
+        data = market_data.data
+
+        if market_data.metadata.error:
+            print(f"Skipping {ticker} ({name}) - market data error: {market_data.metadata.error}")
+            return None
+
+        if market_data.metadata.stale:
+            print(f"Warning: {ticker} ({name}) market data is stale as of {market_data.metadata.as_of}.")
 
         if data.empty:
             print(f"Skipping {ticker} ({name}) - no data.")
@@ -195,7 +216,7 @@ def fetch_signal_data(ticker, name):
             "breakout_type": breakout_type,
             "setup_score": setup_score,
             "setup_status": setup_status,
-            "checked_at": datetime.now(UTC).isoformat(),
+            "checked_at": market_data.metadata.fetched_at,
         }
 
     except Exception as e:
@@ -213,13 +234,14 @@ def main():
         return
 
     results = []
+    health_results: list[MarketDataResult] = []
 
     for _, row in candidates.iterrows():
         ticker = row["ticker"]
         name = row["name"]
 
         print(f"Checking signal setup for {ticker} ({name})...")
-        result = fetch_signal_data(ticker, name)
+        result = fetch_signal_data(ticker, name, health_results=health_results)
 
         if result:
             adjusted_score = result["setup_score"]
@@ -247,6 +269,7 @@ def main():
     df = df.sort_values(by=["adjusted_setup_score", "ticker"], ascending=[False, True])
 
     os.makedirs("data", exist_ok=True)
+    append_market_data_health_artifact(health_results)
 
     all_setups_path = os.path.join("data", "signal_setups.csv")
     top_setups_path = os.path.join("data", "signal_top_setups.csv")

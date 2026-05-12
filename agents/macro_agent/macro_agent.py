@@ -2,18 +2,39 @@ import os
 from datetime import datetime, UTC
 
 import pandas as pd
-import yfinance as yf
+
+from shared.market_data import (
+    MarketDataProvider,
+    MarketDataResult,
+    append_market_data_health_artifact,
+    fetch_price_history,
+)
 
 
-def fetch_market_proxy_data(ticker, name):
+def fetch_market_proxy_data(
+    ticker,
+    name,
+    market_data_provider: MarketDataProvider | None = None,
+    health_results: list[MarketDataResult] | None = None,
+):
     try:
-        data = yf.download(
+        market_data = fetch_price_history(
             ticker,
             period="6mo",
             interval="1d",
             auto_adjust=True,
-            progress=False,
+            provider=market_data_provider,
         )
+        if health_results is not None:
+            health_results.append(market_data)
+        data = market_data.data
+
+        if market_data.metadata.error:
+            print(f"Skipping {ticker} ({name}) - market data error: {market_data.metadata.error}")
+            return None
+
+        if market_data.metadata.stale:
+            print(f"Warning: {ticker} ({name}) market data is stale as of {market_data.metadata.as_of}.")
 
         if data.empty:
             print(f"Skipping {ticker} ({name}) - no data.")
@@ -54,13 +75,14 @@ def main():
     ]
 
     results = []
+    health_results: list[MarketDataResult] = []
 
     for proxy in proxies:
         ticker = proxy["ticker"]
         name = proxy["name"]
 
         print(f"Checking macro proxy {ticker} ({name})...")
-        result = fetch_market_proxy_data(ticker, name)
+        result = fetch_market_proxy_data(ticker, name, health_results=health_results)
 
         if result:
             results.append(result)
@@ -113,6 +135,8 @@ def main():
 
     proxy_output_path = os.path.join("data", "macro_proxies.csv")
     summary_output_path = os.path.join("data", "macro_regime.csv")
+
+    append_market_data_health_artifact(health_results)
 
     df.to_csv(proxy_output_path, index=False)
     summary.to_csv(summary_output_path, index=False)
