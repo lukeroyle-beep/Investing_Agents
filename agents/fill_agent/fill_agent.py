@@ -17,6 +17,7 @@ from agents.shared.event_log import (
     ensure_event_log_exists,
 )
 from shared.io_utils import write_csv
+from shared.run_context import get_or_create_run_id
 from shared.schema_registry import get_file_schema
 from shared.schemas import (
     validate_cash_ledger,
@@ -50,7 +51,7 @@ def utc_now_iso() -> str:
 
 
 def current_run_id() -> str:
-    return "RUN_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return get_or_create_run_id()
 
 
 def safe_read_csv_or_default(

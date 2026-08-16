@@ -43,10 +43,10 @@ This is what allows complexity to grow without turning the system into an opaque
 A typical pipeline run follows this sequence:
 
 1. Universe
-2. Signal
-3. Macro
-4. News
-5. Risk
+2. Macro
+3. Signal
+4. Risk
+5. News
 6. Portfolio
 7. Advisory
 8. Fill

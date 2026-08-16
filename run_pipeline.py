@@ -14,10 +14,10 @@ from shared.run_history import complete_run_record, fail_run_record, start_run_r
 
 PIPELINE_STEPS: list[tuple[str, str]] = [
     ("Universe Agent", "agents.universe_agent.universe_agent"),
-    ("Signal Agent", "agents.signal_agent.signal_agent"),
     ("Macro Agent", "agents.macro_agent.macro_agent"),
-    ("News Agent", "agents.news_agent.news_agent"),
+    ("Signal Agent", "agents.signal_agent.signal_agent"),
     ("Risk Agent", "agents.risk_agent.risk_agent"),
+    ("News Agent", "agents.news_agent.news_agent"),
     ("Portfolio Agent", "agents.portfolio_agent.portfolio_agent"),
     ("Advisory Agent", "agents.advisory_agent.advisory_agent"),
     ("Fill Agent", "agents.fill_agent.fill_agent"),

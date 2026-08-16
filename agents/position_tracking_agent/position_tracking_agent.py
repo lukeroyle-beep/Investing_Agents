@@ -13,6 +13,7 @@ from shared.portfolio_state_helpers import (
     CLOSED_POSITION_STATUS,
     normalise_position_status,
 )
+from shared.run_context import get_or_create_run_id
 from shared.schemas import (
     PORTFOLIO_STATE_SCHEMA,
     validate_position_alerts,
@@ -31,7 +32,7 @@ def utc_now_iso() -> str:
 
 
 def current_run_id() -> str:
-    return "RUN_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return get_or_create_run_id()
 
 
 def read_portfolio_state() -> pd.DataFrame:
