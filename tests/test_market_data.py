@@ -17,7 +17,7 @@ from shared.market_data import (
 
 
 def fixed_now() -> datetime:
-    return datetime(2026, 4, 24, 7, 0, tzinfo=UTC)
+    return datetime(2026, 4, 24, 21, 0, tzinfo=UTC)
 
 
 def test_yfinance_provider_wraps_download_with_metadata() -> None:
@@ -42,7 +42,7 @@ def test_yfinance_provider_wraps_download_with_metadata() -> None:
     assert result.ticker == "AAPL"
     assert result.data is frame
     assert result.metadata.source == "yfinance"
-    assert result.metadata.fetched_at == "2026-04-24T07:00:00+00:00"
+    assert result.metadata.fetched_at == "2026-04-24T21:00:00+00:00"
     assert result.metadata.as_of == "2026-04-24T00:00:00+00:00"
     assert result.metadata.stale is False
     assert result.metadata.error is None
@@ -184,8 +184,9 @@ def test_yfinance_provider_marks_stale_data_when_configured() -> None:
 
     result = provider.fetch_history("SPY")
 
-    assert result.ok
+    assert not result.ok
     assert result.metadata.stale is True
+    assert result.metadata.mode == "no_trade"
 
 
 def test_fetch_price_history_accepts_mock_provider() -> None:
@@ -223,17 +224,15 @@ def test_write_market_data_health_artifact(tmp_path) -> None:
     write_market_data_health_artifact([result], path)
 
     rows = pd.read_csv(path)
-    assert rows.to_dict(orient="records") == [
-        {
-            "ticker": "AAPL",
-            "source": "fake",
-            "error": "boom",
-            "stale": True,
-            "retry_count": 2,
-            "fetched_at": "2026-04-24T07:00:00+00:00",
-            "as_of": "2026-04-23T00:00:00+00:00",
-        }
-    ]
+    assert rows.iloc[0]["ticker"] == "AAPL"
+    assert rows.iloc[0]["source"] == "fake"
+    assert rows.iloc[0]["data_kind"] == "daily_research_price"
+    assert rows.iloc[0]["error"] == "boom"
+    assert bool(rows.iloc[0]["stale"]) is True
+    assert rows.iloc[0]["retry_count"] == 2
+    assert rows.iloc[0]["fetched_at"] == "2026-04-24T07:00:00+00:00"
+    assert rows.iloc[0]["as_of"] == "2026-04-23T00:00:00+00:00"
+    assert rows.iloc[0]["mode"] == "no_trade"
 
 
 def test_append_market_data_health_artifact_preserves_existing_rows(tmp_path) -> None:

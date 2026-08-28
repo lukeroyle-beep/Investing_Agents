@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+import pandas as pd
+
+from shared.io_utils import append_csv_file, write_csv_file
 from shared.paths import DATA_DIR, data_path
 from shared.sqlite_sidecar import append_event_log_row
 from shared.schema_registry import get_file_schema
@@ -18,6 +20,7 @@ TARGET_EVENT_TYPES = {
     "artifact_written",
     "fill_processed",
     "position_opened",
+    "position_reduced",
     "position_closed",
     "cash_adjusted",
     "exit_decision_generated",
@@ -118,9 +121,11 @@ def _ensure_data_dir() -> None:
 def ensure_event_log_exists() -> None:
     _ensure_data_dir()
     if not EVENT_LOG_PATH.exists():
-        with EVENT_LOG_PATH.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=EVENT_LOG_COLUMNS)
-            writer.writeheader()
+        write_csv_file(
+            pd.DataFrame(columns=EVENT_LOG_COLUMNS),
+            EVENT_LOG_PATH,
+            producer="Shared Event Log",
+        )
 
 
 def _build_event_id(run_id: str, agent_name: str, event_type: str, entity_id: str) -> str:
@@ -175,9 +180,11 @@ def append_event(
         "metadata_json": _json_dumps(metadata),
     }
 
-    with EVENT_LOG_PATH.open("a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=EVENT_LOG_COLUMNS)
-        writer.writerow(row)
+    append_csv_file(
+        pd.DataFrame([row], columns=EVENT_LOG_COLUMNS),
+        EVENT_LOG_PATH,
+        producer="Shared Event Log",
+    )
 
     append_event_log_row(row)
     return event_id
@@ -360,6 +367,32 @@ def append_position_opened_event(
         position_id=position_id,
         before_state=before_state,
         after_state=after_state,
+    )
+
+
+def append_position_reduced_event(
+    *,
+    run_id: str,
+    agent_name: str,
+    position_id: str,
+    ticker: str,
+    message: str,
+    before_state: Dict[str, Any],
+    after_state: Dict[str, Any],
+    details: Optional[Dict[str, Any]] = None,
+) -> str:
+    return append_standard_event(
+        run_id=run_id,
+        agent_name=agent_name,
+        event_type="position_reduced",
+        entity_type="position",
+        entity_id=position_id,
+        ticker=ticker,
+        position_id=position_id,
+        message=message,
+        before_state=before_state,
+        after_state=after_state,
+        details=details,
     )
 
 

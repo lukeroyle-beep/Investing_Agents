@@ -1,28 +1,46 @@
 import os
 from datetime import datetime, UTC
+from pathlib import Path
 
 import pandas as pd
 import yaml
 
+from shared.paths import (
+    FINAL_SHORTLIST_PATH,
+    MACRO_REGIME_PATH,
+    NEWS_FLAGS_PATH,
+    PORTFOLIO_CANDIDATES_PATH,
+    PORTFOLIO_ORDERS_PATH,
+    PORTFOLIO_POSITIONS_PATH,
+    PORTFOLIO_STATE_PATH,
+    config_path,
+)
 from shared.run_context import get_or_create_run_id
 
 
-FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
-MACRO_REGIME_FILE = os.path.join("data", "macro_regime.csv")
-NEWS_FLAGS_FILE = os.path.join("data", "news_flags.csv")
-PORTFOLIO_STATE_FILE = os.path.join("data", "portfolio_state.csv")
-GOVERNANCE_FILE = os.path.join("config", "governance.yaml")
+FINAL_SHORTLIST_FILE = FINAL_SHORTLIST_PATH
+MACRO_REGIME_FILE = MACRO_REGIME_PATH
+NEWS_FLAGS_FILE = NEWS_FLAGS_PATH
+PORTFOLIO_STATE_FILE = PORTFOLIO_STATE_PATH
+GOVERNANCE_FILE = config_path("governance.yaml")
 
-PORTFOLIO_CANDIDATES_FILE = os.path.join("data", "portfolio_candidates.csv")
-PORTFOLIO_ORDERS_FILE = os.path.join("data", "portfolio_orders.csv")
-PORTFOLIO_POSITIONS_FILE = os.path.join("data", "portfolio_positions.csv")
+PORTFOLIO_CANDIDATES_FILE = PORTFOLIO_CANDIDATES_PATH
+PORTFOLIO_ORDERS_FILE = PORTFOLIO_ORDERS_PATH
+PORTFOLIO_POSITIONS_FILE = PORTFOLIO_POSITIONS_PATH
 
 PORTFOLIO_ORDER_COLUMNS = [
     "run_id",
+    "internal_instrument_id",
     "ticker",
     "name",
+    "exchange",
+    "currency",
     "direction",
     "asset_type",
+    "execution_environment",
+    "order_type",
+    "sizing_method",
+    "sizing_value",
     "entry_price",
     "position_size_pct",
     "capital_allocated",
@@ -174,7 +192,7 @@ def load_open_tickers():
 
 
 def write_empty_portfolio_outputs():
-    os.makedirs("data", exist_ok=True)
+    Path(PORTFOLIO_CANDIDATES_FILE).parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame().to_csv(PORTFOLIO_CANDIDATES_FILE, index=False)
     pd.DataFrame(columns=PORTFOLIO_ORDER_COLUMNS).to_csv(PORTFOLIO_ORDERS_FILE, index=False)
     pd.DataFrame(columns=PORTFOLIO_POSITION_COLUMNS).to_csv(PORTFOLIO_POSITIONS_FILE, index=False)
@@ -268,13 +286,24 @@ def build_portfolio_orders(selected_df, governance, run_id):
     notional_portfolio_value = float(governance.get("notional_portfolio_value", 10000.0))
 
     output_df["run_id"] = run_id
+    output_df["internal_instrument_id"] = (
+        output_df["internal_instrument_id"]
+        if "internal_instrument_id" in output_df.columns
+        else ""
+    )
+    output_df["exchange"] = output_df["exchange"] if "exchange" in output_df.columns else ""
+    output_df["currency"] = output_df["currency"] if "currency" in output_df.columns else ""
     output_df["direction"] = "long"
     output_df["asset_type"] = output_df["asset_class"] if "asset_class" in output_df.columns else "equity"
+    output_df["execution_environment"] = "demo"
+    output_df["order_type"] = "market"
+    output_df["sizing_method"] = "fixed_notional"
     output_df["entry_price"] = output_df["latest_close"].astype(float).round(4)
     output_df["position_size_pct"] = output_df["scaled_target_allocation_pct"].astype(float).round(2)
     output_df["capital_allocated"] = (
         notional_portfolio_value * (output_df["position_size_pct"] / 100.0)
     ).round(2)
+    output_df["sizing_value"] = output_df["capital_allocated"]
     output_df["stop_loss_price"] = (
         output_df["entry_price"] * (1.0 - (output_df["stop_loss_pct"].astype(float) / 100.0))
     ).round(4)
@@ -404,7 +433,7 @@ def main():
     ].copy()
     positions_df.insert(0, "run_id", run_id)
 
-    os.makedirs("data", exist_ok=True)
+    Path(PORTFOLIO_CANDIDATES_FILE).parent.mkdir(parents=True, exist_ok=True)
 
     candidates_df.to_csv(PORTFOLIO_CANDIDATES_FILE, index=False)
     orders_df.to_csv(PORTFOLIO_ORDERS_FILE, index=False)

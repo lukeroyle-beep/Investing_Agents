@@ -3,8 +3,16 @@ from datetime import datetime, UTC
 
 import pandas as pd
 
+from shared.paths import (
+    FINAL_SHORTLIST_PATH,
+    RISK_APPROVED_PATH,
+    RISK_CAUTION_PATH,
+    RISK_REVIEW_PATH,
+    RISK_VETO_PATH,
+    SIGNAL_SETUPS_PATH,
+)
 
-SIGNAL_SETUPS_FILE = os.path.join("data", "signal_setups.csv")
+SIGNAL_SETUPS_FILE = SIGNAL_SETUPS_PATH
 
 
 def load_signal_setups():
@@ -92,13 +100,13 @@ def main():
         ascending=[True, False, True]
     )
 
-    os.makedirs("data", exist_ok=True)
+    RISK_REVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    all_risk_path = os.path.join("data", "risk_review.csv")
-    approved_path = os.path.join("data", "risk_approved.csv")
-    caution_path = os.path.join("data", "risk_caution.csv")
-    veto_path = os.path.join("data", "risk_veto.csv")
-    final_shortlist_path = os.path.join("data", "final_shortlist.csv")
+    all_risk_path = RISK_REVIEW_PATH
+    approved_path = RISK_APPROVED_PATH
+    caution_path = RISK_CAUTION_PATH
+    veto_path = RISK_VETO_PATH
+    final_shortlist_path = FINAL_SHORTLIST_PATH
 
     combined_df["checked_at_risk"] = datetime.now(UTC).isoformat()
 

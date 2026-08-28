@@ -7,7 +7,8 @@ from typing import Optional
 import pandas as pd
 
 from agents.shared.event_log import append_artifact_written_event
-from shared.io_utils import read_csv_with_schema, write_csv, write_csv_with_schema
+from shared.io_utils import read_csv_with_schema, write_managed_csv_with_schema
+from shared.paths import DATA_DIR as RUNTIME_STATE_DIR
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
     CLOSED_POSITION_STATUS,
@@ -15,14 +16,18 @@ from shared.portfolio_state_helpers import (
 )
 from shared.run_context import get_or_create_run_id
 from shared.schemas import (
+    PORTFOLIO_MONITOR_SCHEMA,
     PORTFOLIO_STATE_SCHEMA,
+    POSITION_ALERTS_SCHEMA,
+    validate_portfolio_monitor,
     validate_position_alerts,
 )
 
 
-DATA_DIR = "data"
+DATA_DIR = str(RUNTIME_STATE_DIR)
 
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
+MONITOR_PATH = os.path.join(DATA_DIR, "portfolio_monitor.csv")
 ALERTS_PATH = os.path.join(DATA_DIR, "position_alerts.csv")
 AGENT_NAME = "Position Tracking Agent"
 
@@ -43,11 +48,22 @@ def read_portfolio_state() -> pd.DataFrame:
     )
 
 
-def write_portfolio_state(df: pd.DataFrame) -> None:
-    write_csv_with_schema(
+def read_portfolio_monitor() -> pd.DataFrame:
+    if not os.path.exists(MONITOR_PATH):
+        return validate_portfolio_monitor(pd.DataFrame(), keep_extra_columns=False)
+    return read_csv_with_schema(
+        MONITOR_PATH,
+        schema=PORTFOLIO_MONITOR_SCHEMA,
+        empty_ok=True,
+    )
+
+
+def write_portfolio_monitor(df: pd.DataFrame) -> None:
+    write_managed_csv_with_schema(
         df,
-        STATE_PATH,
-        schema=PORTFOLIO_STATE_SCHEMA,
+        MONITOR_PATH,
+        schema=PORTFOLIO_MONITOR_SCHEMA,
+        producer=AGENT_NAME,
         keep_extra_columns=False,
     )
 
@@ -57,19 +73,16 @@ def ensure_alerts_file() -> pd.DataFrame:
         return validate_position_alerts(pd.read_csv(ALERTS_PATH), keep_extra_columns=False)
 
     df = pd.DataFrame(
-        columns=[
-            "alert_id",
-            "run_id",
-            "timestamp",
-            "position_id",
-            "ticker",
-            "status",
-            "alert_type",
-            "message",
-        ]
+        columns=POSITION_ALERTS_SCHEMA.column_order
     )
     df = validate_position_alerts(df, keep_extra_columns=False)
-    write_csv(df, ALERTS_PATH)
+    write_managed_csv_with_schema(
+        df,
+        ALERTS_PATH,
+        schema=POSITION_ALERTS_SCHEMA,
+        producer=AGENT_NAME,
+        keep_extra_columns=False,
+    )
     return df
 
 
@@ -88,7 +101,11 @@ def get_latest_price(ticker: str, fallback_price: Optional[float]) -> float:
     return float(fallback_price)
 
 
-def calculate_long_pnl(quantity: float, entry_price: float, current_price: float) -> tuple[float, float]:
+def calculate_long_pnl(
+    quantity: float,
+    entry_price: float,
+    current_price: float,
+) -> tuple[float, float, float]:
     market_value = quantity * current_price
     pnl_abs = (current_price - entry_price) * quantity
     cost_basis = quantity * entry_price
@@ -134,7 +151,13 @@ def append_alert(
     )
     out = pd.concat([alerts_df, new_row], ignore_index=True)
     out = validate_position_alerts(out, keep_extra_columns=False)
-    write_csv(out, ALERTS_PATH)
+    write_managed_csv_with_schema(
+        out,
+        ALERTS_PATH,
+        schema=POSITION_ALERTS_SCHEMA,
+        producer=AGENT_NAME,
+        keep_extra_columns=False,
+    )
     return out
 
 
@@ -159,8 +182,19 @@ def validate_tracking_inputs(row: pd.Series) -> None:
         )
 
 
-def process_active_position(row: pd.Series, run_id: str) -> pd.Series:
-    row = row.copy()
+def _numeric_value(*values: object) -> float | None:
+    for value in values:
+        numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+        if not pd.isna(numeric):
+            return float(numeric)
+    return None
+
+
+def process_active_position(
+    row: pd.Series,
+    run_id: str,
+    previous_monitor_row: pd.Series | None = None,
+) -> dict[str, object]:
     validate_tracking_inputs(row)
 
     ticker = str(row["ticker"]).upper()
@@ -168,8 +202,16 @@ def process_active_position(row: pd.Series, run_id: str) -> pd.Series:
     quantity = float(row["quantity"])
     entry_price = float(row["entry_price"])
 
-    existing_current_price = pd.to_numeric(pd.Series([row.get("current_price")]), errors="coerce").iloc[0]
-    fallback_price = existing_current_price if not pd.isna(existing_current_price) else entry_price
+    previous_monitor_row = (
+        previous_monitor_row
+        if previous_monitor_row is not None
+        else pd.Series(dtype=object)
+    )
+    fallback_price = _numeric_value(
+        previous_monitor_row.get("current_price"),
+        row.get("current_price"),
+        entry_price,
+    )
     latest_price = get_latest_price(ticker, fallback_price)
 
     if side == "long":
@@ -177,65 +219,56 @@ def process_active_position(row: pd.Series, run_id: str) -> pd.Series:
     else:
         market_value, pnl_abs, pnl_pct = calculate_short_pnl(quantity, entry_price, latest_price)
 
-    prev_high = pd.to_numeric(pd.Series([row.get("highest_price_since_entry")]), errors="coerce").iloc[0]
-    prev_low = pd.to_numeric(pd.Series([row.get("lowest_price_since_entry")]), errors="coerce").iloc[0]
+    previous_high = _numeric_value(
+        previous_monitor_row.get("highest_price_since_entry"),
+        row.get("highest_price_since_entry"),
+    )
+    previous_low = _numeric_value(
+        previous_monitor_row.get("lowest_price_since_entry"),
+        row.get("lowest_price_since_entry"),
+    )
 
-    if pd.isna(prev_high):
-        new_high = latest_price
-    else:
-        new_high = max(float(prev_high), latest_price)
-
-    if pd.isna(prev_low):
-        new_low = latest_price
-    else:
-        new_low = min(float(prev_low), latest_price)
-
-    row["current_price"] = latest_price
-    row["market_value"] = market_value
-    row["pnl_abs"] = pnl_abs
-    row["pnl_pct"] = pnl_pct
-    row["highest_price_since_entry"] = new_high
-    row["lowest_price_since_entry"] = new_low
-    row["run_id"] = run_id
-    row["last_updated"] = utc_now_iso()
-
-    return row
-
-
-def preserve_closed_position(row: pd.Series) -> pd.Series:
-    """
-    Closed positions are intentionally left untouched.
-
-    This prevents Position Tracking from rewriting:
-    - quantity
-    - entry_price
-    - entry_date
-    - closed_at
-    - exit_price
-    - realised_pnl_abs
-    - fees_total
-    - status
-    """
-    return row.copy()
+    return {
+        "position_id": str(row["position_id"]),
+        "ticker": ticker,
+        "side": side,
+        "status": normalise_position_status(row["status"]),
+        "quantity": quantity,
+        "entry_price": entry_price,
+        "current_price": latest_price,
+        "market_value": market_value,
+        "pnl_abs": pnl_abs,
+        "pnl_pct": pnl_pct,
+        "highest_price_since_entry": (
+            latest_price if previous_high is None else max(previous_high, latest_price)
+        ),
+        "lowest_price_since_entry": (
+            latest_price if previous_low is None else min(previous_low, latest_price)
+        ),
+        "marked_at": utc_now_iso(),
+        "run_id": run_id,
+    }
 
 
 def run_position_tracking_agent() -> None:
     run_id = current_run_id()
 
     state_df = read_portfolio_state()
-
+    previous_monitor_df = read_portfolio_monitor()
     alerts_df = ensure_alerts_file()
 
     if state_df.empty:
-        write_portfolio_state(state_df)
+        write_portfolio_monitor(
+            validate_portfolio_monitor(pd.DataFrame(), keep_extra_columns=False)
+        )
         append_artifact_written_event(
             run_id=run_id,
             agent_name=AGENT_NAME,
             entity_type="portfolio",
-            entity_id="portfolio_state",
+            entity_id="portfolio_monitor",
             message="Position tracking completed with no positions to update.",
             details={
-                "portfolio_state_path": STATE_PATH,
+                "portfolio_monitor_path": MONITOR_PATH,
                 "position_alerts_path": ALERTS_PATH,
                 "total_positions": 0,
                 "active_positions_updated": 0,
@@ -244,7 +277,7 @@ def run_position_tracking_agent() -> None:
             },
         )
         print("Position Tracking Agent finished.")
-        print(f"Saved portfolio state to: {STATE_PATH}")
+        print(f"Saved portfolio monitor to: {MONITOR_PATH}")
         print(f"Saved position alerts to: {ALERTS_PATH}")
         print("")
         print("Run summary:")
@@ -254,7 +287,23 @@ def run_position_tracking_agent() -> None:
         print(f"Updated at: {utc_now_iso()}")
         return
 
-    output_rows = []
+    output_rows: list[dict[str, object]] = []
+    previous_by_position_id: dict[str, pd.Series] = {}
+    if not previous_monitor_df.empty:
+        if previous_monitor_df["position_id"].duplicated().any():
+            duplicate_ids = sorted(
+                previous_monitor_df.loc[
+                    previous_monitor_df["position_id"].duplicated(keep=False),
+                    "position_id",
+                ].astype(str).unique()
+            )
+            raise ValueError(
+                f"portfolio_monitor.csv has duplicate position_id values: {duplicate_ids}"
+            )
+        previous_by_position_id = {
+            str(row["position_id"]): row
+            for _, row in previous_monitor_df.iterrows()
+        }
 
     total_positions = len(state_df)
     active_count = 0
@@ -268,7 +317,13 @@ def run_position_tracking_agent() -> None:
             active_count += 1
             original_status = status
 
-            updated_row = process_active_position(row, run_id)
+            updated_row = process_active_position(
+                row,
+                run_id,
+                previous_monitor_row=previous_by_position_id.get(
+                    str(row["position_id"])
+                ),
+            )
 
             output_rows.append(updated_row)
 
@@ -286,7 +341,7 @@ def run_position_tracking_agent() -> None:
                 alert_count += 1
 
         elif status == CLOSED_POSITION_STATUS:
-            output_rows.append(preserve_closed_position(row))
+            continue
 
         else:
             raise ValueError(
@@ -294,16 +349,19 @@ def run_position_tracking_agent() -> None:
                 f"position_id={row.get('position_id')} ticker={row.get('ticker')}: {row.get('status')}"
             )
 
-    out_df = pd.DataFrame(output_rows)
-    write_portfolio_state(out_df)
+    out_df = validate_portfolio_monitor(
+        pd.DataFrame(output_rows),
+        keep_extra_columns=False,
+    )
+    write_portfolio_monitor(out_df)
     append_artifact_written_event(
         run_id=run_id,
         agent_name=AGENT_NAME,
         entity_type="portfolio",
-        entity_id="portfolio_state",
+        entity_id="portfolio_monitor",
         message="Position tracking mark-to-market update completed.",
         details={
-            "portfolio_state_path": STATE_PATH,
+            "portfolio_monitor_path": MONITOR_PATH,
             "position_alerts_path": ALERTS_PATH,
             "total_positions": total_positions,
             "active_positions_updated": active_count,
@@ -313,7 +371,7 @@ def run_position_tracking_agent() -> None:
     )
 
     print("Position Tracking Agent finished.")
-    print(f"Saved portfolio state to: {STATE_PATH}")
+    print(f"Saved portfolio monitor to: {MONITOR_PATH}")
     print(f"Saved position alerts to: {ALERTS_PATH}")
     print("")
     print("Run summary:")

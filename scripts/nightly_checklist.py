@@ -12,6 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from shared.paths import DATA_DIR
+from shared.artifact_manifest import REQUIRED_ARTIFACTS
+from shared.run_finalizer import validate_finalization_record
 from shared.schema_registry import get_file_schema
 
 
@@ -21,24 +23,32 @@ class CheckIssue:
     message: str
 
 
-SCHEMA_CRITICAL_FILES = [
-    "portfolio_state.csv",
-    "processed_fills.csv",
-    "cash_state.csv",
-    "lifecycle_integrity_report.csv",
-    "run_reconciliation_summary.csv",
-]
+SCHEMA_CRITICAL_FILES = list(REQUIRED_ARTIFACTS)
 
 CUSTOM_REQUIRED_COLUMNS = {
     "advisory_trades.csv": {"ticker", "action", "direction", "advice_status", "run_id"},
     "exit_advice.csv": {"position_id", "ticker", "exit_action", "status", "run_id"},
     "final_shortlist.csv": {"ticker", "risk_decision", "adjusted_setup_score"},
-    "portfolio_orders.csv": {"run_id", "ticker", "entry_price", "position_size_pct", "capital_allocated"},
+    "portfolio_orders.csv": {
+        "run_id",
+        "internal_instrument_id",
+        "ticker",
+        "exchange",
+        "currency",
+        "direction",
+        "asset_type",
+        "execution_environment",
+        "order_type",
+        "sizing_method",
+        "sizing_value",
+        "entry_price",
+        "position_size_pct",
+        "capital_allocated",
+    },
     "signal_setups.csv": {"ticker"},
     "signal_top_setups.csv": {"ticker"},
     "news_flags.csv": {"ticker", "has_news"},
     "macro_regime.csv": {"market_regime"},
-    "data_source_health.csv": {"ticker", "source", "error", "stale", "retry_count", "fetched_at", "as_of"},
 }
 
 RUN_SCOPED_FILES = [
@@ -142,6 +152,31 @@ def check_run_scope_consistency(issues: list[CheckIssue], run_id: str | None) ->
             add_issue(issues, "critical", f"{file_name}: no rows for latest run_id {run_id}")
 
 
+def check_latest_run_finalization(issues: list[CheckIssue], run_id: str | None) -> None:
+    if not run_id:
+        return
+    history_path = DATA_DIR / "run_history.csv"
+    history = read_csv(history_path)
+    matching = history[history["run_id"].astype(str).str.strip() == run_id]
+    if len(matching) != 1:
+        add_issue(issues, "critical", f"run_history.csv has ambiguous latest run_id {run_id}")
+        return
+    status = str(matching.iloc[0].get("status", "")).strip().lower()
+    status = {"success": "succeeded", "running": "started"}.get(status, status)
+    if status != "succeeded":
+        add_issue(issues, "critical", f"Latest run {run_id} is not succeeded: status={status}")
+        return
+    record_path = DATA_DIR.parent / "runs" / run_id / "run_finalization.json"
+    try:
+        validate_finalization_record(record_path, state_dir=DATA_DIR)
+    except Exception as exc:
+        add_issue(
+            issues,
+            "critical",
+            f"Latest run {run_id} lacks valid finalization proof: {exc}",
+        )
+
+
 def check_duplicate_processed_fills(issues: list[CheckIssue]) -> None:
     path = DATA_DIR / "processed_fills.csv"
     if not path.exists():
@@ -213,12 +248,28 @@ def check_data_source_health(issues: list[CheckIssue]) -> None:
     if "error" in df.columns:
         error_rows = df[df["error"].astype(str).str.strip() != ""]
         if not error_rows.empty:
-            add_issue(issues, "warning", f"data_source_health.csv reports {len(error_rows)} source error rows")
+            add_issue(issues, "critical", f"data_source_health.csv reports {len(error_rows)} source error rows")
 
     if "stale" in df.columns:
         stale_rows = df[df["stale"].astype(str).str.lower().isin({"true", "1", "yes"})]
         if not stale_rows.empty:
-            add_issue(issues, "warning", f"data_source_health.csv reports {len(stale_rows)} stale rows")
+            add_issue(issues, "critical", f"data_source_health.csv reports {len(stale_rows)} stale rows")
+
+    if "mode" in df.columns:
+        no_trade_rows = df[df["mode"].astype(str).str.lower().eq("no_trade")]
+        degraded_rows = df[df["mode"].astype(str).str.lower().eq("degraded")]
+        if not no_trade_rows.empty:
+            add_issue(
+                issues,
+                "critical",
+                f"data_source_health.csv requires no_trade for {len(no_trade_rows)} rows",
+            )
+        elif not degraded_rows.empty:
+            add_issue(
+                issues,
+                "warning",
+                f"data_source_health.csv is degraded for {len(degraded_rows)} rows",
+            )
 
 
 def run_checks() -> list[CheckIssue]:
@@ -227,6 +278,7 @@ def run_checks() -> list[CheckIssue]:
     check_required_artifacts(issues, CUSTOM_REQUIRED_COLUMNS.keys())
     run_id = latest_run_id(issues)
     check_run_scope_consistency(issues, run_id)
+    check_latest_run_finalization(issues, run_id)
     check_duplicate_processed_fills(issues)
     check_closed_position_immutability(issues)
     check_data_source_health(issues)

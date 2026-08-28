@@ -1,0 +1,23 @@
+{
+  "page": 1,
+  "pageSize": 100,
+  "totalItems": 2,
+  "items": [
+    {
+      "instrumentId": 1001,
+      "internalSymbolFull": "AAPL",
+      "internalExchangeName": "NASDAQ",
+      "instrumentType": "Equity",
+      "isDelisted": false,
+      "isCurrentlyTradable": true
+    },
+    {
+      "instrumentId": 9001,
+      "internalSymbolFull": "AAPL.MX",
+      "internalExchangeName": "BMV",
+      "instrumentType": "Equity",
+      "isDelisted": false,
+      "isCurrentlyTradable": true
+    }
+  ]
+}

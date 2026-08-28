@@ -8,12 +8,21 @@ from shared.market_data import (
     MarketDataResult,
     append_market_data_health_artifact,
     fetch_price_history,
+    market_data_is_actionable,
+    summarize_provider_error,
+)
+from shared.paths import (
+    MACRO_REGIME_PATH,
+    SIGNAL_SETUPS_PATH,
+    SIGNAL_TOP_SETUPS_PATH,
+    TOP_LEADS_PATH,
+    WATCHLIST_PATH,
 )
 
 
-TOP_LEADS_FILE = os.path.join("data", "top_leads.csv")
-WATCHLIST_FILE = os.path.join("data", "watchlist.csv")
-MACRO_REGIME_FILE = os.path.join("data", "macro_regime.csv")
+TOP_LEADS_FILE = TOP_LEADS_PATH
+WATCHLIST_FILE = WATCHLIST_PATH
+MACRO_REGIME_FILE = MACRO_REGIME_PATH
 
 
 def load_candidate_assets():
@@ -95,12 +104,12 @@ def fetch_signal_data(
             health_results.append(market_data)
         data = market_data.data
 
-        if market_data.metadata.error:
-            print(f"Skipping {ticker} ({name}) - market data error: {market_data.metadata.error}")
+        if not market_data_is_actionable(market_data):
+            print(
+                f"Skipping {ticker} ({name}) - data is not actionable: "
+                f"{market_data.metadata.reason or market_data.metadata.error}"
+            )
             return None
-
-        if market_data.metadata.stale:
-            print(f"Warning: {ticker} ({name}) market data is stale as of {market_data.metadata.as_of}.")
 
         if data.empty:
             print(f"Skipping {ticker} ({name}) - no data.")
@@ -220,8 +229,9 @@ def fetch_signal_data(
         }
 
     except Exception as e:
-        print(f"Error processing {ticker} ({name}): {e}")
-        return None
+        raise RuntimeError(
+            f"Unexpected market-data failure for {ticker}: {summarize_provider_error(e)}"
+        ) from e
 
 
 def main():
@@ -261,6 +271,9 @@ def main():
 
             results.append(result)
 
+    SIGNAL_SETUPS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    append_market_data_health_artifact(health_results)
+
     if not results:
         print("No signal results collected.")
         return
@@ -268,11 +281,8 @@ def main():
     df = pd.DataFrame(results)
     df = df.sort_values(by=["adjusted_setup_score", "ticker"], ascending=[False, True])
 
-    os.makedirs("data", exist_ok=True)
-    append_market_data_health_artifact(health_results)
-
-    all_setups_path = os.path.join("data", "signal_setups.csv")
-    top_setups_path = os.path.join("data", "signal_top_setups.csv")
+    all_setups_path = SIGNAL_SETUPS_PATH
+    top_setups_path = SIGNAL_TOP_SETUPS_PATH
 
     df.to_csv(all_setups_path, index=False)
     df[df["adjusted_setup_status"] == "actionable"].to_csv(top_setups_path, index=False)

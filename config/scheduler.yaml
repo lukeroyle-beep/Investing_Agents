@@ -1,0 +1,25 @@
+schema_version: "1.0"
+
+# Scheduling is disabled until Gate B live acceptance is separately approved
+# and qualification evidence is ready to accumulate.
+enabled: false
+environment: demo
+broker_submission_enabled: false
+per_order_human_approval_required: true
+approval_ttl_seconds: 300
+heartbeat_interval_seconds: 60
+
+qualification:
+  minimum_trading_sessions: 30
+  minimum_approved_mutation_cycles: 20
+  required_fault_drills:
+    - process_kill_lifecycle_boundaries
+    - host_restart
+    - clock_skew
+    - api_outage
+    - sustained_429
+    - websocket_gap
+    - corrupted_cache
+    - partial_fill
+    - cancel_fill_race
+    - unavailable_operator

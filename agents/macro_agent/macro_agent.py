@@ -8,7 +8,10 @@ from shared.market_data import (
     MarketDataResult,
     append_market_data_health_artifact,
     fetch_price_history,
+    market_data_is_actionable,
+    summarize_provider_error,
 )
+from shared.paths import MACRO_PROXIES_PATH, MACRO_REGIME_PATH
 
 
 def fetch_market_proxy_data(
@@ -29,12 +32,12 @@ def fetch_market_proxy_data(
             health_results.append(market_data)
         data = market_data.data
 
-        if market_data.metadata.error:
-            print(f"Skipping {ticker} ({name}) - market data error: {market_data.metadata.error}")
+        if not market_data_is_actionable(market_data):
+            print(
+                f"Skipping {ticker} ({name}) - data is not actionable: "
+                f"{market_data.metadata.reason or market_data.metadata.error}"
+            )
             return None
-
-        if market_data.metadata.stale:
-            print(f"Warning: {ticker} ({name}) market data is stale as of {market_data.metadata.as_of}.")
 
         if data.empty:
             print(f"Skipping {ticker} ({name}) - no data.")
@@ -63,8 +66,9 @@ def fetch_market_proxy_data(
         }
 
     except Exception as e:
-        print(f"Error processing {ticker} ({name}): {e}")
-        return None
+        raise RuntimeError(
+            f"Unexpected market-data failure for {ticker}: {summarize_provider_error(e)}"
+        ) from e
 
 
 def main():
@@ -86,6 +90,9 @@ def main():
 
         if result:
             results.append(result)
+
+    MACRO_PROXIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    append_market_data_health_artifact(health_results)
 
     if len(results) != 3:
         print("Macro Agent could not collect all required proxy data.")
@@ -131,12 +138,10 @@ def main():
         ]
     )
 
-    os.makedirs("data", exist_ok=True)
+    MACRO_PROXIES_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    proxy_output_path = os.path.join("data", "macro_proxies.csv")
-    summary_output_path = os.path.join("data", "macro_regime.csv")
-
-    append_market_data_health_artifact(health_results)
+    proxy_output_path = MACRO_PROXIES_PATH
+    summary_output_path = MACRO_REGIME_PATH
 
     df.to_csv(proxy_output_path, index=False)
     summary.to_csv(summary_output_path, index=False)

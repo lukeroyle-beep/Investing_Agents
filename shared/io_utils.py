@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -9,7 +10,66 @@ import pandas as pd
 import yaml
 
 from shared.run_context import get_or_create_run_id
+from shared.schema_registry import get_file_schema, registry_contains
 from shared.schemas import SchemaSpec, normalise_to_schema
+
+
+class ManagedWriteError(RuntimeError):
+    """Base error for schema-registry ownership enforcement."""
+
+
+class UnknownManagedArtifactError(ManagedWriteError):
+    """Raised when a managed write targets an unregistered artifact."""
+
+
+class ProducerOwnershipError(ManagedWriteError):
+    """Raised when a producer does not exactly match the registered owner."""
+
+
+class ManagedSchemaMismatchError(ManagedWriteError):
+    """Raised when a managed write supplies a conflicting schema."""
+
+
+_WRITE_LOCKS_GUARD = threading.Lock()
+_WRITE_LOCKS: dict[Path, threading.RLock] = {}
+
+
+def _write_lock_for(file_path: Path) -> threading.RLock:
+    resolved_path = file_path.resolve()
+    with _WRITE_LOCKS_GUARD:
+        return _WRITE_LOCKS.setdefault(resolved_path, threading.RLock())
+
+
+def _validate_write_producer(file_path: Path, producer: str | None) -> None:
+    file_name = file_path.name
+    entry = get_file_schema(file_name) if registry_contains(file_name) else None
+
+    if producer is None:
+        if entry is not None and entry.owner_agent == "Fill Agent":
+            raise ProducerOwnershipError(
+                f"Managed economic artifact {file_name} requires producer='Fill Agent'"
+            )
+        return
+
+    if entry is None:
+        raise UnknownManagedArtifactError(
+            f"Managed write rejected because {file_name} has no schema-registry owner"
+        )
+
+    if producer != entry.owner_agent:
+        raise ProducerOwnershipError(
+            f"Managed write rejected for {file_name}: producer={producer!r}, "
+            f"registered_owner={entry.owner_agent!r}"
+        )
+
+
+def _validate_managed_schema(file_path: Path, schema: SchemaSpec) -> None:
+    entry = get_file_schema(file_path.name)
+    if list(schema.column_order) != list(entry.canonical_column_order):
+        raise ManagedSchemaMismatchError(
+            f"Managed write rejected for {file_path.name}: supplied schema does not "
+            "match the registered canonical column order"
+        )
 
 
 def ensure_parent_dir(file_path: Path) -> None:
@@ -140,36 +200,45 @@ def write_csv_file(
     df: pd.DataFrame,
     file_path: Path,
     sort_columns: Optional[list[str]] = None,
+    producer: str | None = None,
 ) -> None:
-    ensure_parent_dir(file_path)
+    _validate_write_producer(file_path, producer)
+    with _write_lock_for(file_path):
+        ensure_parent_dir(file_path)
 
-    output_df = df.copy()
+        output_df = df.copy()
 
-    if sort_columns:
-        existing_sort_columns = [c for c in sort_columns if c in output_df.columns]
-        if existing_sort_columns:
-            output_df = output_df.sort_values(by=existing_sort_columns)
+        if sort_columns:
+            existing_sort_columns = [c for c in sort_columns if c in output_df.columns]
+            if existing_sort_columns:
+                output_df = output_df.sort_values(by=existing_sort_columns)
 
-    fd, temp_path = _temp_path_for(file_path)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            output_df.to_csv(handle, index=False)
-            handle.flush()
-            os.fsync(handle.fileno())
+        fd, temp_path = _temp_path_for(file_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                output_df.to_csv(handle, index=False)
+                handle.flush()
+                os.fsync(handle.fileno())
 
-        _atomic_replace(temp_path, file_path)
-    except Exception:
-        temp_path.unlink(missing_ok=True)
-        raise
+            _atomic_replace(temp_path, file_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
 
 def write_csv(
     df: pd.DataFrame,
     file_path: Path | str,
     sort_columns: Optional[list[str]] = None,
+    producer: str | None = None,
 ) -> None:
     path = Path(file_path)
-    write_csv_file(df=df, file_path=path, sort_columns=sort_columns)
+    write_csv_file(
+        df=df,
+        file_path=path,
+        sort_columns=sort_columns,
+        producer=producer,
+    )
 
 
 # -----------------------------
@@ -182,6 +251,7 @@ def write_csv_with_schema(
     schema: SchemaSpec,
     sort_columns: Optional[list[str]] = None,
     keep_extra_columns: bool = False,
+    producer: str | None = None,
 ) -> None:
     path = Path(file_path)
 
@@ -191,7 +261,35 @@ def write_csv_with_schema(
         keep_extra_columns=keep_extra_columns,
     )
 
-    write_csv_file(output_df, path, sort_columns=sort_columns)
+    write_csv_file(
+        output_df,
+        path,
+        sort_columns=sort_columns,
+        producer=producer,
+    )
+
+
+def write_managed_csv_with_schema(
+    df: pd.DataFrame,
+    file_path: Path | str,
+    *,
+    schema: SchemaSpec,
+    producer: str,
+    sort_columns: Optional[list[str]] = None,
+    keep_extra_columns: bool = False,
+) -> None:
+    """Atomically write a registered artifact under its exact declared owner."""
+    path = Path(file_path)
+    _validate_write_producer(path, producer)
+    _validate_managed_schema(path, schema)
+    write_csv_with_schema(
+        df,
+        path,
+        schema=schema,
+        sort_columns=sort_columns,
+        keep_extra_columns=keep_extra_columns,
+        producer=producer,
+    )
 
 
 def add_run_id_column(
@@ -216,6 +314,7 @@ def write_csv_with_run_id(
     run_id: Optional[str] = None,
     column_name: str = "run_id",
     overwrite: bool = True,
+    producer: str | None = None,
 ) -> None:
     path = Path(file_path)
 
@@ -226,7 +325,12 @@ def write_csv_with_run_id(
         overwrite=overwrite,
     )
 
-    write_csv_file(output_df, path, sort_columns=sort_columns)
+    write_csv_file(
+        output_df,
+        path,
+        sort_columns=sort_columns,
+        producer=producer,
+    )
 
 
 def write_csv_with_schema_and_run_id(
@@ -238,6 +342,7 @@ def write_csv_with_schema_and_run_id(
     column_name: str = "run_id",
     overwrite: bool = True,
     keep_extra_columns: bool = False,
+    producer: str | None = None,
 ) -> None:
     path = Path(file_path)
 
@@ -254,7 +359,12 @@ def write_csv_with_schema_and_run_id(
         keep_extra_columns=keep_extra_columns,
     )
 
-    write_csv_file(output_df, path, sort_columns=sort_columns)
+    write_csv_file(
+        output_df,
+        path,
+        sort_columns=sort_columns,
+        producer=producer,
+    )
 
 
 # -----------------------------
@@ -296,15 +406,21 @@ def save_yaml(data: dict[str, Any], file_path: Path | str) -> None:
 # APPEND
 # -----------------------------
 
-def append_csv_file(new_rows_df: pd.DataFrame, file_path: Path | str) -> pd.DataFrame:
+def append_csv_file(
+    new_rows_df: pd.DataFrame,
+    file_path: Path | str,
+    producer: str | None = None,
+) -> pd.DataFrame:
     path = Path(file_path)
-    ensure_parent_dir(path)
+    _validate_write_producer(path, producer)
+    with _write_lock_for(path):
+        ensure_parent_dir(path)
 
-    if path.exists():
-        existing_df = pd.read_csv(path)
-        combined_df = pd.concat([existing_df, new_rows_df], ignore_index=True)
-    else:
-        combined_df = new_rows_df.copy()
+        if path.exists():
+            existing_df = pd.read_csv(path)
+            combined_df = pd.concat([existing_df, new_rows_df], ignore_index=True)
+        else:
+            combined_df = new_rows_df.copy()
 
-    write_csv_file(combined_df, path)
-    return combined_df
+        write_csv_file(combined_df, path, producer=producer)
+        return combined_df

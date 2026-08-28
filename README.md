@@ -4,22 +4,44 @@ A deterministic, advisory-only portfolio engine with controlled mutation, lifecy
 
 This project is designed to move beyond a loose chain of scripts into a state-governed portfolio system with clear authority over state, explicit controls around mutation, and a credible path to stronger operational resilience.
 
+## Development environment
+
+Python 3.12 is the operational baseline. Dependencies are declared in
+`pyproject.toml` and reproducibly pinned in `uv.lock` using `uv` 0.11.6.
+
+```bash
+uv sync --frozen --all-groups
+uv run --frozen python -m pytest -q
+```
+
+CI rejects undeclared imports and runs the tests, compilation, and dependency
+consistency checks on Python 3.11 through 3.13 across Linux and macOS. A
+separate security workflow runs `pip-audit` and scans complete Git history with
+Gitleaks on both platforms.
+`requirements.txt` is a generated UTF-8 compatibility export; it is not the
+dependency source of truth.
+
 ## Core characteristics
 
 - Deterministic orchestration through `run_pipeline.py`
-- Advisory-only execution model with manual sign-off required
-- No broker execution or automatic order submission
-- Canonical portfolio state held in `portfolio_state.csv`
+- Advisory-by-default execution model with per-order human sign-off
+- Disabled eToro Demo execution integration; no autonomous or Real submission
+- Canonical portfolio state held in untracked `runtime/state/portfolio_state.csv`
 - Hard mutation boundary where the Fill Agent is the only component allowed to alter economic state
 - Explicit lifecycle progression: `open` → `exit_required` → `closed`
 - Closed-position immutability to protect historical economic facts
 - Shared schema, validation, and invariant controls across agents
 - Append-only audit logging with timestamps, run identifiers, and before/after state where relevant
 - Run reconciliation for cash, Profit and Loss (PnL), equity, exposure, and activity checks
+- Fail-closed run finalisation with per-run artifact manifests and economic-state checksums
+- Centralized exchange-calendar freshness decisions with explicit `normal`, `degraded`, and `no_trade` modes
+- Checksum-verified runtime bootstrap, backup, restore, schema migration, and interrupted-run recovery tools
 - Portfolio performance memory including equity history, peak equity, drawdown tracking, and summary metrics
 - Atomic Comma-Separated Values (CSV) write discipline to reduce partial-write risk
 - SQLite (Structured Query Language Lite) shadow persistence with parity checks while CSV remains authoritative
 - Test coverage for idempotency, lifecycle enforcement, invariants, non-mutating agents, and end-to-end smoke paths
+- Immutable strategy experiments and advisory-only promotion controls
+- Disabled scheduled-Demo preparation with durable qualification evidence
 
 ## Architecture summary
 
@@ -29,10 +51,11 @@ The engine is built around one central principle:
 
 In practical terms, that means:
 
-- `portfolio_state.csv` is the single source of truth for positions and cash state
+- `runtime/state/portfolio_state.csv` is canonical for holdings and lifecycle; `cash_state.csv` is canonical for cash
 - only the Fill Agent can mutate economic history
 - all other agents read state and produce advice, analytics, or controls
 - lifecycle transitions are validated and enforced
+- `portfolio_monitor.csv` is the separate, non-economic authority for current marks
 - closed positions cannot be silently rewritten
 - every run can be audited and reconciled
 
@@ -47,15 +70,16 @@ A typical pipeline run follows this sequence:
 3. Signal
 4. Risk
 5. News
-6. Portfolio
-7. Advisory
-8. Fill
-9. Lifecycle Integrity
-10. Position Tracking
-11. Lifecycle Integrity
-12. Exit
-13. Portfolio Equity
-14. Journal
+6. Data Freshness Gate
+7. Portfolio
+8. Advisory
+9. Fill
+10. Lifecycle Integrity
+11. Position Tracking
+12. Lifecycle Integrity
+13. Exit
+14. Portfolio Equity
+15. Journal
 
 This sequencing is intentional.
 
@@ -91,7 +115,7 @@ The only economic mutator in the system. It processes fills and updates canonica
 Validates lifecycle rules, invariant compliance, and historical integrity. It acts as a hard control gate.
 
 ### Position Tracking Agent
-Updates mark-to-market fields and monitoring outputs for active positions only.
+Builds `portfolio_monitor.csv`, the mark-to-market read model for active positions. It never rewrites Fill-owned `portfolio_state.csv`; current price, market value, unrealised P&L, and high/low marks are authoritative only in the monitor.
 
 ### Exit Agent
 Produces exit advice based on current position conditions and system rules without mutating state.
@@ -125,7 +149,8 @@ The governance model is intentionally strict.
 - Manual sign-off required before any real-world execution
 
 ### State authority
-- `portfolio_state.csv` is canonical
+- `runtime/state/portfolio_state.csv` is canonical
+- `runtime/state/portfolio_monitor.csv` is authoritative only for current marks
 - CSV remains authoritative even with SQLite shadow persistence
 - the Fill Agent is the only component allowed to alter economic state
 
@@ -192,6 +217,15 @@ After each run, the system can reconcile:
 
 This provides a practical control against silent drift.
 
+### Run finalisation
+
+Each run progresses through `started → validating → succeeded|failed`.
+`succeeded` is unavailable until required artifacts and schemas validate,
+economic checksum changes are explained, lifecycle and freshness gates pass,
+reconciliation passes, and required CSV/SQLite tables are in parity. The
+durable proof lives under `runtime/runs/<run_id>/`; missing or corrupt proof is
+treated as failure during interrupted-run recovery.
+
 ## Performance tracking
 
 The engine retains portfolio performance memory across runs, including:
@@ -239,7 +273,15 @@ agents/
   journal_agent/
   shared/
 config/
-data/
+data_sources/        # deliberately versioned source inputs
+runtime/             # ignored local state, runs, control, cache, logs, backups
+  state/
+  runs/
+  control/
+  cache/
+  logs/
+  backups/
+tests/fixtures/       # deliberately versioned sanitized test data
 docs/
 scripts/
 run_pipeline.py
@@ -352,6 +394,9 @@ Current build status:
 - operator runbook and recovery discipline: **initial pass implemented**
 - pipeline failure terminalization coverage: **implemented**
 - broader operational hardening and fault-injection coverage: **in progress**
+- immutable execution domain and operational command ledger: **implemented, disabled by default**
+- independent Demo pre-trade risk, approval, and kill switch: **implemented, writes disabled**
+- eToro Demo Gate A contract adapter: **read-only implementation; connected MCP Demo smoke passed, repository adapter remains disabled by default**
 
 ## Disclaimer
 

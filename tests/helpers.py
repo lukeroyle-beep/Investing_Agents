@@ -13,6 +13,7 @@ from shared.schemas import (
     validate_cash_state,
     validate_event_log,
     validate_portfolio_equity_history,
+    validate_portfolio_monitor,
     validate_portfolio_state,
     validate_processed_fills,
 )
@@ -45,6 +46,7 @@ def open_position_row(**overrides: Any) -> dict[str, Any]:
         "run_id": "RUN_BASE",
         "realised_pnl_abs": 0.0,
         "fees_total": 1.0,
+        "entry_fees_remaining": 1.0,
         "closed_at": "",
         "exit_price": "",
     }
@@ -63,6 +65,7 @@ def closed_position_row(**overrides: Any) -> dict[str, Any]:
         exit_reason="position_closed",
         realised_pnl_abs=98.0,
         fees_total=2.0,
+        entry_fees_remaining=0.0,
         closed_at="2026-03-28T11:00:00+00:00",
         exit_price=110.0,
     )
@@ -81,6 +84,41 @@ def portfolio_state_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 def write_portfolio_state_csv(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
     df = portfolio_state_frame(rows)
+    write_csv(path, df)
+    return df
+
+
+def portfolio_monitor_row(
+    position: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    source = open_position_row() if position is None else position
+    row = {
+        "position_id": source["position_id"],
+        "ticker": source["ticker"],
+        "side": source["side"],
+        "status": source["status"],
+        "quantity": source["quantity"],
+        "entry_price": source["entry_price"],
+        "current_price": source["current_price"],
+        "market_value": source["market_value"],
+        "pnl_abs": source["pnl_abs"],
+        "pnl_pct": source["pnl_pct"],
+        "highest_price_since_entry": source["highest_price_since_entry"],
+        "lowest_price_since_entry": source["lowest_price_since_entry"],
+        "marked_at": source["last_updated"],
+        "run_id": source["run_id"],
+    }
+    row.update(overrides)
+    return row
+
+
+def portfolio_monitor_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    return validate_portfolio_monitor(pd.DataFrame(rows), keep_extra_columns=False)
+
+
+def write_portfolio_monitor_csv(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
+    df = portfolio_monitor_frame(rows)
     write_csv(path, df)
     return df
 

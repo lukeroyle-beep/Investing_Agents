@@ -3,7 +3,7 @@
 ## Objective
 Migrate the repository's current CSV-backed storage to SQLite while preserving these existing semantics:
 
-- `data/portfolio_state.csv` remains the canonical portfolio state conceptually
+- `runtime/state/portfolio_state.csv` remains the canonical portfolio state conceptually
 - Fill processing remains the economic mutation boundary
 - closed positions remain economically immutable after closure
 - Exit Agent and Portfolio Equity Agent remain non-mutating
@@ -18,42 +18,42 @@ This design is for migration planning only. No migration code is proposed here.
 ### Current-state files
 These represent the latest canonical or near-canonical state.
 
-- `data/portfolio_state.csv`
-- `data/cash_state.csv`
+- `runtime/state/portfolio_state.csv`
+- `runtime/state/cash_state.csv`
 
 ### Append-only ledger files
 These record economic or processing history and should remain append-only in database form.
 
-- `data/cash_ledger.csv`
-- `data/processed_fills.csv`
+- `runtime/state/cash_ledger.csv`
+- `runtime/state/processed_fills.csv`
 
 ### Append-only audit / event files
 These record operational and audit history.
 
-- `data/event_log.csv`
+- `runtime/state/event_log.csv`
 
 ### Run history files
 These track pipeline lifecycle and control state.
 
-- `data/run_history.csv`
-- `data/run_reconciliation_summary.csv`
+- `runtime/state/run_history.csv`
+- `runtime/state/run_reconciliation_summary.csv`
 
 ### Derived analytics / reporting files
 These are reproducible from stronger sources and should be treated as derived tables or materialized outputs.
 
-- `data/portfolio_equity_history.csv`
-- `data/performance_summary.csv`
-- `data/lifecycle_integrity_report.csv`
-- `data/exit_advice.csv`
-- `data/position_alerts.csv`
+- `runtime/state/portfolio_equity_history.csv`
+- `runtime/state/performance_summary.csv`
+- `runtime/state/lifecycle_integrity_report.csv`
+- `runtime/state/exit_advice.csv`
+- `runtime/state/position_alerts.csv`
 
 Note:
-- `data/portfolio_equity.csv` is a retired legacy snapshot and should be replaced by the latest row of `data/portfolio_equity_history.csv` plus `data/performance_summary.csv`.
+- `runtime/state/portfolio_equity.csv` is a retired legacy snapshot and should be replaced by the latest row of `runtime/state/portfolio_equity_history.csv` plus `runtime/state/performance_summary.csv`.
 
 ### Input / staging files that likely remain external for a while
 These are not good first candidates for authoritative DB ownership.
 
-- `data/manual_fills.csv`
+- `runtime/state/manual_fills.csv`
 - advisory / agent output CSVs used in the existing pipeline
 
 ## Recommended SQLite Table Model

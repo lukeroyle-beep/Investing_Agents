@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 
 from scripts import nightly_checklist
+from shared.runtime_bootstrap import BOOTSTRAP_RUN_ID, bootstrap_runtime
 from shared.schema_registry import get_file_schema
 
 
@@ -12,13 +15,12 @@ def _with_registered_columns(file_name: str, rows: list[dict]) -> pd.DataFrame:
 
 
 def _patch_data_dir(isolated_workspace, monkeypatch):
-    data_dir = isolated_workspace / "data"
-    data_dir.mkdir(exist_ok=True)
+    data_dir = isolated_workspace / "runtime" / "state"
     monkeypatch.setattr(nightly_checklist, "DATA_DIR", data_dir)
     return data_dir
 
 
-def _write_minimum_required_files(data_dir, run_id="RUN_NIGHTLY"):
+def _write_legacy_minimum_required_files(data_dir, run_id="RUN_NIGHTLY"):
     pd.DataFrame(
         [
             {
@@ -59,6 +61,28 @@ def _write_minimum_required_files(data_dir, run_id="RUN_NIGHTLY"):
             }
         ],
     ).to_csv(data_dir / "portfolio_state.csv", index=False)
+
+    _with_registered_columns(
+        "portfolio_monitor.csv",
+        [
+            {
+                "position_id": "POS1",
+                "ticker": "AAPL",
+                "side": "long",
+                "status": "open",
+                "quantity": 1,
+                "entry_price": 100,
+                "current_price": 110,
+                "market_value": 110,
+                "pnl_abs": 10,
+                "pnl_pct": 10,
+                "highest_price_since_entry": 110,
+                "lowest_price_since_entry": 100,
+                "marked_at": "2026-04-24T19:05:00+00:00",
+                "run_id": run_id,
+            }
+        ],
+    ).to_csv(data_dir / "portfolio_monitor.csv", index=False)
 
     _with_registered_columns(
         "cash_state.csv",
@@ -177,7 +201,16 @@ def _write_minimum_required_files(data_dir, run_id="RUN_NIGHTLY"):
         [
             {
                 "run_id": run_id,
+                "internal_instrument_id": "00000000-0000-4000-8000-000000000001",
                 "ticker": "AAPL",
+                "exchange": "NASDAQ",
+                "currency": "USD",
+                "direction": "long",
+                "asset_type": "equity",
+                "execution_environment": "demo",
+                "order_type": "market",
+                "sizing_method": "fixed_notional",
+                "sizing_value": 500,
                 "entry_price": 100,
                 "position_size_pct": 5,
                 "capital_allocated": 500,
@@ -203,6 +236,14 @@ def _write_minimum_required_files(data_dir, run_id="RUN_NIGHTLY"):
     ).to_csv(data_dir / "data_source_health.csv", index=False)
 
 
+def _write_minimum_required_files(data_dir, run_id=BOOTSTRAP_RUN_ID):
+    assert run_id == BOOTSTRAP_RUN_ID
+    bootstrap_runtime(
+        data_dir.parent,
+        now=datetime(2026, 4, 24, 21, 0, tzinfo=UTC),
+    )
+
+
 def test_nightly_checklist_passes_with_minimum_valid_artifacts(isolated_workspace, monkeypatch):
     data_dir = _patch_data_dir(isolated_workspace, monkeypatch)
     _write_minimum_required_files(data_dir)
@@ -212,15 +253,36 @@ def test_nightly_checklist_passes_with_minimum_valid_artifacts(isolated_workspac
 
 def test_nightly_checklist_fails_on_stale_run_scoped_artifact(isolated_workspace, monkeypatch):
     data_dir = _patch_data_dir(isolated_workspace, monkeypatch)
-    _write_minimum_required_files(data_dir, run_id="RUN_CURRENT")
-    advisory = pd.read_csv(data_dir / "advisory_trades.csv")
-    advisory["run_id"] = "RUN_STALE"
-    advisory.to_csv(data_dir / "advisory_trades.csv", index=False)
+    _write_minimum_required_files(data_dir)
+    pd.DataFrame(
+        [
+            {
+                "ticker": "AAPL",
+                "action": "review_trade",
+                "direction": "long",
+                "advice_status": "manual_review",
+                "run_id": "RUN_STALE",
+            }
+        ]
+    ).to_csv(data_dir / "advisory_trades.csv", index=False)
 
     issues = nightly_checklist.run_checks()
 
-    assert any("advisory_trades.csv: no rows for latest run_id RUN_CURRENT" in issue.message for issue in issues)
+    assert any(
+        f"advisory_trades.csv: no rows for latest run_id {BOOTSTRAP_RUN_ID}" in issue.message
+        for issue in issues
+    )
     assert nightly_checklist.main() == 1
+
+
+def test_nightly_checklist_requires_portfolio_monitor(isolated_workspace, monkeypatch):
+    data_dir = _patch_data_dir(isolated_workspace, monkeypatch)
+    _write_minimum_required_files(data_dir)
+    (data_dir / "portfolio_monitor.csv").unlink()
+
+    issues = nightly_checklist.run_checks()
+
+    assert any("Missing artifact: portfolio_monitor.csv" in issue.message for issue in issues)
 
 
 def test_nightly_checklist_fails_on_duplicate_fill_ids(isolated_workspace, monkeypatch):

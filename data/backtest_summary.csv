@@ -1,2 +1,0 @@
-run_id,generated_at,tickers_requested,tickers_tested,total_trades,winners,losers,win_rate_pct,avg_trade_return_pct,median_trade_return_pct,avg_weighted_return_pct,profit_factor,avg_hold_days,start_date,end_date,position_size_pct,stop_loss_pct,take_profit_pct,max_hold_days
-RUN_20260317T112829Z,2026-03-17T11:28:35.369551+00:00,12,12,276,156,120,56.52,2.0865,2.2309,0.2087,1.697,21.46,2022-01-01,,10.0,8.0,15.0,30

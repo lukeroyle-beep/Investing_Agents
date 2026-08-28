@@ -8,6 +8,7 @@ import shared.run_reconciliation as shared_run_reconciliation
 import shared.sqlite_parity as sqlite_parity
 from agents.fill_agent import fill_agent
 from agents.portfolio_equity_agent import portfolio_equity_agent
+from agents.position_tracking_agent import position_tracking_agent
 from shared.sqlite_parity import format_parity_report, validate_sqlite_dual_write_parity
 from shared.sqlite_sidecar import get_connection, initialise_db
 from tests.helpers import cash_state_frame, write_csv
@@ -35,7 +36,10 @@ def _patch_reconciliation_paths(isolated_workspace, monkeypatch) -> None:
         data_dir / "run_reconciliation_summary.csv",
     )
     monkeypatch.setattr(sqlite_parity, "CASH_LEDGER_PATH", data_dir / "cash_ledger.csv")
+    monkeypatch.setattr(sqlite_parity, "CASH_STATE_PATH", data_dir / "cash_state.csv")
     monkeypatch.setattr(sqlite_parity, "PROCESSED_FILLS_PATH", data_dir / "processed_fills.csv")
+    monkeypatch.setattr(sqlite_parity, "TRADE_FILLS_PATH", data_dir / "trade_fills.csv")
+    monkeypatch.setattr(sqlite_parity, "PORTFOLIO_STATE_PATH", data_dir / "portfolio_state.csv")
     monkeypatch.setattr(
         sqlite_parity,
         "PORTFOLIO_EQUITY_HISTORY_PATH",
@@ -50,6 +54,12 @@ def test_sqlite_parity_passes_for_dual_written_outputs(isolated_workspace, monke
 
     monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_PARITY_FILL")
     monkeypatch.setattr(portfolio_equity_agent, "get_or_create_run_id", lambda: "RUN_PARITY_FILL")
+    monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_PARITY_FILL")
+    monkeypatch.setattr(
+        position_tracking_agent,
+        "get_latest_price",
+        lambda ticker, fallback_price: float(fallback_price),
+    )
 
     pd.DataFrame(
         [
@@ -74,6 +84,7 @@ def test_sqlite_parity_passes_for_dual_written_outputs(isolated_workspace, monke
         details={"started_at": "2026-03-28T10:00:00+00:00"},
     )
     fill_agent.run_fill_agent()
+    shared_run_history.begin_run_validation("RUN_PARITY_FILL")
     shared_run_history.complete_run_record("RUN_PARITY_FILL", "2026-03-28T10:05:00+00:00")
     shared_event_log.append_run_lifecycle_event(
         run_id="RUN_PARITY_FILL",
@@ -81,7 +92,7 @@ def test_sqlite_parity_passes_for_dual_written_outputs(isolated_workspace, monke
         message="Parity test run completed",
         details={"completed_at": "2026-03-28T10:05:00+00:00"},
     )
-    write_csv(data_dir / "cash_state.csv", cash_state_frame(balance=99799.0))
+    position_tracking_agent.run_position_tracking_agent()
     portfolio_equity_agent.run_portfolio_equity_agent()
     shared_run_reconciliation.write_run_reconciliation_summary("RUN_PARITY_FILL")
 

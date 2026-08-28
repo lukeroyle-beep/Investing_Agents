@@ -9,6 +9,7 @@ from shared.event_log import (
     append_fill_processed_event,
     append_position_closed_event,
     append_position_opened_event,
+    append_position_reduced_event,
     append_run_lifecycle_event,
     append_state_change_event,
     append_validation_event,

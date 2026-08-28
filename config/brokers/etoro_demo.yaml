@@ -1,0 +1,22 @@
+schema_version: "1.0"
+contract_checked_at: "2026-08-28"
+enabled: false
+environment: demo
+mode: read_only
+base_url: "https://public-api.etoro.com"
+
+credential_environment_variables:
+  api_key: ETORO_DEMO_API_KEY
+  user_key: ETORO_DEMO_USER_KEY
+
+rest_authoritative: true
+websocket_enabled: false
+real_routes_enabled: false
+write_methods_enabled: false
+
+rate_limits_per_minute:
+  account_reads: 48
+  market_reads: 96
+  writes: 10
+request_timeout_seconds: 15
+max_read_retries: 3

@@ -23,6 +23,7 @@ def test_pipeline_steps_preserve_dependency_order() -> None:
         "Signal Agent",
         "Risk Agent",
         "News Agent",
+        "Data Freshness Gate",
         "Portfolio Agent",
         "Advisory Agent",
         "Fill Agent",

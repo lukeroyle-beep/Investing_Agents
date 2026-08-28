@@ -139,3 +139,57 @@ def test_fill_agent_processes_first_time_fill(isolated_workspace, monkeypatch) -
     assert len(ledger) == 1
     assert "FILL_FIRST" in ledger.iloc[0]["notes"]
     assert len(event_log) == 3
+
+
+def test_fill_agent_applies_partial_close_then_full_close_exactly_once(
+    isolated_workspace, monkeypatch
+) -> None:
+    data_dir = isolated_workspace / "data"
+    manual_fills_path = data_dir / "manual_fills.csv"
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_PARTIAL_CLOSE")
+
+    fills = [
+        {**_manual_fill("OPEN_TWO"), "fees": 2.0},
+        {
+            **_manual_fill("CLOSE_ONE"),
+            "action": "sell",
+            "quantity": 1,
+            "fill_price": 110.0,
+            "fees": 1.0,
+            "fill_timestamp": "2026-03-28T11:00:00+00:00",
+        },
+    ]
+    pd.DataFrame(fills).to_csv(manual_fills_path, index=False)
+    fill_agent.run_fill_agent()
+
+    partial_state = pd.read_csv(data_dir / "portfolio_state.csv").iloc[0]
+    assert partial_state["status"] == "open"
+    assert partial_state["quantity"] == pytest.approx(1.0)
+    assert partial_state["realised_pnl_abs"] == pytest.approx(8.0)
+    assert partial_state["entry_fees_remaining"] == pytest.approx(1.0)
+    assert partial_state["fees_total"] == pytest.approx(3.0)
+
+    fills.append(
+        {
+            **_manual_fill("CLOSE_LAST"),
+            "action": "sell",
+            "quantity": 1,
+            "fill_price": 120.0,
+            "fees": 1.0,
+            "fill_timestamp": "2026-03-28T12:00:00+00:00",
+        }
+    )
+    pd.DataFrame(fills).to_csv(manual_fills_path, index=False)
+    fill_agent.run_fill_agent()
+
+    final_state = pd.read_csv(data_dir / "portfolio_state.csv").iloc[0]
+    cash = pd.read_csv(data_dir / "cash_state.csv").iloc[-1]
+    events = pd.read_csv(data_dir / "event_log.csv")
+    assert final_state["status"] == "closed"
+    assert final_state["quantity"] == pytest.approx(1.0)
+    assert final_state["realised_pnl_abs"] == pytest.approx(26.0)
+    assert final_state["entry_fees_remaining"] == pytest.approx(0.0)
+    assert final_state["fees_total"] == pytest.approx(4.0)
+    assert cash["cash_balance"] == pytest.approx(100026.0)
+    assert (events["event_type"] == "position_reduced").sum() == 1
+    assert (events["event_type"] == "position_closed").sum() == 1

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from shared.analytics_reads import AnalyticsTableSpec, read_analytics_table
-from shared.io_utils import ensure_parent_dir, write_csv_file
+from shared.io_utils import ensure_parent_dir, write_managed_csv_with_schema
 from shared.paths import (
     POSITION_ALERTS_PATH,
     RUN_HISTORY_PATH,
@@ -14,7 +14,10 @@ from shared.paths import (
     data_path,
 )
 from shared.schema_registry import get_file_schema
-from shared.schemas import validate_run_reconciliation_summary
+from shared.schemas import (
+    RUN_RECONCILIATION_SUMMARY_SCHEMA as RUN_RECONCILIATION_SCHEMA_SPEC,
+    validate_run_reconciliation_summary,
+)
 from shared.sqlite_sidecar import upsert_run_reconciliation_row
 
 
@@ -185,17 +188,23 @@ def _compute_deltas_from_equity_history(run_id: str) -> DeltaMetrics:
     current_row = equity_history_df.loc[current_index]
     previous_rows = equity_history_df.loc[equity_history_df.index < current_index]
 
-    if previous_rows.empty:
-        previous_row = None
-    else:
-        previous_row = previous_rows.iloc[-1]
+    previous_row = None if previous_rows.empty else previous_rows.iloc[-1]
+
+    if previous_row is None:
+        cash_delta, cash_note = _compute_cash_delta_from_cash_ledger(run_id)
+        return DeltaMetrics(
+            cash_delta=cash_delta,
+            note=_compose_notes(
+                "initial equity snapshot establishes the reconciled baseline",
+                cash_note,
+            ),
+        )
 
     def metric_delta(column: str) -> float:
         current_value = pd.to_numeric(pd.Series([current_row.get(column)]), errors="coerce").fillna(0.0).iloc[0]
-        if previous_row is None:
-            previous_value = 0.0
-        else:
-            previous_value = pd.to_numeric(pd.Series([previous_row.get(column)]), errors="coerce").fillna(0.0).iloc[0]
+        previous_value = pd.to_numeric(
+            pd.Series([previous_row.get(column)]), errors="coerce"
+        ).fillna(0.0).iloc[0]
         return float(current_value) - float(previous_value)
 
     return DeltaMetrics(
@@ -228,7 +237,7 @@ def _compute_cash_delta_from_cash_ledger(run_id: str) -> tuple[float, str]:
         else:
             cash_delta += float(row["amount"])
 
-    return cash_delta, "cash_delta derived from cash_ledger.csv because no equity snapshot exists for this run"
+    return cash_delta, "cash_delta reconciled to cash_ledger.csv"
 
 
 def _compose_notes(*notes: str) -> str:
@@ -295,7 +304,12 @@ def _upsert_reconciliation_row(row: dict[str, object]) -> pd.DataFrame:
         combined_df = pd.concat([existing_df, row_df], ignore_index=True)
 
     combined_df = validate_run_reconciliation_summary(combined_df, keep_extra_columns=False)
-    write_csv_file(combined_df, RUN_RECONCILIATION_SUMMARY_PATH)
+    write_managed_csv_with_schema(
+        combined_df,
+        RUN_RECONCILIATION_SUMMARY_PATH,
+        schema=RUN_RECONCILIATION_SCHEMA_SPEC,
+        producer="Pipeline Orchestrator",
+    )
     upsert_run_reconciliation_row(row)
     return combined_df
 
@@ -304,6 +318,45 @@ def write_run_reconciliation_summary(run_id: str) -> dict[str, object]:
     row = build_run_reconciliation_row(run_id)
     _upsert_reconciliation_row(row)
     return row
+
+
+def validate_run_reconciliation(row: dict[str, object]) -> None:
+    """Fail closed when economic activity or control failures are unexplained."""
+    errors: list[str] = []
+    failures = int(float(row.get("validation_failure_count", 0) or 0))
+    if failures:
+        errors.append(f"validation_failure_count={failures}")
+
+    fills = int(float(row.get("fills_processed", 0) or 0))
+    opened = int(float(row.get("positions_opened", 0) or 0))
+    closed = int(float(row.get("positions_closed", 0) or 0))
+    if fills != opened + closed:
+        errors.append(
+            "processed fill count is not explained by position-open/close events: "
+            f"fills={fills}, opened={opened}, closed={closed}"
+        )
+
+    ledger_cash_delta, _ = _compute_cash_delta_from_cash_ledger(str(row.get("run_id", "")))
+    reported_cash_delta = float(row.get("cash_delta", 0.0) or 0.0)
+    if abs(reported_cash_delta - ledger_cash_delta) > 0.005:
+        errors.append(
+            "cash delta is not explained by the Fill-owned cash ledger: "
+            f"reported={reported_cash_delta:.6f}, ledger={ledger_cash_delta:.6f}"
+        )
+
+    notes = str(row.get("notes", "")).lower()
+    unsafe_note_fragments = [
+        "unavailable",
+        "no equity snapshot exists",
+        "defaulted to 0",
+        "lacks run_id",
+    ]
+    for fragment in unsafe_note_fragments:
+        if fragment in notes:
+            errors.append(f"reconciliation contains unresolved fallback: {fragment}")
+
+    if errors:
+        raise RuntimeError("Run reconciliation failed: " + "; ".join(errors))
 
 
 def print_run_reconciliation_summary(row: dict[str, object]) -> None:

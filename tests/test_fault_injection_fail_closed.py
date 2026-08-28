@@ -190,7 +190,7 @@ def test_lifecycle_agent_fails_closed_when_required_portfolio_state_is_missing(i
     assert not (data_dir / "portfolio_state_prev_snapshot.csv").exists()
 
 
-def test_pipeline_parity_failure_is_reported_as_advisory_without_rewriting_authoritative_csv(
+def test_pipeline_parity_failure_is_terminal_and_fail_closed(
     isolated_workspace,
     monkeypatch,
 ) -> None:
@@ -206,18 +206,22 @@ def test_pipeline_parity_failure_is_reported_as_advisory_without_rewriting_autho
     )
     monkeypatch.setattr(sqlite_parity, "RUN_HISTORY_PATH", data_dir / "run_history.csv")
 
-    def mismatched_parity_report(run_id: str | None = None) -> ParityReport:
-        return ParityReport(
-            run_id=run_id,
-            issues=[ParityIssue("run_history", "value_mismatch", "synthetic parity mismatch")],
+    def fail_parity_before_success(*_args, **_kwargs):
+        in_progress = pd.read_csv(
+            data_dir / "run_history.csv",
+            dtype=str,
+            keep_default_na=False,
         )
+        assert in_progress.iloc[0]["status"] == "started"
+        raise RuntimeError("synthetic parity mismatch")
 
-    monkeypatch.setattr(run_pipeline, "validate_sqlite_dual_write_parity", mismatched_parity_report)
+    monkeypatch.setattr(run_pipeline, "finalize_run", fail_parity_before_success)
 
-    run_pipeline.main()
+    with pytest.raises(RuntimeError, match="synthetic parity mismatch"):
+        run_pipeline.main()
 
     run_history_df = pd.read_csv(data_dir / "run_history.csv", dtype=str, keep_default_na=False)
     assert len(run_history_df) == 1
     assert run_history_df.iloc[0]["run_id"] == "RUN_PARITY_ADVISORY"
-    assert run_history_df.iloc[0]["status"] == "success"
-    assert run_history_df.iloc[0]["failed_agent"] == ""
+    assert run_history_df.iloc[0]["status"] == "failed"
+    assert run_history_df.iloc[0]["failed_agent"] == "Run Finalizer"

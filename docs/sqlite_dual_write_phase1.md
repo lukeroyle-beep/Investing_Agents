@@ -33,7 +33,7 @@ The first-pass SQLite sidecar is additive only:
 
 ## Operational Notes
 
-- The SQLite file lives at `data/trading_system.sqlite3`
+- The SQLite file lives at `runtime/state/trading_system.sqlite3`
 - SQLite dual-write is intentionally best-effort for this phase
 - If a SQLite write fails, CSV behavior continues and a warning is emitted
 - This keeps daily workflow stable while allowing migration validation and parity testing

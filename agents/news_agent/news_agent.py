@@ -8,12 +8,15 @@ from shared.market_data import (
     NewsDataResult,
     append_market_data_health_artifact,
     fetch_news,
+    market_data_is_actionable,
+    summarize_provider_error,
 )
+from shared.paths import FINAL_SHORTLIST_PATH, NEWS_FLAGS_PATH, NEWS_REVIEW_PATH
 
 
-FINAL_SHORTLIST_FILE = os.path.join("data", "final_shortlist.csv")
-NEWS_REVIEW_FILE = os.path.join("data", "news_review.csv")
-NEWS_FLAGS_FILE = os.path.join("data", "news_flags.csv")
+FINAL_SHORTLIST_FILE = FINAL_SHORTLIST_PATH
+NEWS_REVIEW_FILE = NEWS_REVIEW_PATH
+NEWS_FLAGS_FILE = NEWS_FLAGS_PATH
 
 
 def load_final_shortlist():
@@ -59,12 +62,12 @@ def fetch_news_for_ticker(
             health_results.append(news_data)
         news_items = news_data.items
 
-        if news_data.metadata.error:
-            print(f"Error fetching news for {ticker} ({name}): {news_data.metadata.error}")
+        if not market_data_is_actionable(news_data):
+            print(
+                f"Skipping news for {ticker} ({name}) - data is not actionable: "
+                f"{news_data.metadata.reason or news_data.metadata.error}"
+            )
             return []
-
-        if news_data.metadata.stale:
-            print(f"Warning: {ticker} ({name}) news data is stale as of {news_data.metadata.as_of}.")
 
         if not news_items:
             return []
@@ -100,8 +103,9 @@ def fetch_news_for_ticker(
         return results
 
     except Exception as e:
-        print(f"Error fetching news for {ticker} ({name}): {e}")
-        return []
+        raise RuntimeError(
+            f"Unexpected news-provider failure for {ticker}: {summarize_provider_error(e)}"
+        ) from e
 
 
 def build_news_flags(news_df):
@@ -159,7 +163,7 @@ def main():
 
     flags_df = build_news_flags(news_df)
 
-    os.makedirs("data", exist_ok=True)
+    NEWS_REVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
     append_market_data_health_artifact(health_results)
 
     news_df.to_csv(NEWS_REVIEW_FILE, index=False)
