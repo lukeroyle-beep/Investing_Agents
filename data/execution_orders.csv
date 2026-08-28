@@ -1,3 +1,0 @@
-ticker,name,sector,market_regime,portfolio_action,scaled_target_allocation_pct,risk_budget_pct,stop_loss_pct,headline_count,categories_found,has_news,execution_status,execution_notes,execution_checked_at
-CVX,Chevron,Energy,risk_off,buy,11.62,0.3,4.24,10,other,True,hold_for_review,Recent news present - manual review required,2026-03-15T17:26:01.891272+00:00
-VZ,Verizon,Communication Services,risk_off,buy,13.38,0.3,3.68,10,other,True,hold_for_review,Recent news present - manual review required,2026-03-15T17:26:01.891272+00:00

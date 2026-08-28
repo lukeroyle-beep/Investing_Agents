@@ -36,3 +36,29 @@ max_hold_days: 30
 
 min_history_days: 120
 allow_short: false
+
+# WP12 evidence controls. A strategy may become advisory-eligible only after an
+# immutable experiment satisfies these predefined out-of-sample criteria.
+strategy_version: "momentum_ma_v1"
+experiment_registry_enabled: true
+point_in_time_universe_required: true
+parameter_tuning_partition: "validation"
+
+validation:
+  train_fraction: 0.60
+  validation_fraction: 0.20
+  minimum_walk_forward_folds: 3
+
+cost_model:
+  spread_bps: 5.0
+  slippage_bps: 5.0
+  fee_bps: 5.0
+  tax_bps: 0.0
+  stress_multiplier: 2.0
+
+promotion_criteria:
+  minimum_validation_excess_return_pct: 0.0
+  minimum_test_excess_return_pct: 0.0
+  minimum_stressed_test_excess_return_pct: 0.0
+  maximum_test_drawdown_pct: 15.0
+  minimum_walk_forward_pass_fraction: 0.67

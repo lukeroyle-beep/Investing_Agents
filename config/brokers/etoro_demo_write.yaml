@@ -1,0 +1,26 @@
+schema_version: "1.0"
+contract_checked_at: "2026-08-28"
+contract_api_version: "v1.365.0"
+
+# Gate B is implemented but remains deny-by-default. Enabling this file is not
+# approval for an order: every command still needs a fresh, single-use human
+# Approval record and a reset, valid kill switch.
+enabled: false
+environment: demo
+mode: manual_approval
+base_url: "https://public-api.etoro.com"
+
+credential_environment_variables:
+  api_key: ETORO_DEMO_WRITE_API_KEY
+  user_key: ETORO_DEMO_WRITE_USER_KEY
+
+real_routes_enabled: false
+write_methods_enabled: false
+per_order_human_approval_required: true
+rest_reconciliation_authoritative: true
+
+rate_limits_per_minute:
+  account_reads: 48
+  writes: 10
+request_timeout_seconds: 15
+max_lookup_retries: 3

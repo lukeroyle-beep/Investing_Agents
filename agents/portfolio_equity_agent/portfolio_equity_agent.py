@@ -6,27 +6,32 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from agents.shared.event_log import append_equity_snapshot_recorded_event
-from shared.io_utils import write_csv
+from shared.io_utils import write_managed_csv_with_schema
+from shared.paths import DATA_DIR as RUNTIME_STATE_DIR
+from shared.portfolio_monitor import merge_authoritative_monitor
 from shared.portfolio_state_helpers import ACTIVE_POSITION_STATUSES, CLOSED_POSITION_STATUS
 from shared.schema_registry import get_file_schema
 from shared.schemas import (
+    PERFORMANCE_SUMMARY_SCHEMA,
+    PORTFOLIO_EQUITY_HISTORY_SCHEMA,
     validate_cash_state,
     validate_performance_summary,
     validate_portfolio_equity_history,
+    validate_portfolio_monitor,
     validate_portfolio_state,
 )
 from shared.run_context import get_or_create_run_id
 from shared.sqlite_sidecar import upsert_portfolio_equity_history_row
 
 
-DATA_DIR = "data"
+DATA_DIR = str(RUNTIME_STATE_DIR)
 
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
+MONITOR_PATH = os.path.join(DATA_DIR, "portfolio_monitor.csv")
 CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
 EQUITY_HISTORY_PATH = os.path.join(DATA_DIR, "portfolio_equity_history.csv")
 PERFORMANCE_SUMMARY_PATH = os.path.join(DATA_DIR, "performance_summary.csv")
 AGENT_NAME = "Portfolio Equity Agent"
-CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
 PORTFOLIO_EQUITY_HISTORY_FILE_SCHEMA = get_file_schema("portfolio_equity_history.csv")
 
 
@@ -40,17 +45,11 @@ def read_csv_required(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def ensure_cash_state() -> pd.DataFrame:
-    if os.path.exists(CASH_STATE_PATH):
-        return validate_cash_state(pd.read_csv(CASH_STATE_PATH), keep_extra_columns=False)
-
-    df = pd.DataFrame(
-        [{"as_of": utc_now_iso(), "cash_balance": 100000.0}],
-        columns=CASH_STATE_SCHEMA.canonical_column_order,
+def read_cash_state() -> pd.DataFrame:
+    return validate_cash_state(
+        read_csv_required(CASH_STATE_PATH),
+        keep_extra_columns=False,
     )
-    df = validate_cash_state(df, keep_extra_columns=False)
-    write_csv(df, CASH_STATE_PATH)
-    return df
 
 
 def emit_portfolio_equity_snapshot_event(run_id: str, snapshot_row: pd.Series) -> None:
@@ -144,10 +143,17 @@ def build_performance_summary(history_df: pd.DataFrame) -> pd.DataFrame:
 def run_portfolio_equity_agent() -> None:
     run_id = get_or_create_run_id()
 
-    state_df = read_csv_required(STATE_PATH)
-    state_df = validate_portfolio_state(state_df)
+    state_df = validate_portfolio_state(
+        read_csv_required(STATE_PATH),
+        keep_extra_columns=False,
+    )
+    monitor_df = validate_portfolio_monitor(
+        read_csv_required(MONITOR_PATH),
+        keep_extra_columns=False,
+    )
+    state_df = merge_authoritative_monitor(state_df, monitor_df)
 
-    cash_state_df = ensure_cash_state()
+    cash_state_df = read_cash_state()
 
     active_df = state_df[state_df["status"].astype(str).isin(ACTIVE_POSITION_STATUSES)].copy()
     closed_df = state_df[state_df["status"].astype(str) == CLOSED_POSITION_STATUS].copy()
@@ -192,8 +198,20 @@ def run_portfolio_equity_agent() -> None:
     performance_summary_df = build_performance_summary(history_df)
     performance_summary_df = validate_performance_summary(performance_summary_df, keep_extra_columns=False)
 
-    write_csv(history_df, EQUITY_HISTORY_PATH)
-    write_csv(performance_summary_df, PERFORMANCE_SUMMARY_PATH)
+    write_managed_csv_with_schema(
+        history_df,
+        EQUITY_HISTORY_PATH,
+        schema=PORTFOLIO_EQUITY_HISTORY_SCHEMA,
+        producer=AGENT_NAME,
+        keep_extra_columns=False,
+    )
+    write_managed_csv_with_schema(
+        performance_summary_df,
+        PERFORMANCE_SUMMARY_PATH,
+        schema=PERFORMANCE_SUMMARY_SCHEMA,
+        producer=AGENT_NAME,
+        keep_extra_columns=False,
+    )
     upsert_portfolio_equity_history_row(snapshot.iloc[0].to_dict())
     emit_portfolio_equity_snapshot_event(run_id=run_id, snapshot_row=snapshot.iloc[0])
 

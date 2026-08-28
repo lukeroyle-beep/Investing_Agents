@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from math import isnan
+import os
 from typing import Any
 
 import pandas as pd
@@ -11,10 +13,14 @@ from shared.market_data import (
     MarketDataResult,
     append_market_data_health_artifact,
     fetch_price_history,
+    market_data_is_actionable,
 )
 from shared.io_utils import load_yaml, write_csv_with_run_id
-from shared.paths import config_path, data_path
+from shared.paths import EXPERIMENT_REGISTRY_PATH, config_path, data_path, run_path
 from shared.run_context import get_or_create_run_id
+from strategy.domain import CostModel, ExperimentMetrics, ExperimentSpec, content_hash
+from strategy.registry import ExperimentRegistry, write_experiment_artifact
+from strategy.validation import chronological_split
 
 
 BACKTEST_CONFIG_FILE = config_path("backtesting.yaml")
@@ -164,12 +170,12 @@ def download_price_history(
     if health_results is not None:
         health_results.append(market_data)
 
-    if market_data.metadata.error:
-        print(f"Skipping {ticker}: market data error: {market_data.metadata.error}")
+    if not market_data_is_actionable(market_data):
+        print(
+            f"Skipping {ticker}: data is not actionable: "
+            f"{market_data.metadata.reason or market_data.metadata.error}"
+        )
         return pd.DataFrame()
-
-    if market_data.metadata.stale:
-        print(f"Warning: {ticker} market data is stale as of {market_data.metadata.as_of}.")
 
     return _normalise_history_df(market_data.data, ticker)
 
@@ -578,6 +584,137 @@ def _empty_trades_df() -> pd.DataFrame:
     return pd.DataFrame(columns=TRADE_COLUMNS)
 
 
+def record_immutable_experiment(
+    *,
+    run_id: str,
+    config: dict[str, Any],
+    trades_df: pd.DataFrame,
+    histories: dict[str, pd.DataFrame],
+    benchmark_history: dict[str, pd.DataFrame],
+) -> str | None:
+    """Snapshot a backtest; current static universes remain promotion-ineligible."""
+    if config.get("experiment_registry_enabled") is not True:
+        return None
+    all_dates = [
+        item
+        for history in histories.values()
+        for item in history.get("Date", pd.Series(dtype="datetime64[ns]")).tolist()
+    ]
+    if len(set(pd.to_datetime(all_dates))) < 5:
+        return None
+    split = chronological_split(
+        all_dates,
+        train_fraction=float(config.get("validation", {}).get("train_fraction", 0.6)),
+        validation_fraction=float(
+            config.get("validation", {}).get("validation_fraction", 0.2)
+        ),
+    )
+    snapshot_rows: list[dict[str, object]] = []
+    for ticker, history in sorted(histories.items()):
+        for row in history.to_dict(orient="records"):
+            snapshot_rows.append({"ticker": ticker, **row})
+    data_snapshot_id = content_hash(snapshot_rows)
+    universe_checksum = content_hash(
+        {
+            "kind": "static_current_universe_unqualified",
+            "tickers": sorted(histories),
+        }
+    )
+    costs_raw = config.get("cost_model", {})
+    costs = CostModel(
+        spread_bps=costs_raw.get("spread_bps", 0),
+        slippage_bps=costs_raw.get("slippage_bps", 0),
+        fee_bps=costs_raw.get("fee_bps", 0),
+        tax_bps=costs_raw.get("tax_bps", 0),
+        stress_multiplier=costs_raw.get("stress_multiplier", 1),
+    )
+    parameters = {
+        key: config.get(key)
+        for key in (
+            "ma_fast_window",
+            "ma_slow_window",
+            "return_lookback_window",
+            "stop_loss_pct",
+            "take_profit_pct",
+            "max_hold_days",
+            "position_size_pct",
+        )
+    }
+    spec = ExperimentSpec.create(
+        strategy_version=str(config.get("strategy_version", "unversioned")),
+        data_snapshot_id=data_snapshot_id,
+        point_in_time_universe_checksum=universe_checksum,
+        code_revision=os.environ.get(
+            "INVESTING_CODE_REVISION", "working-tree-unverified"
+        ),
+        environment="offline",
+        parameters=parameters,
+        splits=(split,),
+        cost_model=costs,
+        tuned_on_partition=str(config.get("parameter_tuning_partition", "validation")),
+    )
+    initial_capital = safe_float(config.get("initial_capital"), 100000.0)
+
+    def partition_return(start, end) -> float:
+        if trades_df.empty:
+            return 0.0
+        exits = pd.to_datetime(trades_df["exit_date"], errors="coerce")
+        mask = (exits.dt.date >= start) & (exits.dt.date <= end)
+        return float(trades_df.loc[mask, "net_pnl"].sum()) / initial_capital * 100.0
+
+    validation_return = partition_return(split.validation_start, split.validation_end)
+    test_return = partition_return(split.test_start, split.test_end)
+    benchmark_return = 0.0
+    if benchmark_history:
+        first = next(iter(benchmark_history.values())).copy()
+        if not first.empty:
+            dates = pd.to_datetime(first["Date"], errors="coerce").dt.date
+            benchmark_return = calculate_benchmark_return(
+                first[(dates >= split.test_start) & (dates <= split.test_end)]
+            )
+    test_notional = Decimal("0")
+    if not trades_df.empty:
+        exits = pd.to_datetime(trades_df["exit_date"], errors="coerce")
+        test_mask = (
+            (exits.dt.date >= split.test_start) & (exits.dt.date <= split.test_end)
+        )
+        test_notional = Decimal(str(trades_df.loc[test_mask, "notional"].sum()))
+    stressed_penalty = float(costs.round_trip_cost(test_notional)) / initial_capital * 100.0
+    metrics = ExperimentMetrics(
+        validation_excess_return_pct=validation_return,
+        test_excess_return_pct=test_return - benchmark_return,
+        test_max_drawdown_pct=0,
+        stressed_test_excess_return_pct=test_return - benchmark_return - stressed_penalty,
+        benchmark_return_pct=benchmark_return,
+        walk_forward_passed_folds=1 if test_return >= benchmark_return else 0,
+        walk_forward_total_folds=1,
+        deterministic_reproduction=False,
+        point_in_time_universe_passed=False,
+        survivorship_checks_passed=False,
+        exchange_calendar_passed=False,
+        cost_model_passed=True,
+    )
+    sources = tuple(
+        path
+        for path in (
+            BACKTEST_TRADES_FILE,
+            BACKTEST_SUMMARY_FILE,
+            BACKTEST_EQUITY_CURVE_FILE,
+            BACKTEST_DRAWDOWN_FILE,
+            BACKTEST_BENCHMARK_FILE,
+        )
+        if path.is_file()
+    )
+    artifact = write_experiment_artifact(
+        run_path(run_id, "experiments"),
+        spec=spec,
+        metrics=metrics,
+        source_artifacts=sources,
+    )
+    ExperimentRegistry(EXPERIMENT_REGISTRY_PATH).record(spec, artifact)
+    return str(spec.experiment_id)
+
+
 def run() -> None:
     run_id = get_or_create_run_id()
     print(f"Run ID: {run_id}")
@@ -610,6 +747,7 @@ def run() -> None:
         print("Note: allow_short=true is not implemented in this first version. Running long-only.")
 
     all_trades: list[dict[str, Any]] = []
+    strategy_history: dict[str, pd.DataFrame] = {}
     health_results: list[MarketDataResult] = []
     tickers_tested = 0
 
@@ -625,6 +763,8 @@ def run() -> None:
         if history_df.empty or len(history_df) < min_history_days:
             print(f"Skipping {ticker}: insufficient history.")
             continue
+
+        strategy_history[ticker] = history_df.copy()
 
         ticker_trades = simulate_long_trades_for_ticker(
             df=history_df,
@@ -682,6 +822,14 @@ def run() -> None:
     write_csv_with_run_id(drawdown_df, BACKTEST_DRAWDOWN_FILE, run_id=run_id)
     write_csv_with_run_id(benchmark_df, BACKTEST_BENCHMARK_FILE, run_id=run_id)
 
+    experiment_id = record_immutable_experiment(
+        run_id=run_id,
+        config=config,
+        trades_df=trades_df,
+        histories=strategy_history,
+        benchmark_history=benchmark_history,
+    )
+
     total_trades = len(trades_df)
     win_rate = 0.0 if total_trades == 0 else round((trades_df["trade_return_pct"] > 0).mean() * 100.0, 2)
 
@@ -697,6 +845,9 @@ def run() -> None:
     print(f"Tickers tested: {tickers_tested}")
     print(f"Total trades: {total_trades}")
     print(f"Win rate: {win_rate}%")
+    if experiment_id:
+        print(f"Immutable experiment ID: {experiment_id}")
+        print("Promotion status: not evaluated; advisory-only evidence gate applies")
 
 
 if __name__ == "__main__":

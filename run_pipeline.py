@@ -6,18 +6,23 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from shared.event_log import append_run_lifecycle_event
-from shared.sqlite_parity import format_parity_report, validate_sqlite_dual_write_parity
-from shared.run_reconciliation import print_run_reconciliation_summary, write_run_reconciliation_summary
+from shared.artifact_manifest import capture_pre_economic_state
+from shared.run_finalizer import (
+    finalize_run,
+    record_failed_finalization,
+    redact_failure_message,
+)
 from shared.run_context import get_or_create_run_id
-from shared.run_history import complete_run_record, fail_run_record, start_run_record
+import shared.run_history as run_history
 
 
 PIPELINE_STEPS: list[tuple[str, str]] = [
     ("Universe Agent", "agents.universe_agent.universe_agent"),
-    ("Signal Agent", "agents.signal_agent.signal_agent"),
     ("Macro Agent", "agents.macro_agent.macro_agent"),
-    ("News Agent", "agents.news_agent.news_agent"),
+    ("Signal Agent", "agents.signal_agent.signal_agent"),
     ("Risk Agent", "agents.risk_agent.risk_agent"),
+    ("News Agent", "agents.news_agent.news_agent"),
+    ("Data Freshness Gate", "agents.data_freshness_agent.data_freshness_agent"),
     ("Portfolio Agent", "agents.portfolio_agent.portfolio_agent"),
     ("Advisory Agent", "agents.advisory_agent.advisory_agent"),
     ("Fill Agent", "agents.fill_agent.fill_agent"),
@@ -57,71 +62,124 @@ def run_pipeline(steps: Iterable[tuple[str, str]]) -> None:
         run_module(label, module_path)
 
 
-def emit_reconciliation_summary(run_id: str) -> None:
+def _persist_failure(
+    *,
+    run_id: str,
+    error: object,
+    state_dir,
+    runs_dir,
+    failed_agent: str,
+    event_message: str,
+) -> list[str]:
+    """Best-effort layered failure recording with a direct history fallback."""
+    message = redact_failure_message(error)
+    recording_errors: list[str] = []
     try:
-        row = write_run_reconciliation_summary(run_id)
-        print_run_reconciliation_summary(row)
-        print()
-        print(format_parity_report(validate_sqlite_dual_write_parity(run_id=run_id)))
+        record_failed_finalization(
+            run_id=run_id,
+            error=message,
+            state_dir=state_dir,
+            runs_dir=runs_dir,
+            failed_agent=failed_agent,
+        )
     except Exception as exc:
-        print("\nRun reconciliation summary could not be generated.")
-        print(f"Reason: {exc}")
+        recording_errors.append(f"finalization_record={redact_failure_message(exc)}")
+        try:
+            run_history.force_fail_run_record(
+                run_id=run_id,
+                completed_at=utc_now_iso(),
+                failed_agent=failed_agent,
+                error_message=message,
+            )
+        except Exception as fallback_exc:
+            recording_errors.append(
+                f"run_history_fallback={redact_failure_message(fallback_exc)}"
+            )
+    try:
+        append_run_lifecycle_event(
+            run_id=run_id,
+            event_type="run_failed",
+            message=event_message,
+            severity="error",
+            details={
+                "completed_at": utc_now_iso(),
+                "failed_agent": failed_agent,
+                "error_message": message,
+                "recording_errors": recording_errors,
+            },
+        )
+    except Exception as exc:
+        recording_errors.append(f"event_log={redact_failure_message(exc)}")
+    return recording_errors
 
 
 def main() -> None:
     run_id = get_or_create_run_id()
     started_at = utc_now_iso()
-    start_run_record(run_id=run_id, started_at=started_at)
-    append_run_lifecycle_event(
-        run_id=run_id,
-        event_type="run_started",
-        message="Pipeline run started",
-        details={"started_at": started_at},
-    )
+    state_dir = run_history.RUN_HISTORY_PATH.parent
+    runs_dir = state_dir.parent / "runs"
+    run_history.start_run_record(run_id=run_id, started_at=started_at)
 
     try:
+        capture_pre_economic_state(
+            run_id,
+            state_dir=state_dir,
+            runs_dir=runs_dir,
+        )
+        append_run_lifecycle_event(
+            run_id=run_id,
+            event_type="run_started",
+            message="Pipeline run started",
+            details={"started_at": started_at},
+        )
         run_pipeline(PIPELINE_STEPS)
     except Exception as exc:
-        failed_agent = "Unknown"
-        message = str(exc).strip() or exc.__class__.__name__
+        failed_agent = "Run Finalizer"
+        message = redact_failure_message(exc)
 
         if message.endswith(" failed."):
             failed_agent = message[:-8]
 
-        completed_at = utc_now_iso()
-        fail_run_record(
+        recording_errors = _persist_failure(
             run_id=run_id,
-            completed_at=completed_at,
+            error=message,
+            state_dir=state_dir,
+            runs_dir=runs_dir,
             failed_agent=failed_agent,
-            error_message=message,
+            event_message="Pipeline run failed",
         )
-        append_run_lifecycle_event(
-            run_id=run_id,
-            event_type="run_failed",
-            message="Pipeline run failed",
-            severity="error",
-            details={
-                "completed_at": completed_at,
-                "failed_agent": failed_agent,
-                "error_message": message,
-            },
-        )
-        emit_reconciliation_summary(run_id)
+        if recording_errors:
+            raise RuntimeError(
+                f"{message}; failure recording encountered: {'; '.join(recording_errors)}"
+            ) from exc
         raise
 
-    completed_at = utc_now_iso()
-    complete_run_record(
-        run_id=run_id,
-        completed_at=completed_at,
+    try:
+        result = finalize_run(
+            run_id,
+            state_dir=state_dir,
+            runs_dir=runs_dir,
+        )
+    except Exception as exc:
+        recording_errors = _persist_failure(
+            run_id=run_id,
+            error=exc,
+            state_dir=state_dir,
+            runs_dir=runs_dir,
+            failed_agent="Run Finalizer",
+            event_message="Pipeline finalization failed",
+        )
+        if recording_errors:
+            raise RuntimeError(
+                f"{redact_failure_message(exc)}; failure recording encountered: "
+                f"{'; '.join(recording_errors)}"
+            ) from exc
+        raise
+
+    print(
+        "\nPipeline finalized successfully: "
+        f"finalization_id={result.finalization_id}, manifest={result.manifest_path}"
     )
-    append_run_lifecycle_event(
-        run_id=run_id,
-        event_type="run_completed",
-        message="Pipeline run completed successfully",
-        details={"completed_at": completed_at},
-    )
-    emit_reconciliation_summary(run_id)
-    print("\nPipeline completed successfully.")
 
 
 if __name__ == "__main__":

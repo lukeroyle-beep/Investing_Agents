@@ -7,11 +7,21 @@ from shared.market_data import (
     MarketDataProvider,
     MarketDataResult,
     fetch_price_history,
+    market_data_is_actionable,
+    summarize_provider_error,
     write_market_data_health_artifact,
+)
+from shared.paths import (
+    DATA_SOURCE_HEALTH_PATH,
+    REJECTS_PATH,
+    TOP_LEADS_PATH,
+    UNIVERSE_SNAPSHOT_PATH,
+    WATCHLIST_PATH,
+    project_path,
 )
 
 
-UNIVERSE_FILE = os.path.join("data_sources", "stock_universe.csv")
+UNIVERSE_FILE = project_path("data_sources", "stock_universe.csv")
 
 REQUIRED_SOURCE_COLUMNS = [
     "ticker",
@@ -116,10 +126,10 @@ def fetch_asset_data(
             health_results.append(market_data)
         data = market_data.data
 
-        if market_data.metadata.error:
+        if not market_data_is_actionable(market_data):
             print(
-                f"Skipping {ticker} ({name}) - market data error: "
-                f"{market_data.metadata.error}"
+                f"Skipping {ticker} ({name}) - data is not actionable: "
+                f"{market_data.metadata.reason or market_data.metadata.error}"
             )
             return None
 
@@ -207,8 +217,9 @@ def fetch_asset_data(
         }
 
     except Exception as e:
-        print(f"Error processing {ticker} ({name}): {e}")
-        return None
+        raise RuntimeError(
+            f"Unexpected market-data failure for {ticker}: {summarize_provider_error(e)}"
+        ) from e
 
 
 def main():
@@ -226,8 +237,8 @@ def main():
         if result:
             results.append(result)
 
-    os.makedirs("data", exist_ok=True)
-    health_path = os.path.join("data", "data_source_health.csv")
+    DATA_SOURCE_HEALTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    health_path = DATA_SOURCE_HEALTH_PATH
     write_market_data_health_artifact(health_results, health_path)
 
     if not results:
@@ -238,10 +249,10 @@ def main():
     df = pd.DataFrame(results)
     df = df.sort_values(by=["score", "ticker"], ascending=[False, True])
 
-    snapshot_path = os.path.join("data", "universe_snapshot.csv")
-    pass_path = os.path.join("data", "top_leads.csv")
-    watch_path = os.path.join("data", "watchlist.csv")
-    reject_path = os.path.join("data", "rejects.csv")
+    snapshot_path = UNIVERSE_SNAPSHOT_PATH
+    pass_path = TOP_LEADS_PATH
+    watch_path = WATCHLIST_PATH
+    reject_path = REJECTS_PATH
 
     df.to_csv(snapshot_path, index=False)
     df[df["lead_status"] == "pass"].to_csv(pass_path, index=False)

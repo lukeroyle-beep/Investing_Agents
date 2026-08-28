@@ -26,8 +26,8 @@ VALID_LIFECYCLE_TRANSITIONS = {
     "exit_required": {"exit_required", "closed"},
     "closed": {"closed"},
 }
-RUN_TERMINAL_STATUSES = {"success", "failed"}
-RUN_ALLOWED_STATUSES = RUN_TERMINAL_STATUSES | {"running"}
+RUN_TERMINAL_STATUSES = {"succeeded", "failed", "success"}
+RUN_ALLOWED_STATUSES = RUN_TERMINAL_STATUSES | {"started", "validating", "running"}
 OPEN_VALUATION_FIELDS = ["current_price", "market_value", "pnl_abs", "pnl_pct"]
 CLOSED_POSITION_REQUIRED_FIELDS = ["closed_at", "exit_price", "realised_pnl_abs", "fees_total"]
 CLOSED_POSITION_IMMUTABLE_FIELDS = [

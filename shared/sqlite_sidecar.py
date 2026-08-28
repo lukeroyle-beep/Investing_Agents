@@ -30,13 +30,21 @@ def _normalise_row(row: dict[str, Any]) -> dict[str, Any]:
     return {str(key): _coerce_value(value) for key, value in row.items()}
 
 
-def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
+def get_connection(
+    db_path: Path | str | None = None,
+    *,
+    journal_mode: str = "WAL",
+) -> sqlite3.Connection:
     path = Path(db_path) if db_path is not None else SQLITE_DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
+    normalised_journal_mode = str(journal_mode).strip().upper()
+    if normalised_journal_mode not in {"WAL", "DELETE"}:
+        connection.close()
+        raise ValueError(f"Unsupported SQLite journal mode: {journal_mode}")
+    connection.execute(f"PRAGMA journal_mode = {normalised_journal_mode}")
     return connection
 
 
@@ -122,6 +130,65 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             run_id TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS trade_fills (
+            fill_id TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            side TEXT NOT NULL,
+            action TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            fill_price REAL NOT NULL,
+            fees REAL NOT NULL,
+            fill_timestamp TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            broker TEXT,
+            environment TEXT,
+            broker_execution_id TEXT,
+            broker_order_id TEXT,
+            broker_position_id TEXT,
+            broker_reference_id TEXT,
+            broker_instrument_id TEXT,
+            broker_rate_id TEXT,
+            broker_fee REAL,
+            broker_tax REAL,
+            currency TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS cash_state (
+            as_of TEXT PRIMARY KEY,
+            cash_balance REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS portfolio_state (
+            position_id TEXT PRIMARY KEY,
+            ticker TEXT NOT NULL,
+            side TEXT NOT NULL,
+            status TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            entry_price REAL NOT NULL,
+            entry_date TEXT NOT NULL,
+            capital_allocated REAL,
+            stop_loss REAL,
+            take_profit REAL,
+            regime_at_entry TEXT,
+            sector TEXT,
+            signal_score REAL,
+            highest_price_since_entry REAL,
+            lowest_price_since_entry REAL,
+            current_price REAL,
+            market_value REAL,
+            pnl_abs REAL,
+            pnl_pct REAL,
+            exit_flag TEXT,
+            exit_reason TEXT,
+            last_updated TEXT,
+            run_id TEXT,
+            realised_pnl_abs REAL,
+            fees_total REAL,
+            entry_fees_remaining REAL,
+            closed_at TEXT,
+            exit_price REAL
+        );
+
         CREATE TABLE IF NOT EXISTS portfolio_equity_history (
             run_id TEXT NOT NULL,
             timestamp TEXT NOT NULL,
@@ -141,10 +208,40 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    existing_trade_fill_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(trade_fills)")
+    }
+    for column, column_type in {
+        "broker": "TEXT",
+        "environment": "TEXT",
+        "broker_execution_id": "TEXT",
+        "broker_order_id": "TEXT",
+        "broker_position_id": "TEXT",
+        "broker_reference_id": "TEXT",
+        "broker_instrument_id": "TEXT",
+        "broker_rate_id": "TEXT",
+        "broker_fee": "REAL",
+        "broker_tax": "REAL",
+        "currency": "TEXT",
+    }.items():
+        if column not in existing_trade_fill_columns:
+            connection.execute(f"ALTER TABLE trade_fills ADD COLUMN {column} {column_type}")
+
+    existing_portfolio_state_columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(portfolio_state)")
+    }
+    if "entry_fees_remaining" not in existing_portfolio_state_columns:
+        connection.execute(
+            "ALTER TABLE portfolio_state ADD COLUMN entry_fees_remaining REAL"
+        )
 
 
-def initialise_db(db_path: Path | str | None = None) -> None:
-    with get_connection(db_path=db_path) as connection:
+def initialise_db(
+    db_path: Path | str | None = None,
+    *,
+    journal_mode: str = "WAL",
+) -> None:
+    with get_connection(db_path=db_path, journal_mode=journal_mode) as connection:
         with transaction(connection):
             _create_schema(connection)
 
@@ -293,6 +390,92 @@ def append_processed_fill_row(row: dict[str, Any]) -> None:
         )
 
     _execute_best_effort("processed_fills", _write)
+
+
+def append_trade_fill_row(row: dict[str, Any]) -> None:
+    payload = _normalise_row(row)
+
+    def _write(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            INSERT INTO trade_fills (
+                fill_id, ticker, side, action, quantity, fill_price, fees,
+                fill_timestamp, run_id, broker, environment, broker_execution_id,
+                broker_order_id, broker_position_id, broker_reference_id,
+                broker_instrument_id, broker_rate_id, broker_fee, broker_tax, currency
+            ) VALUES (
+                :fill_id, :ticker, :side, :action, :quantity, :fill_price, :fees,
+                :fill_timestamp, :run_id, :broker, :environment, :broker_execution_id,
+                :broker_order_id, :broker_position_id, :broker_reference_id,
+                :broker_instrument_id, :broker_rate_id, :broker_fee, :broker_tax, :currency
+            )
+            """,
+            payload,
+        )
+
+    _execute_best_effort("trade_fills", _write)
+
+
+def replace_cash_state_rows(rows: Iterable[dict[str, Any]]) -> None:
+    payloads = [_normalise_row(row) for row in rows]
+
+    def _write(connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM cash_state")
+        connection.executemany(
+            "INSERT INTO cash_state (as_of, cash_balance) VALUES (:as_of, :cash_balance)",
+            payloads,
+        )
+
+    _execute_best_effort("cash_state", _write)
+
+
+def replace_portfolio_state_rows(rows: Iterable[dict[str, Any]]) -> None:
+    columns = [
+        "position_id",
+        "ticker",
+        "side",
+        "status",
+        "quantity",
+        "entry_price",
+        "entry_date",
+        "capital_allocated",
+        "stop_loss",
+        "take_profit",
+        "regime_at_entry",
+        "sector",
+        "signal_score",
+        "highest_price_since_entry",
+        "lowest_price_since_entry",
+        "current_price",
+        "market_value",
+        "pnl_abs",
+        "pnl_pct",
+        "exit_flag",
+        "exit_reason",
+        "last_updated",
+        "run_id",
+        "realised_pnl_abs",
+        "fees_total",
+        "entry_fees_remaining",
+        "closed_at",
+        "exit_price",
+    ]
+    payloads = [
+        _normalise_row({column: row.get(column) for column in columns})
+        for row in rows
+    ]
+    column_sql = ", ".join(columns)
+    value_sql = ", ".join(f":{column}" for column in columns)
+
+    def _write(connection: sqlite3.Connection) -> None:
+        connection.execute("DELETE FROM portfolio_state")
+        if payloads:
+            connection.executemany(
+                f"INSERT INTO portfolio_state ({column_sql}) VALUES ({value_sql})",
+                payloads,
+            )
+
+    _execute_best_effort("portfolio_state", _write)
 
 
 def upsert_portfolio_equity_history_row(row: dict[str, Any]) -> None:

@@ -13,7 +13,10 @@ EVENT_LOG_PATH = data_path("event_log.csv")
 RUN_HISTORY_PATH = data_path("run_history.csv")
 RUN_RECONCILIATION_SUMMARY_PATH = data_path("run_reconciliation_summary.csv")
 CASH_LEDGER_PATH = data_path("cash_ledger.csv")
+CASH_STATE_PATH = data_path("cash_state.csv")
 PROCESSED_FILLS_PATH = data_path("processed_fills.csv")
+TRADE_FILLS_PATH = data_path("trade_fills.csv")
+PORTFOLIO_STATE_PATH = data_path("portfolio_state.csv")
 PORTFOLIO_EQUITY_HISTORY_PATH = data_path("portfolio_equity_history.csv")
 
 
@@ -31,6 +34,7 @@ class TableParityConfig:
     key_columns: list[str]
     compare_columns: list[str]
     run_scoped: bool = True
+    required_csv: bool = True
 
 
 @dataclass(frozen=True)
@@ -43,8 +47,8 @@ class ParityReport:
         return len(self.issues) == 0
 
 
-def _parity_tables() -> list[TableParityConfig]:
-    return [
+def _parity_tables(state_dir: Path | None = None) -> list[TableParityConfig]:
+    tables = [
         TableParityConfig(
             table_name="event_log",
             csv_path=EVENT_LOG_PATH,
@@ -106,6 +110,65 @@ def _parity_tables() -> list[TableParityConfig]:
             ],
         ),
         TableParityConfig(
+            table_name="cash_state",
+            csv_path=CASH_STATE_PATH,
+            key_columns=["as_of"],
+            compare_columns=["as_of", "cash_balance"],
+            run_scoped=False,
+        ),
+        TableParityConfig(
+            table_name="portfolio_state",
+            csv_path=PORTFOLIO_STATE_PATH,
+            key_columns=["position_id"],
+            compare_columns=[
+                "position_id",
+                "ticker",
+                "side",
+                "status",
+                "quantity",
+                "entry_price",
+                "entry_date",
+                "capital_allocated",
+                "stop_loss",
+                "take_profit",
+                "regime_at_entry",
+                "sector",
+                "signal_score",
+                "highest_price_since_entry",
+                "lowest_price_since_entry",
+                "current_price",
+                "market_value",
+                "pnl_abs",
+                "pnl_pct",
+                "exit_flag",
+                "exit_reason",
+                "last_updated",
+                "run_id",
+                "realised_pnl_abs",
+                "fees_total",
+                "entry_fees_remaining",
+                "closed_at",
+                "exit_price",
+            ],
+            run_scoped=False,
+        ),
+        TableParityConfig(
+            table_name="trade_fills",
+            csv_path=TRADE_FILLS_PATH,
+            key_columns=["fill_id"],
+            compare_columns=[
+                "fill_id",
+                "ticker",
+                "side",
+                "action",
+                "quantity",
+                "fill_price",
+                "fees",
+                "fill_timestamp",
+                "run_id",
+            ],
+        ),
+        TableParityConfig(
             table_name="cash_ledger",
             csv_path=CASH_LEDGER_PATH,
             key_columns=["ledger_id"],
@@ -156,6 +219,19 @@ def _parity_tables() -> list[TableParityConfig]:
             ],
         ),
     ]
+    if state_dir is None:
+        return tables
+    return [
+        TableParityConfig(
+            table_name=config.table_name,
+            csv_path=state_dir / config.csv_path.name,
+            key_columns=config.key_columns,
+            compare_columns=config.compare_columns,
+            run_scoped=config.run_scoped,
+            required_csv=config.required_csv,
+        )
+        for config in tables
+    ]
 
 
 def _normalise_scalar(value: Any) -> Any:
@@ -169,6 +245,8 @@ def _normalise_scalar(value: Any) -> Any:
         return round(float(value), 10)
 
     text = str(value).strip()
+    if text.lower() in {"true", "false"}:
+        return text.lower() == "true"
     return None if text == "" else text
 
 
@@ -203,15 +281,33 @@ def _load_csv_df(config: TableParityConfig, run_id: str | None) -> pd.DataFrame:
     return _prepare_df(pd.read_csv(config.csv_path), config, run_id)
 
 
-def _load_sqlite_df(config: TableParityConfig, run_id: str | None) -> pd.DataFrame:
-    rows = fetch_all_rows(config.table_name)
+def _load_sqlite_df(
+    config: TableParityConfig,
+    run_id: str | None,
+    db_path: Path | None = None,
+) -> pd.DataFrame:
+    rows = fetch_all_rows(config.table_name, db_path=db_path)
     return _prepare_df(pd.DataFrame(rows), config, run_id)
 
 
-def validate_table_parity(config: TableParityConfig, run_id: str | None = None) -> list[ParityIssue]:
-    csv_df = _load_csv_df(config, run_id)
-    sqlite_df = _load_sqlite_df(config, run_id)
+def validate_table_parity(
+    config: TableParityConfig,
+    run_id: str | None = None,
+    *,
+    db_path: Path | None = None,
+) -> list[ParityIssue]:
     issues: list[ParityIssue] = []
+    if config.required_csv and not config.csv_path.exists():
+        return [
+            ParityIssue(
+                table_name=config.table_name,
+                issue_type="missing_required_csv",
+                message=f"{config.table_name}: required CSV is missing at {config.csv_path}",
+            )
+        ]
+
+    csv_df = _load_csv_df(config, run_id)
+    sqlite_df = _load_sqlite_df(config, run_id, db_path=db_path)
 
     if len(csv_df) != len(sqlite_df):
         issues.append(
@@ -285,10 +381,24 @@ def validate_table_parity(config: TableParityConfig, run_id: str | None = None) 
     return issues
 
 
-def validate_sqlite_dual_write_parity(run_id: str | None = None) -> ParityReport:
+def validate_sqlite_dual_write_parity(
+    run_id: str | None = None,
+    *,
+    state_dir: Path | None = None,
+    db_path: Path | None = None,
+) -> ParityReport:
     issues: list[ParityIssue] = []
-    for config in _parity_tables():
-        issues.extend(validate_table_parity(config, run_id=run_id))
+    resolved_db_path = db_path
+    if resolved_db_path is None and state_dir is not None:
+        resolved_db_path = state_dir / "trading_system.sqlite3"
+    for config in _parity_tables(state_dir=state_dir):
+        issues.extend(
+            validate_table_parity(
+                config,
+                run_id=run_id,
+                db_path=resolved_db_path,
+            )
+        )
     return ParityReport(run_id=run_id, issues=issues)
 
 

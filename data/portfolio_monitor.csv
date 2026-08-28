@@ -1,2 +1,0 @@
-position_id,ticker,side,status,quantity,entry_price,current_price,market_value,pnl_abs,pnl_pct,stop_loss,take_profit,highest_price_since_entry,lowest_price_since_entry,exit_flag,exit_reason,last_updated,run_id
-POS001,CVX,long,open,1.0,155.25,199.1898956298828,199.1898956298828,43.93989562988281,28.302670293000205,,,199.1898956298828,155.25,none,,2026-03-18T13:54:22.245721+00:00,RUN_20260318T135422Z

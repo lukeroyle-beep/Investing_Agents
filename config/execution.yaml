@@ -1,0 +1,16 @@
+schema_version: "1.0"
+
+# Intent import and broker mutations are deliberately disabled until an
+# operator enables the relevant Demo gate after review.
+intent_import_enabled: false
+broker_writes_enabled: false
+adapter: offline
+environment: demo
+
+require_internal_instrument_id: true
+allowed_asset_types:
+  - equity
+  - etf
+allowed_sides:
+  - buy
+allowed_leverage: 1

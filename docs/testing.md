@@ -1,7 +1,7 @@
 # Local Test Setup
 
-Use the dedicated test virtual environment instead of the checked-in `.venv`.
-The checked-in environment is machine-specific and is not a reliable local test runner.
+Use the project environment synchronized from `uv.lock`. Python 3.12 is the
+operational baseline; CI checks Python 3.11 through 3.13 on Linux and macOS.
 
 ## Create the test environment
 
@@ -9,18 +9,16 @@ The checked-in environment is machine-specific and is not a reliable local test 
 .\scripts\setup_test_env.ps1
 ```
 
-This creates `.venv-test` and installs:
-
-- project dependencies from `requirements.txt`
-- test dependency `pytest` from `requirements-test.txt`
+This creates `.venv` and installs all project and development dependencies
+without changing the lock.
 
 ## Run the full test suite
 
-After activating the test environment:
+After activating the environment:
 
 ```powershell
-.\.venv-test\Scripts\Activate.ps1
-python -m pytest tests
+.\.venv\Scripts\Activate.ps1
+python -m pytest -q
 ```
 
 Without activating it:
@@ -29,10 +27,10 @@ Without activating it:
 .\scripts\run_tests.ps1
 ```
 
-Equivalent direct invocation:
+Equivalent direct invocation without activating the environment:
 
 ```powershell
-.\.venv-test\Scripts\python.exe -m pytest tests
+uv run --frozen python -m pytest -q
 ```
 
 ## Run a single test file
@@ -44,15 +42,18 @@ Equivalent direct invocation:
 ## Pass through normal pytest arguments
 
 ```powershell
-python -m pytest tests/test_fill_agent.py -k idempotent
 .\scripts\run_tests.ps1 -q
 .\scripts\run_tests.ps1 tests/test_fill_agent.py -k idempotent
-.\.venv-test\Scripts\python.exe -m pytest tests/test_fill_agent.py -k idempotent
+uv run --frozen python -m pytest tests/test_fill_agent.py -k idempotent
 ```
 
 ## Notes
 
 - `pytest.ini` limits collection to the `tests/` directory.
 - The tests use temp workspaces and do not rely on live price or news data.
-- If Python is not available on `PATH`, install Python 3 first and rerun setup.
-- On Windows, bare `pytest` may not be on `PATH`; prefer `python -m pytest` through `.venv-test` or `.\scripts\run_tests.ps1`.
+- Install `uv` 0.11.6 before running the setup script. `uv` installs the
+  project-selected Python when necessary.
+- `pyproject.toml` and `uv.lock` are authoritative. `requirements.txt` is a
+  generated, hash-pinned compatibility export and must not be edited manually.
+- Prefer `uv run --frozen` or `.\scripts\run_tests.ps1` so tests cannot silently
+  update the dependency lock.

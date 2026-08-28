@@ -9,6 +9,21 @@ from typing import Any, Callable, Protocol
 
 import pandas as pd
 
+from shared.freshness import (
+    CONTRADICTION_NOT_CHECKED,
+    MODE_NO_TRADE,
+    MODE_NORMAL,
+    OUTCOME_FRESH,
+    ExchangeCalendar,
+    FreshnessConfig,
+    assess_freshness,
+    load_freshness_config,
+    summarize_provider_error,
+)
+from shared.io_utils import write_csv, write_managed_csv_with_schema
+from shared.paths import RUNTIME_CACHE_DIR, data_path
+from shared.schemas import DATA_SOURCE_HEALTH_SCHEMA, validate_data_source_health
+
 
 Clock = Callable[[], datetime]
 DownloadFunc = Callable[..., pd.DataFrame]
@@ -20,9 +35,18 @@ BackoffFunc = Callable[[int], float]
 HEALTH_COLUMNS = [
     "ticker",
     "source",
+    "data_kind",
     "error",
-    "stale",
     "retry_count",
+    "observation_time",
+    "retrieval_time",
+    "market_session",
+    "calendar",
+    "freshness_outcome",
+    "contradiction_status",
+    "mode",
+    "reason",
+    "stale",
     "fetched_at",
     "as_of",
 ]
@@ -62,6 +86,13 @@ class MarketDataMetadata:
     stale: bool = False
     error: str | None = None
     retry_count: int = 0
+    data_kind: str = "daily_research_price"
+    market_session: str | None = None
+    calendar: str = "XNYS"
+    freshness_outcome: str = OUTCOME_FRESH
+    contradiction_status: str = CONTRADICTION_NOT_CHECKED
+    mode: str = MODE_NORMAL
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,7 +103,11 @@ class MarketDataResult:
 
     @property
     def ok(self) -> bool:
-        return self.metadata.error is None and not self.data.empty
+        return (
+            self.metadata.error is None
+            and not self.data.empty
+            and self.metadata.mode != MODE_NO_TRADE
+        )
 
 
 class MarketDataCache(Protocol):
@@ -137,7 +172,10 @@ class FileMarketDataCache:
     operational source of truth for portfolio state and derived artifacts.
     """
 
-    def __init__(self, cache_dir: str | os.PathLike[str] = "data/runtime/market_data_cache") -> None:
+    def __init__(
+        self,
+        cache_dir: str | os.PathLike[str] = RUNTIME_CACHE_DIR / "market_data",
+    ) -> None:
         self.cache_dir = Path(cache_dir)
 
     def get(
@@ -208,7 +246,7 @@ class NewsDataResult:
 
     @property
     def ok(self) -> bool:
-        return self.metadata.error is None
+        return self.metadata.error is None and self.metadata.mode != MODE_NO_TRADE
 
 
 class MarketDataProvider(Protocol):
@@ -242,6 +280,8 @@ class YFinanceMarketDataProvider:
         sleep_func: SleepFunc | None = None,
         backoff_func: BackoffFunc | None = None,
         ticker_factory: Callable[[str], Any] | None = None,
+        freshness_config: FreshnessConfig | None = None,
+        calendar: ExchangeCalendar | None = None,
     ) -> None:
         self._download_func = download_func
         self._now_func = now_func
@@ -253,6 +293,55 @@ class YFinanceMarketDataProvider:
         self._sleep_func = sleep_func
         self._backoff_func = backoff_func or (lambda retry_count: 0.0)
         self._ticker_factory = ticker_factory
+        self._freshness_config = freshness_config
+        self._calendar = calendar
+
+    def _evaluate_metadata(
+        self,
+        *,
+        as_of: str | None,
+        fetched_at: str,
+        data_kind: str,
+        error: object | None = None,
+        retry_count: int = 0,
+    ) -> MarketDataMetadata:
+        config = self._freshness_config or load_freshness_config()
+        assessment = assess_freshness(
+            source=self._source,
+            data_kind=data_kind,
+            observation_time=as_of,
+            retrieval_time=fetched_at,
+            now=self._now_func(),
+            config=config,
+            calendar=self._calendar,
+            provider_error=error,
+        )
+        stale = assessment.freshness_outcome != OUTCOME_FRESH
+        if self._max_staleness_days is not None and as_of:
+            as_of_dt = pd.Timestamp(as_of).to_pydatetime()
+            if as_of_dt.tzinfo is None:
+                as_of_dt = as_of_dt.replace(tzinfo=UTC)
+            stale = stale or (
+                self._now_func().astimezone(UTC) - as_of_dt.astimezone(UTC)
+                > timedelta(days=self._max_staleness_days)
+            )
+        return MarketDataMetadata(
+            source=self._source,
+            fetched_at=fetched_at,
+            as_of=as_of,
+            stale=stale,
+            error=summarize_provider_error(error) if error is not None else None,
+            retry_count=retry_count,
+            data_kind=data_kind,
+            market_session=assessment.market_session,
+            calendar=assessment.calendar,
+            freshness_outcome=(
+                assessment.freshness_outcome if not stale else "stale"
+            ),
+            contradiction_status=assessment.contradiction_status,
+            mode=(assessment.mode if not stale else MODE_NO_TRADE),
+            reason=assessment.reason,
+        )
 
     @property
     def download_func(self) -> DownloadFunc:
@@ -274,6 +363,7 @@ class YFinanceMarketDataProvider:
     ) -> MarketDataResult:
         retry_count = 0
         fetched_at = self._now_func().astimezone(UTC).isoformat()
+        data_kind = "daily_research_price" if interval.endswith("d") else "research_intraday"
         cached_data = self._get_cached(
             ticker,
             period=self._cache_period(period, start=start, end=end),
@@ -282,18 +372,16 @@ class YFinanceMarketDataProvider:
         )
         if cached_data is not None and not cached_data.empty:
             as_of = _latest_index_timestamp(cached_data)
-            stale = self._is_stale(as_of)
-            if not stale:
+            cached_metadata = self._evaluate_metadata(
+                as_of=as_of,
+                fetched_at=fetched_at,
+                data_kind=data_kind,
+            )
+            if cached_metadata.mode == MODE_NORMAL:
                 return MarketDataResult(
                     ticker=ticker,
                     data=cached_data,
-                    metadata=MarketDataMetadata(
-                        source=self._source,
-                        fetched_at=fetched_at,
-                        as_of=as_of,
-                        stale=False,
-                        retry_count=0,
-                    ),
+                    metadata=cached_metadata,
                 )
 
         while True:
@@ -316,11 +404,10 @@ class YFinanceMarketDataProvider:
                 if data is None:
                     data = pd.DataFrame()
                 as_of = _latest_index_timestamp(data)
-                metadata = MarketDataMetadata(
-                    source=self._source,
-                    fetched_at=fetched_at,
+                metadata = self._evaluate_metadata(
                     as_of=as_of,
-                    stale=self._is_stale(as_of),
+                    fetched_at=fetched_at,
+                    data_kind=data_kind,
                     retry_count=retry_count,
                 )
                 if self._cache is not None and not data.empty:
@@ -343,19 +430,19 @@ class YFinanceMarketDataProvider:
 
                 if cached_data is not None and not cached_data.empty:
                     as_of = _latest_index_timestamp(cached_data)
-                    metadata = MarketDataMetadata(
-                        source=self._source,
-                        fetched_at=fetched_at,
+                    metadata = self._evaluate_metadata(
                         as_of=as_of,
-                        stale=True,
+                        fetched_at=fetched_at,
+                        data_kind=data_kind,
                         error=str(exc),
                         retry_count=retry_count,
                     )
                     return MarketDataResult(ticker=ticker, data=cached_data, metadata=metadata)
 
-                metadata = MarketDataMetadata(
-                    source=self._source,
+                metadata = self._evaluate_metadata(
+                    as_of=None,
                     fetched_at=fetched_at,
+                    data_kind=data_kind,
                     error=str(exc),
                     retry_count=retry_count,
                 )
@@ -389,20 +476,20 @@ class YFinanceMarketDataProvider:
             return NewsDataResult(
                 ticker=ticker,
                 items=items,
-                metadata=MarketDataMetadata(
-                    source=self._source,
-                    fetched_at=fetched_at,
+                metadata=self._evaluate_metadata(
                     as_of=as_of,
-                    stale=self._is_stale(as_of),
+                    fetched_at=fetched_at,
+                    data_kind="research_news",
                 ),
             )
         except Exception as exc:
             return NewsDataResult(
                 ticker=ticker,
                 items=[],
-                metadata=MarketDataMetadata(
-                    source=self._source,
+                metadata=self._evaluate_metadata(
+                    as_of=None,
                     fetched_at=fetched_at,
+                    data_kind="research_news",
                     error=str(exc),
                 ),
             )
@@ -473,31 +560,60 @@ def fetch_news(
 
 
 def market_data_health_row(result: MarketDataResult | NewsDataResult) -> dict[str, object]:
+    mode = MODE_NO_TRADE if result.metadata.stale else result.metadata.mode
+    outcome = "stale" if result.metadata.stale else result.metadata.freshness_outcome
     return {
         "ticker": result.ticker,
         "source": result.metadata.source,
-        "error": result.metadata.error or "",
-        "stale": result.metadata.stale,
+        "data_kind": result.metadata.data_kind,
+        "error": summarize_provider_error(result.metadata.error or ""),
         "retry_count": result.metadata.retry_count,
+        "observation_time": result.metadata.as_of or "",
+        "retrieval_time": result.metadata.fetched_at,
+        "market_session": result.metadata.market_session or "",
+        "calendar": result.metadata.calendar,
+        "freshness_outcome": outcome,
+        "contradiction_status": result.metadata.contradiction_status,
+        "mode": mode,
+        "reason": result.metadata.reason,
+        "stale": result.metadata.stale,
         "fetched_at": result.metadata.fetched_at,
         "as_of": result.metadata.as_of or "",
     }
 
 
+def market_data_is_actionable(result: MarketDataResult | NewsDataResult) -> bool:
+    return (
+        not bool(result.metadata.error)
+        and not result.metadata.stale
+        and result.metadata.mode == MODE_NORMAL
+    )
+
+
 def write_market_data_health_artifact(
     results: list[MarketDataResult | NewsDataResult],
-    path: str | os.PathLike[str] = "data/data_source_health.csv",
+    path: str | os.PathLike[str] = data_path("data_source_health.csv"),
 ) -> None:
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [market_data_health_row(result) for result in results]
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows, columns=HEALTH_COLUMNS).to_csv(output_path, index=False)
+    output_df = validate_data_source_health(
+        pd.DataFrame(rows, columns=HEALTH_COLUMNS),
+        keep_extra_columns=False,
+    )
+    if output_path.name == "data_source_health.csv":
+        write_managed_csv_with_schema(
+            output_df,
+            output_path,
+            schema=DATA_SOURCE_HEALTH_SCHEMA,
+            producer="Market Data Health",
+        )
+    else:
+        write_csv(output_df, output_path)
 
 
 def append_market_data_health_artifact(
     results: list[MarketDataResult | NewsDataResult],
-    path: str | os.PathLike[str] = "data/data_source_health.csv",
+    path: str | os.PathLike[str] = data_path("data_source_health.csv"),
 ) -> None:
     """Append market-data source health rows without erasing earlier agent evidence.
 
@@ -509,11 +625,19 @@ def append_market_data_health_artifact(
         return
 
     output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     rows = [market_data_health_row(result) for result in results]
-    pd.DataFrame(rows, columns=HEALTH_COLUMNS).to_csv(
-        output_path,
-        mode="a",
-        header=not output_path.exists(),
-        index=False,
+    new_df = pd.DataFrame(rows, columns=HEALTH_COLUMNS)
+    existing_df = pd.read_csv(output_path, keep_default_na=False) if output_path.exists() else pd.DataFrame()
+    combined_df = validate_data_source_health(
+        pd.concat([existing_df, new_df], ignore_index=True),
+        keep_extra_columns=False,
     )
+    if output_path.name == "data_source_health.csv":
+        write_managed_csv_with_schema(
+            combined_df,
+            output_path,
+            schema=DATA_SOURCE_HEALTH_SCHEMA,
+            producer="Market Data Health",
+        )
+    else:
+        write_csv(combined_df, output_path)

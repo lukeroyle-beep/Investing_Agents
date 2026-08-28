@@ -27,8 +27,13 @@ Thumbs.db
 # Logs
 *.log
 
-# Runtime data outputs
-data/runtime/
-# Runtime data outputs
-data/*.csv
-!data/example_*.csv
+# Runtime state, run artifacts, caches, logs, and local backups
+/runtime/
+
+# Legacy runtime location retained only for operator-led migrations. Sanitized
+# examples and test inputs belong under tests/fixtures/ instead.
+/data/
+
+# SQLite transient files can be created beside a database during recovery.
+*.sqlite3-wal
+*.sqlite3-shm

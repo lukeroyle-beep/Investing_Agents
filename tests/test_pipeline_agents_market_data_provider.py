@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from agents.backtesting_agent import backtesting_agent
 from agents.macro_agent import macro_agent
@@ -157,3 +158,19 @@ def test_agents_skip_provider_errors() -> None:
     assert backtesting_agent.download_price_history(
         "TEST", "2026-01-01", "", market_data_provider=provider
     ).empty
+
+
+def test_unexpected_provider_exception_fails_closed_with_redaction() -> None:
+    class RaisingProvider:
+        def fetch_history(self, *_args, **_kwargs):
+            raise RuntimeError("x-api-key=do-not-log")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        signal_agent.fetch_signal_data(
+            "TEST",
+            "Test Asset",
+            market_data_provider=RaisingProvider(),
+        )
+
+    assert "do-not-log" not in str(exc_info.value)
+    assert "[REDACTED]" in str(exc_info.value)

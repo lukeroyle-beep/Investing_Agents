@@ -1,0 +1,34 @@
+schema_version: "1.0"
+calendar: XNYS
+timezone: America/New_York
+future_tolerance_seconds: 5
+policies:
+  broker_quote:
+    kind: max_age
+    max_age_seconds: 30
+    critical: true
+  account_snapshot:
+    kind: max_age
+    max_age_seconds: 15
+    critical: true
+  order_snapshot:
+    kind: max_age
+    max_age_seconds: 15
+    critical: true
+  daily_research_price:
+    kind: latest_completed_session
+    critical: true
+  research_intraday:
+    kind: max_age
+    max_age_seconds: 900
+    critical: true
+  research_news:
+    kind: max_age
+    max_age_seconds: 86400
+    critical: true
+  approval:
+    kind: max_age
+    max_age_seconds: 300
+    critical: true
+contradiction:
+  material_relative_difference: 0.02

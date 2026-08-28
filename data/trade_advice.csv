@@ -1,4 +1,0 @@
-ticker,action,direction,entry_zone_low,entry_zone_high,suggested_size_pct,suggested_size_cash,stop_loss,take_profit,risk_reward_ratio,estimated_cash_risk,time_in_force_note,manual_review_required,advice_status,advice_notes,advice_generated_at
-MSFT,review_trade,long,417.9,422.1,5.0,500.0,399.0,470.0,2.38,25.0,Manual entry only,True,ready_for_manual_review,Trend intact and risk acceptable,2026-03-16T17:14:20.057503+00:00
-NVDA,review_trade,long,875.6,884.4,5.0,500.0,830.0,980.0,2.0,28.41,Manual entry only,True,ready_for_manual_review,Strong momentum but watch volatility,2026-03-16T17:14:20.058243+00:00
-TSLA,review_trade,long,169.15,170.85,5.0,500.0,160.0,195.0,2.5,29.41,Manual entry only,True,ready_for_manual_review,Needs manual review on news,2026-03-16T17:14:20.058926+00:00

@@ -9,6 +9,8 @@ from pandas.errors import EmptyDataError
 
 from agents.shared.event_log import append_exit_decision_generated_event
 from shared.io_utils import write_csv
+from shared.paths import DATA_DIR as RUNTIME_STATE_DIR
+from shared.portfolio_monitor import merge_authoritative_monitor
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
     VALID_POSITION_SIDES,
@@ -18,12 +20,17 @@ from shared.portfolio_state_helpers import (
     parse_boolean_flag,
 )
 from shared.run_context import get_or_create_run_id
-from shared.schemas import validate_exit_advice, validate_portfolio_state
+from shared.schemas import (
+    validate_exit_advice,
+    validate_portfolio_monitor,
+    validate_portfolio_state,
+)
 
 
-DATA_DIR = "data"
+DATA_DIR = str(RUNTIME_STATE_DIR)
 
 STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
+MONITOR_PATH = os.path.join(DATA_DIR, "portfolio_monitor.csv")
 EXIT_ADVICE_PATH = os.path.join(DATA_DIR, "exit_advice.csv")
 AGENT_NAME = "Exit Agent"
 
@@ -45,8 +52,15 @@ def safe_read_csv(path: str) -> pd.DataFrame:
 
 
 def load_portfolio_state() -> pd.DataFrame:
-    df = safe_read_csv(STATE_PATH)
-    df = validate_portfolio_state(df, keep_extra_columns=True)
+    state_df = validate_portfolio_state(
+        safe_read_csv(STATE_PATH),
+        keep_extra_columns=False,
+    )
+    monitor_df = validate_portfolio_monitor(
+        safe_read_csv(MONITOR_PATH),
+        keep_extra_columns=False,
+    )
+    df = merge_authoritative_monitor(state_df, monitor_df)
     validate_state_for_exit_decisions(df)
     df["exit_flag"] = df["exit_flag"].apply(parse_boolean_flag)
     return df

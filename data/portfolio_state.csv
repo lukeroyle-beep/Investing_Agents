@@ -1,3 +1,0 @@
-position_id,ticker,side,status,quantity,entry_price,entry_date,capital_allocated,stop_loss,take_profit,regime_at_entry,sector,signal_score,highest_price_since_entry,lowest_price_since_entry,current_price,market_value,pnl_abs,pnl_pct,exit_flag,exit_reason,last_updated,run_id,realised_pnl_abs,fees_total,closed_at,exit_price
-POS001,CVX,long,open,1.0,155.25,2026-03-18T13:25:00+00:00,155.25,,,,,,199.1898956298828,155.25,199.1898956298828,199.1898956298828,43.93989562988281,28.302670293000205,none,,2026-03-28T15:05:46.400089+00:00,RUN_20260328T150546Z,0.0,0.0,,
-POS_2B991A300C,NVDA,long,closed,1.0,875.0,2026-03-19T14:00:01+00:00,,,,,,,,,910.0,0.0,0.0,0.0,False,position_closed,2026-03-19T15:15:49.313372+00:00,RUN_20260319T151549Z,32.0,3.0,2026-03-19T15:00:01+00:00,910.0

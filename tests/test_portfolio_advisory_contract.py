@@ -15,6 +15,22 @@ def _patch_advisory_paths(workspace, monkeypatch):
     monkeypatch.setattr(advisory_agent, "ADVISORY_TRADES_PATH", data_dir / "advisory_trades.csv")
     monkeypatch.setattr(advisory_agent, "data_path", lambda name="": data_dir / name if name else data_dir)
     monkeypatch.setattr(advisory_agent, "config_path", lambda name="": config_dir / name if name else config_dir)
+    monkeypatch.setattr(portfolio_agent, "FINAL_SHORTLIST_FILE", data_dir / "final_shortlist.csv")
+    monkeypatch.setattr(portfolio_agent, "MACRO_REGIME_FILE", data_dir / "macro_regime.csv")
+    monkeypatch.setattr(portfolio_agent, "NEWS_FLAGS_FILE", data_dir / "news_flags.csv")
+    monkeypatch.setattr(portfolio_agent, "PORTFOLIO_STATE_FILE", data_dir / "portfolio_state.csv")
+    monkeypatch.setattr(portfolio_agent, "GOVERNANCE_FILE", config_dir / "governance.yaml")
+    monkeypatch.setattr(
+        portfolio_agent,
+        "PORTFOLIO_CANDIDATES_FILE",
+        data_dir / "portfolio_candidates.csv",
+    )
+    monkeypatch.setattr(portfolio_agent, "PORTFOLIO_ORDERS_FILE", data_dir / "portfolio_orders.csv")
+    monkeypatch.setattr(
+        portfolio_agent,
+        "PORTFOLIO_POSITIONS_FILE",
+        data_dir / "portfolio_positions.csv",
+    )
 
 
 def _write_governance(workspace):

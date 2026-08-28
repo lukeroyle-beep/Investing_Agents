@@ -180,48 +180,24 @@ PORTFOLIO_STATE_SCHEMA = _schema_spec_from_registry(
     },
 )
 
-PORTFOLIO_MONITOR_SCHEMA = SchemaSpec(
+PORTFOLIO_MONITOR_SCHEMA = _schema_spec_from_registry(
+    file_name="portfolio_monitor.csv",
     name="portfolio_monitor",
-    required_columns=PORTFOLIO_STATE_SCHEMA.required_columns,
-    numeric_columns=PORTFOLIO_STATE_SCHEMA.numeric_columns,
-    text_columns=PORTFOLIO_STATE_SCHEMA.text_columns,
-    uppercase_columns=PORTFOLIO_STATE_SCHEMA.uppercase_columns,
-    lowercase_columns=PORTFOLIO_STATE_SCHEMA.lowercase_columns,
-    allowed_values=PORTFOLIO_STATE_SCHEMA.allowed_values,
-    default_values=PORTFOLIO_STATE_SCHEMA.default_values,
-    alias_columns=PORTFOLIO_STATE_SCHEMA.alias_columns,
-    column_order=PORTFOLIO_STATE_SCHEMA.column_order,
+    uppercase_columns=["ticker"],
+    lowercase_columns=["side", "status"],
+    allowed_values={
+        "side": ALLOWED_SIDE_VALUES,
+        "status": ALLOWED_POSITION_STATUS_VALUES,
+    },
 )
 
-POSITION_ALERTS_SCHEMA = SchemaSpec(
+POSITION_ALERTS_SCHEMA = _schema_spec_from_registry(
+    file_name="position_alerts.csv",
     name="position_alerts",
-    required_columns=[
-        "position_id",
-        "ticker",
-        "alert_type",
-        "message",
-        "generated_at",
-        "run_id",
-    ],
-    text_columns=[
-        "position_id",
-        "ticker",
-        "alert_type",
-        "message",
-        "generated_at",
-        "run_id",
-    ],
     uppercase_columns=["ticker"],
-    lowercase_columns=["alert_type"],
+    lowercase_columns=["status", "alert_type"],
+    allowed_values={"status": ALLOWED_POSITION_STATUS_VALUES},
     default_values={"message": ""},
-    column_order=[
-        "position_id",
-        "ticker",
-        "alert_type",
-        "message",
-        "generated_at",
-        "run_id",
-    ],
 )
 
 EXIT_ADVICE_SCHEMA = SchemaSpec(
@@ -293,6 +269,13 @@ PROCESSED_FILLS_SCHEMA = SchemaSpec(
     column_order=get_file_schema("processed_fills.csv").canonical_column_order,
 )
 
+TRADE_FILLS_SCHEMA = _schema_spec_from_registry(
+    file_name="trade_fills.csv",
+    name="trade_fills",
+    uppercase_columns=["ticker"],
+    lowercase_columns=["side", "action", "broker", "environment"],
+)
+
 CASH_STATE_SCHEMA = _schema_spec_from_registry(
     file_name="cash_state.csv",
     name="cash_state",
@@ -318,6 +301,12 @@ RUN_RECONCILIATION_SUMMARY_SCHEMA = _schema_spec_from_registry(
     name="run_reconciliation_summary",
 )
 
+RUN_HISTORY_SCHEMA = _schema_spec_from_registry(
+    file_name="run_history.csv",
+    name="run_history",
+    lowercase_columns=["status"],
+)
+
 LIFECYCLE_INTEGRITY_REPORT_SCHEMA = _schema_spec_from_registry(
     file_name="lifecycle_integrity_report.csv",
     name="lifecycle_integrity_report",
@@ -327,6 +316,18 @@ LIFECYCLE_INTEGRITY_REPORT_SCHEMA = _schema_spec_from_registry(
 EVENT_LOG_SCHEMA = _schema_spec_from_registry(
     file_name="event_log.csv",
     name="event_log",
+)
+
+DATA_SOURCE_HEALTH_SCHEMA = _schema_spec_from_registry(
+    file_name="data_source_health.csv",
+    name="data_source_health",
+    uppercase_columns=["ticker"],
+    lowercase_columns=[
+        "data_kind",
+        "freshness_outcome",
+        "contradiction_status",
+        "mode",
+    ],
 )
 
 TRADE_JOURNAL_SCHEMA = SchemaSpec(
@@ -538,6 +539,10 @@ def validate_processed_fills(df: pd.DataFrame, keep_extra_columns: bool = True) 
     return normalise_to_schema(df, PROCESSED_FILLS_SCHEMA, keep_extra_columns=keep_extra_columns)
 
 
+def validate_trade_fills(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, TRADE_FILLS_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
 def validate_trade_journal(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
     return normalise_to_schema(df, TRADE_JOURNAL_SCHEMA, keep_extra_columns=keep_extra_columns)
 
@@ -568,3 +573,7 @@ def validate_lifecycle_integrity_report(df: pd.DataFrame, keep_extra_columns: bo
 
 def validate_event_log(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
     return normalise_to_schema(df, EVENT_LOG_SCHEMA, keep_extra_columns=keep_extra_columns)
+
+
+def validate_data_source_health(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
+    return normalise_to_schema(df, DATA_SOURCE_HEALTH_SCHEMA, keep_extra_columns=keep_extra_columns)

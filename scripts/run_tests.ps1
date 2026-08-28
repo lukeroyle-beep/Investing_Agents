@@ -1,19 +1,16 @@
 param(
-    [string]$VenvPath = ".venv-test",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PytestArgs
 )
 
 $ErrorActionPreference = "Stop"
 
-$pythonExe = Join-Path $VenvPath "Scripts\python.exe"
-
-if (-not (Test-Path $pythonExe)) {
-    throw "Missing test environment at $VenvPath. Run .\scripts\setup_test_env.ps1 first."
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "uv was not found on PATH. Install uv and rerun this script."
 }
 
 if (-not $PytestArgs -or $PytestArgs.Count -eq 0) {
     $PytestArgs = @("tests")
 }
 
-& $pythonExe -m pytest @PytestArgs
+& uv run --frozen python -m pytest @PytestArgs

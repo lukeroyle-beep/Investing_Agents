@@ -1,0 +1,24 @@
+{
+  "cid": 4498,
+  "timestamp": "2026-08-28T10:15:00Z",
+  "accountCurrency": "USD",
+  "accountTotals": {
+    "accountAvailableCash": 9000,
+    "accountFrozenCash": 0,
+    "accountCurrentPnl": 20,
+    "accountTotalValue": 10000,
+    "accountTotalUsedMargin": 1000,
+    "accountBalance": 9000
+  },
+  "instrumentAggregates": [
+    {
+      "instrumentId": 1001,
+      "assetCurrency": "USD",
+      "netUnits": 4.5,
+      "netCurrentExposureAccountCurrency": 1000,
+      "avgLeverage": 1,
+      "accountCurrencyReturn": 20
+    }
+  ],
+  "mirrors": []
+}

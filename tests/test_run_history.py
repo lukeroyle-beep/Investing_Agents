@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 import shared.run_history as run_history
+from shared.runtime_bootstrap import bootstrap_runtime
 
 
 def _patch_run_history_path(isolated_workspace, monkeypatch):
@@ -30,16 +31,17 @@ def test_complete_run_record_rejects_blank_completed_at(isolated_workspace, monk
         run_history.complete_run_record(run_id="RUN_COMPLETE", completed_at=" ")
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    assert df.iloc[0]["status"] == "running"
+    assert df.iloc[0]["status"] == "started"
     assert df.iloc[0]["completed_at"] == ""
 
 
 def test_run_history_disallows_second_terminal_transition(isolated_workspace, monkeypatch) -> None:
     path = _patch_run_history_path(isolated_workspace, monkeypatch)
     run_history.start_run_record(run_id="RUN_TERMINAL", started_at="2026-03-28T10:00:00+00:00")
+    run_history.begin_run_validation("RUN_TERMINAL")
     run_history.complete_run_record(run_id="RUN_TERMINAL", completed_at="2026-03-28T10:05:00+00:00")
 
-    with pytest.raises(ValueError, match="already terminal or invalid"):
+    with pytest.raises(ValueError, match="invalid transition source"):
         run_history.fail_run_record(
             run_id="RUN_TERMINAL",
             completed_at="2026-03-28T10:06:00+00:00",
@@ -48,7 +50,7 @@ def test_run_history_disallows_second_terminal_transition(isolated_workspace, mo
         )
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
-    assert df.iloc[0]["status"] == "success"
+    assert df.iloc[0]["status"] == "succeeded"
     assert df.iloc[0]["completed_at"] == "2026-03-28T10:05:00+00:00"
 
 
@@ -78,7 +80,7 @@ def test_start_run_record_fails_closed_when_previous_run_is_still_running(isolat
 
     df = pd.read_csv(path, dtype=str, keep_default_na=False)
     assert df["run_id"].tolist() == ["RUN_INTERRUPTED"]
-    assert df.iloc[0]["status"] == "running"
+    assert df.iloc[0]["status"] == "started"
 
 
 def test_running_run_detection_ignores_current_run_id(isolated_workspace, monkeypatch) -> None:
@@ -89,3 +91,26 @@ def test_running_run_detection_ignores_current_run_id(isolated_workspace, monkey
 
     running = run_history.find_running_run_records()
     assert [row["run_id"] for row in running] == ["RUN_CURRENT"]
+
+
+def test_new_run_is_blocked_when_latest_success_proof_no_longer_validates(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    result = bootstrap_runtime(tmp_path / "runtime")
+    monkeypatch.setattr(
+        run_history,
+        "RUN_HISTORY_PATH",
+        result.runtime_dir / "state" / "run_history.csv",
+    )
+    cash_path = result.runtime_dir / "state" / "cash_state.csv"
+    cash_path.write_text(
+        cash_path.read_text(encoding="utf-8").replace("100000.0", "99999.0"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="lacks complete, verifiable finalization proof"):
+        run_history.start_run_record(
+            run_id="RUN_AFTER_TAMPER",
+            started_at="2026-08-28T12:00:00+00:00",
+        )
