@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal
-from math import isnan
+from math import isfinite, isnan
 import os
 from typing import Any
 
@@ -18,9 +17,10 @@ from shared.market_data import (
 from shared.io_utils import load_yaml, write_csv_with_run_id
 from shared.paths import EXPERIMENT_REGISTRY_PATH, config_path, data_path, run_path
 from shared.run_context import get_or_create_run_id
-from strategy.domain import CostModel, ExperimentMetrics, ExperimentSpec, content_hash
+from strategy.domain import CostModel, ExperimentMetrics, ExperimentSpec, StrategyValidationError, content_hash
+from strategy.backtest_portfolio import replay_portfolio
 from strategy.registry import ExperimentRegistry, write_experiment_artifact
-from strategy.validation import chronological_split
+from strategy.validation import rolling_walk_forward_splits
 
 
 BACKTEST_CONFIG_FILE = config_path("backtesting.yaml")
@@ -29,6 +29,7 @@ BACKTEST_SUMMARY_FILE = data_path("backtest_summary.csv")
 BACKTEST_EQUITY_CURVE_FILE = data_path("backtest_equity_curve.csv")
 BACKTEST_DRAWDOWN_FILE = data_path("backtest_drawdown.csv")
 BACKTEST_BENCHMARK_FILE = data_path("backtest_benchmark_comparison.csv")
+BACKTEST_REJECTED_FILE = data_path("backtest_rejected_trades.csv")
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -65,6 +66,8 @@ TRADE_COLUMNS = [
     "shares",
     "gross_pnl",
     "transaction_cost",
+    "entry_fee",
+    "exit_fee",
     "slippage_cost",
     "net_pnl",
     "notional",
@@ -147,7 +150,9 @@ def _normalise_history_df(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
     df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
     df["Date"] = pd.to_datetime(df["Date"])
-    df = df.sort_values("Date").drop_duplicates("Date", keep="last")
+    df = df.sort_values("Date")
+    if df["Date"].duplicated().any():
+        raise StrategyValidationError("duplicate historical observations")
     df["ticker"] = ticker
 
     return df.reset_index(drop=True)
@@ -202,9 +207,11 @@ def _long_trade_accounting(
     position_size_pct: float,
     transaction_cost_bps: float,
     slippage_bps: float,
+    spread_bps: float = 0.0,
+    tax_bps: float = 0.0,
 ) -> dict[str, float]:
     notional = initial_capital * position_size_pct / 100.0
-    slippage_rate = slippage_bps / 10000.0
+    slippage_rate = (slippage_bps + spread_bps / 2.0) / 10000.0
     cost_rate = transaction_cost_bps / 10000.0
 
     entry_execution_price = entry_price * (1.0 + slippage_rate)
@@ -213,7 +220,9 @@ def _long_trade_accounting(
 
     entry_value = shares * entry_execution_price
     exit_value = shares * exit_execution_price
-    transaction_cost = (entry_value + exit_value) * cost_rate
+    entry_fee = entry_value * (cost_rate + tax_bps / 10000.0)
+    exit_fee = exit_value * cost_rate
+    transaction_cost = entry_fee + exit_fee
     gross_pnl = (raw_exit_price - entry_price) * shares
     net_pnl = exit_value - entry_value - transaction_cost
     slippage_cost = ((entry_price * shares) - entry_value) + (exit_value - (raw_exit_price * shares))
@@ -227,6 +236,8 @@ def _long_trade_accounting(
         "shares": shares,
         "gross_pnl": gross_pnl,
         "transaction_cost": transaction_cost,
+        "entry_fee": entry_fee,
+        "exit_fee": exit_fee,
         "slippage_cost": abs(slippage_cost),
         "net_pnl": net_pnl,
         "notional": notional,
@@ -249,11 +260,39 @@ def simulate_long_trades_for_ticker(
     initial_capital: float = 100000.0,
     transaction_cost_bps: float = 0.0,
     slippage_bps: float = 0.0,
+    spread_bps: float = 0.0,
+    tax_bps: float = 0.0,
+    entry_start: str | None = None,
 ) -> list[dict[str, Any]]:
     trades: list[dict[str, Any]] = []
 
     if df.empty:
         return trades
+
+    numeric = (initial_capital, position_size_pct, stop_loss_pct,
+               take_profit_pct, transaction_cost_bps, slippage_bps, spread_bps, tax_bps)
+    if not all(isfinite(float(value)) for value in numeric):
+        raise StrategyValidationError("backtest parameters must be finite")
+    if initial_capital <= 0 or not 0 < position_size_pct <= 100:
+        raise StrategyValidationError("capital and position size must be positive and unleveraged")
+    if not 0 < stop_loss_pct < 100 or take_profit_pct <= 0:
+        raise StrategyValidationError("invalid stop or take-profit percentage")
+    if min(transaction_cost_bps, slippage_bps, spread_bps, tax_bps) < 0:
+        raise StrategyValidationError("costs must not be negative")
+    if slippage_bps + spread_bps / 2 >= 10000:
+        raise StrategyValidationError("execution friction must be less than the price")
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 1
+           for value in (max_hold_days, ma_fast_window, ma_slow_window, return_lookback_window)):
+        raise StrategyValidationError("lookback and holding windows must be positive integers")
+    dates = pd.to_datetime(df["Date"], errors="raise")
+    if dates.isna().any() or dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise StrategyValidationError("history dates must be unique and chronological")
+    prices = df[["Open", "High", "Low", "Close"]].astype(float)
+    if not all(isfinite(value) and value > 0 for value in prices.to_numpy().flat):
+        raise StrategyValidationError("history prices must be finite and positive")
+    if ((prices["High"] < prices[["Open", "Close", "Low"]].max(axis=1)) |
+        (prices["Low"] > prices[["Open", "Close", "High"]].min(axis=1))).any():
+        raise StrategyValidationError("history price ranges are inconsistent")
 
     df = prepare_indicators(df, ma_fast_window, ma_slow_window, return_lookback_window).copy()
     df = df.reset_index(drop=True)
@@ -280,6 +319,9 @@ def simulate_long_trades_for_ticker(
         entry_row = df.iloc[i + 1]
         signal_date = pd.to_datetime(row["Date"])
         entry_date = pd.to_datetime(entry_row["Date"])
+        if entry_start is not None and entry_date < pd.Timestamp(entry_start):
+            i += 1
+            continue
         entry_price = safe_float(entry_row["Open"], 0.0)
 
         if entry_price <= 0:
@@ -302,6 +344,21 @@ def simulate_long_trades_for_ticker(
             day_low = safe_float(day["Low"], 0.0)
             day_high = safe_float(day["High"], 0.0)
             day_close = safe_float(day["Close"], 0.0)
+            day_open = float(day["Open"])
+
+            # An overnight gap cannot fill at a stop price the market skipped.
+            # On ambiguous daily bars the stop wins over the profit target.
+            if day_open <= stop_price:
+                exit_date = pd.to_datetime(day["Date"])
+                exit_price = day_open
+                exit_reason = "stop_gap"
+                break
+
+            if day_open >= take_profit_price:
+                exit_date = pd.to_datetime(day["Date"])
+                exit_price = take_profit_price
+                exit_reason = "take_profit"
+                break
 
             if day_low <= stop_price:
                 exit_date = pd.to_datetime(day["Date"])
@@ -337,6 +394,8 @@ def simulate_long_trades_for_ticker(
             position_size_pct=position_size_pct,
             transaction_cost_bps=transaction_cost_bps,
             slippage_bps=slippage_bps,
+            spread_bps=spread_bps,
+            tax_bps=tax_bps,
         )
 
         trades.append(
@@ -346,16 +405,9 @@ def simulate_long_trades_for_ticker(
                 "entry_date": entry_date.date().isoformat(),
                 "exit_date": exit_date.date().isoformat(),
                 "signal_date": signal_date.date().isoformat(),
-                "entry_price": round(entry_price, 4),
-                "exit_price": round(float(exit_price), 4),
-                "entry_execution_price": round(accounting["entry_execution_price"], 4),
-                "exit_execution_price": round(accounting["exit_execution_price"], 4),
-                "shares": round(accounting["shares"], 6),
-                "gross_pnl": round(accounting["gross_pnl"], 4),
-                "transaction_cost": round(accounting["transaction_cost"], 4),
-                "slippage_cost": round(accounting["slippage_cost"], 4),
-                "net_pnl": round(accounting["net_pnl"], 4),
-                "notional": round(accounting["notional"], 4),
+                "entry_price": entry_price,
+                "exit_price": float(exit_price),
+                **accounting,
                 "stop_price": round(stop_price, 4),
                 "take_profit_price": round(take_profit_price, 4),
                 "hold_days": int(hold_days),
@@ -366,32 +418,12 @@ def simulate_long_trades_for_ticker(
             }
         )
 
-        # move past the exit day to avoid overlapping same-ticker positions
-        exit_idx = df.index[df["Date"] == pd.Timestamp(exit_date)]
-        if len(exit_idx) > 0:
-            i = int(exit_idx[0]) + 1
-        else:
-            i = j + 1
+        # Proposed trades are not holdings. A rejected candidate must not
+        # suppress later signals until its hypothetical future exit.
+        # Portfolio replay alone decides which positions are actually open.
+        i += 1
 
     return trades
-
-
-def _date_range_from_inputs(start_date: str, end_date: str, trades_df: pd.DataFrame) -> pd.DatetimeIndex:
-    if trades_df.empty and not start_date:
-        return pd.DatetimeIndex([])
-
-    start = pd.to_datetime(start_date) if start_date else pd.to_datetime(trades_df["entry_date"].min())
-    if end_date:
-        end = pd.to_datetime(end_date)
-    elif trades_df.empty:
-        end = start
-    else:
-        end = pd.to_datetime(trades_df["exit_date"].max())
-
-    if pd.isna(start) or pd.isna(end) or end < start:
-        return pd.DatetimeIndex([])
-
-    return pd.date_range(start=start, end=end, freq="D")
 
 
 def build_equity_curve(
@@ -399,61 +431,146 @@ def build_equity_curve(
     initial_capital: float,
     start_date: str,
     end_date: str,
+    *,
+    histories: dict[str, pd.DataFrame],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    dates = _date_range_from_inputs(start_date, end_date, trades_df)
-    if len(dates) == 0:
-        equity_df = pd.DataFrame(columns=EQUITY_COLUMNS)
-        drawdown_df = pd.DataFrame(columns=DRAWDOWN_COLUMNS)
-        return equity_df, drawdown_df
+    """Require historical marks; realised-only curves are not risk evidence."""
+    sessions = history_sessions(histories, start_date, end_date)
+    result = replay_portfolio(trades_df, histories, initial_capital, sessions)
+    if not result.rejected_trades.empty:
+        raise StrategyValidationError("equity input contains unfunded trades; use replay_portfolio")
+    return result.equity_curve, result.drawdown
 
-    rows: list[dict[str, Any]] = []
-    equity = initial_capital
-    trade_rows = trades_df.to_dict("records") if not trades_df.empty else []
 
-    for date in dates:
-        date_text = date.date().isoformat()
-        exited_today = [trade for trade in trade_rows if trade.get("exit_date") == date_text]
-        entered_today = [trade for trade in trade_rows if trade.get("entry_date") == date_text]
-        open_today = [
-            trade
-            for trade in trade_rows
-            if str(trade.get("entry_date", "")) <= date_text <= str(trade.get("exit_date", ""))
-        ]
+def history_sessions(histories, start_date="", end_date="") -> pd.DatetimeIndex:
+    dates = [date for history in histories.values() for date in history["Date"]]
+    sessions = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
+    if start_date:
+        sessions = sessions[sessions >= pd.Timestamp(start_date)]
+    if end_date:
+        sessions = sessions[sessions <= pd.Timestamp(end_date)]
+    if sessions.empty:
+        raise StrategyValidationError("no historical sessions available for evaluation")
+    return sessions
 
-        daily_pnl = sum(safe_float(trade.get("net_pnl"), 0.0) for trade in exited_today)
-        turnover_notional = sum(safe_float(trade.get("notional"), 0.0) for trade in entered_today + exited_today)
-        exposure_notional = sum(safe_float(trade.get("notional"), 0.0) for trade in open_today)
-        equity += daily_pnl
 
-        rows.append(
-            {
-                "date": date_text,
-                "equity": round(equity, 4),
-                "daily_pnl": round(daily_pnl, 4),
-                "cumulative_return_pct": round((equity / initial_capital - 1.0) * 100.0, 4) if initial_capital > 0 else 0.0,
-                "open_positions": len(open_today),
-                "exposure_notional": round(exposure_notional, 4),
-                "exposure_pct": round(exposure_notional / equity * 100.0, 4) if equity > 0 else 0.0,
-                "turnover_notional": round(turnover_notional, 4),
-                "turnover_pct": round(turnover_notional / initial_capital * 100.0, 4) if initial_capital > 0 else 0.0,
-            }
-        )
-
-    equity_df = pd.DataFrame(rows, columns=EQUITY_COLUMNS)
-    running_peak = equity_df["equity"].cummax()
-    drawdown = equity_df["equity"] - running_peak
-    drawdown_df = pd.DataFrame(
-        {
-            "date": equity_df["date"],
-            "equity": equity_df["equity"],
-            "peak_equity": running_peak.round(4),
-            "drawdown": drawdown.round(4),
-            "drawdown_pct": ((drawdown / running_peak) * 100.0).round(4),
-        },
-        columns=DRAWDOWN_COLUMNS,
+def configured_costs(config: dict[str, Any]) -> CostModel:
+    raw = config.get("cost_model", {})
+    return CostModel(
+        spread_bps=raw.get("spread_bps", 0),
+        slippage_bps=raw.get("slippage_bps", config.get("slippage_bps", 0)),
+        fee_bps=raw.get("fee_bps", config.get("transaction_cost_bps", 0)),
+        tax_bps=raw.get("tax_bps", 0),
+        stress_multiplier=raw.get("stress_multiplier", 1),
     )
 
-    return equity_df, drawdown_df
+
+def evaluate_partition(histories, config, start, end, *, stress=False, history_start=None):
+    """Fixed parameters, cash reset, past-only warmup, liquidation at window end."""
+    costs = configured_costs(config)
+    multiplier = float(costs.stress_multiplier) if stress else 1.0
+    sliced = {}
+    candidates = []
+    expected_sessions = history_sessions(histories, str(start), str(end))
+    if expected_sessions[0] != pd.Timestamp(start) or expected_sessions[-1] != pd.Timestamp(end):
+        raise StrategyValidationError("price history does not cover the evaluation boundaries")
+    for ticker, history in sorted(histories.items()):
+        dates = pd.to_datetime(history["Date"])
+        selected = dates <= pd.Timestamp(end)
+        if history_start is not None:
+            selected &= dates >= pd.Timestamp(history_start)
+        frame = history.loc[selected].copy().reset_index(drop=True)
+        observed = pd.DatetimeIndex(pd.to_datetime(frame["Date"]))
+        in_window = observed[(observed >= pd.Timestamp(start)) & (observed <= pd.Timestamp(end))]
+        if not in_window.equals(expected_sessions):
+            raise StrategyValidationError(f"{ticker}: incomplete evaluation-session coverage")
+        sliced[ticker] = frame
+        candidates.extend(simulate_long_trades_for_ticker(
+            frame, ticker,
+            initial_capital=float(config["initial_capital"]),
+            position_size_pct=float(config["position_size_pct"]),
+            stop_loss_pct=float(config["stop_loss_pct"]),
+            take_profit_pct=float(config["take_profit_pct"]),
+            max_hold_days=int(config["max_hold_days"]),
+            ma_fast_window=int(config["ma_fast_window"]),
+            ma_slow_window=int(config["ma_slow_window"]),
+            return_lookback_window=int(config["return_lookback_window"]),
+            transaction_cost_bps=float(costs.fee_bps) * multiplier,
+            slippage_bps=float(costs.slippage_bps) * multiplier,
+            spread_bps=float(costs.spread_bps) * multiplier,
+            tax_bps=float(costs.tax_bps) * multiplier,
+            entry_start=str(start),
+        ))
+    sessions = history_sessions(sliced, str(start), str(end))
+    return replay_portfolio(pd.DataFrame(candidates, columns=TRADE_COLUMNS), sliced,
+                            float(config["initial_capital"]), sessions)
+
+
+def partition_benchmark_return(history, start, end, costs):
+    dates = pd.to_datetime(history["Date"])
+    frame = history.loc[(dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))]
+    if frame.empty or pd.Timestamp(frame.iloc[0]["Date"]) != pd.Timestamp(start) or pd.Timestamp(frame.iloc[-1]["Date"]) != pd.Timestamp(end):
+        raise StrategyValidationError("benchmark does not cover the evaluation window")
+    friction = float(costs.slippage_bps + costs.spread_bps / 2) / 10000
+    fee = float(costs.fee_bps) / 10000
+    tax = float(costs.tax_bps) / 10000
+    entry = float(frame.iloc[0]["Open"]) * (1 + friction) * (1 + fee + tax)
+    exit_value = float(frame.iloc[-1]["Close"]) * (1 - friction) * (1 - fee)
+    if not isfinite(entry) or not isfinite(exit_value) or min(entry, exit_value) <= 0:
+        raise StrategyValidationError("invalid benchmark prices or costs")
+    return (exit_value / entry - 1) * 100
+
+
+def evaluate_walk_forward(histories, benchmark_history, config):
+    validation = config.get("validation", {})
+    windows = validation.get("walk_forward", {})
+    if int(windows.get("step_sessions", windows.get("test_sessions", 63))) < int(windows.get("test_sessions", 63)):
+        raise StrategyValidationError("walk-forward test windows must not overlap")
+    splits = rolling_walk_forward_splits(
+        history_sessions(histories),
+        train_sessions=int(windows.get("train_sessions", 252)),
+        validation_sessions=int(windows.get("validation_sessions", 63)),
+        test_sessions=int(windows.get("test_sessions", 63)),
+        step_sessions=int(windows.get("step_sessions", windows.get("test_sessions", 63))),
+    )
+    if len(splits) < int(validation.get("minimum_walk_forward_folds", 3)):
+        raise StrategyValidationError("insufficient walk-forward folds for configured minimum")
+    if not benchmark_history:
+        raise StrategyValidationError("a benchmark is required for experiment evidence")
+    benchmark_name = str(config.get("benchmark_tickers", list(benchmark_history))[0])
+    if benchmark_name not in benchmark_history:
+        raise StrategyValidationError("configured primary benchmark is missing")
+    benchmark = benchmark_history[benchmark_name]
+    costs = configured_costs(config)
+    rows = []
+    for split in splits:
+        validation_result = evaluate_partition(histories, config, split.validation_start,
+                                               split.validation_end, history_start=split.train_start)
+        test = evaluate_partition(histories, config, split.test_start, split.test_end,
+                                  history_start=split.train_start)
+        stressed = evaluate_partition(histories, config, split.test_start, split.test_end,
+                                      stress=True, history_start=split.train_start)
+        validation_benchmark = partition_benchmark_return(
+            benchmark, split.validation_start, split.validation_end, costs)
+        test_benchmark = partition_benchmark_return(benchmark, split.test_start, split.test_end, costs)
+        rows.append({
+            "fold": split.fold,
+            "validation_start": str(split.validation_start), "validation_end": str(split.validation_end),
+            "test_start": str(split.test_start), "test_end": str(split.test_end),
+            "validation_return_pct": float(validation_result.equity_curve.iloc[-1]["cumulative_return_pct"]),
+            "validation_benchmark_return_pct": validation_benchmark,
+            "test_return_pct": float(test.equity_curve.iloc[-1]["cumulative_return_pct"]),
+            "benchmark_return_pct": test_benchmark,
+            "test_max_drawdown_pct": float(test.drawdown["drawdown_pct"].min()),
+            "stressed_test_return_pct": float(stressed.equity_curve.iloc[-1]["cumulative_return_pct"]),
+            "test_trades": len(test.accepted_trades),
+            "test_rejected_trades": len(test.rejected_trades),
+        })
+    evidence = pd.DataFrame(rows)
+    evidence["validation_excess_return_pct"] = evidence["validation_return_pct"] - evidence["validation_benchmark_return_pct"]
+    evidence["test_excess_return_pct"] = evidence["test_return_pct"] - evidence["benchmark_return_pct"]
+    evidence["stressed_test_excess_return_pct"] = evidence["stressed_test_return_pct"] - evidence["benchmark_return_pct"]
+    return splits, evidence
 
 
 def calculate_benchmark_return(history_df: pd.DataFrame) -> float:
@@ -471,10 +588,16 @@ def build_benchmark_comparison(
     strategy_return_pct: float,
     start_date: str,
     end_date: str,
+    costs: CostModel | None = None,
 ) -> pd.DataFrame:
     rows = []
     for ticker, history_df in benchmark_history.items():
-        benchmark_return_pct = calculate_benchmark_return(history_df)
+        if history_df.empty:
+            raise StrategyValidationError(f"missing benchmark history: {ticker}")
+        dates = pd.to_datetime(history_df["Date"])
+        history_df = history_df.loc[(dates >= pd.Timestamp(start_date)) & (dates <= pd.Timestamp(end_date))]
+        benchmark_return_pct = (partition_benchmark_return(history_df, start_date, end_date, costs)
+                                if costs is not None else calculate_benchmark_return(history_df))
         benchmark_start = start_date
         benchmark_end = end_date
         if not history_df.empty:
@@ -560,9 +683,9 @@ def calculate_summary(
     winners_df = trades_df[trades_df["trade_return_pct"] > 0].copy()
     losers_df = trades_df[trades_df["trade_return_pct"] < 0].copy()
 
-    gross_profit = winners_df["trade_return_pct"].sum()
-    gross_loss = abs(losers_df["trade_return_pct"].sum())
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+    gross_profit = winners_df["net_pnl"].sum()
+    gross_loss = abs(losers_df["net_pnl"].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
     base.update(
         {
@@ -572,7 +695,7 @@ def calculate_summary(
             "avg_trade_return_pct": round(trades_df["trade_return_pct"].mean(), 4),
             "median_trade_return_pct": round(trades_df["trade_return_pct"].median(), 4),
             "avg_weighted_return_pct": round(trades_df["weighted_return_pct"].mean(), 4),
-            "profit_factor": round(profit_factor, 4),
+            "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
             "avg_hold_days": round(trades_df["hold_days"].mean(), 2),
         }
     )
@@ -592,27 +715,19 @@ def record_immutable_experiment(
     histories: dict[str, pd.DataFrame],
     benchmark_history: dict[str, pd.DataFrame],
 ) -> str | None:
-    """Snapshot a backtest; current static universes remain promotion-ineligible."""
+    """Save reproducible research evidence; this grants no execution authority."""
     if config.get("experiment_registry_enabled") is not True:
         return None
-    all_dates = [
-        item
-        for history in histories.values()
-        for item in history.get("Date", pd.Series(dtype="datetime64[ns]")).tolist()
-    ]
-    if len(set(pd.to_datetime(all_dates))) < 5:
-        return None
-    split = chronological_split(
-        all_dates,
-        train_fraction=float(config.get("validation", {}).get("train_fraction", 0.6)),
-        validation_fraction=float(
-            config.get("validation", {}).get("validation_fraction", 0.2)
-        ),
-    )
+    splits, evidence = evaluate_walk_forward(histories, benchmark_history, config)
+    repeated_splits, repeated_evidence = evaluate_walk_forward(histories, benchmark_history, config)
+    reproducible = splits == repeated_splits and evidence.equals(repeated_evidence)
+    if not reproducible:
+        raise StrategyValidationError("replaying the same snapshot changed evaluation results")
     snapshot_rows: list[dict[str, object]] = []
-    for ticker, history in sorted(histories.items()):
-        for row in history.to_dict(orient="records"):
-            snapshot_rows.append({"ticker": ticker, **row})
+    for role, frames in (("strategy", histories), ("benchmark", benchmark_history)):
+        for ticker, history in sorted(frames.items()):
+            for row in history.to_dict(orient="records"):
+                snapshot_rows.append({**row, "ticker": ticker, "role": role})
     data_snapshot_id = content_hash(snapshot_rows)
     universe_checksum = content_hash(
         {
@@ -620,14 +735,7 @@ def record_immutable_experiment(
             "tickers": sorted(histories),
         }
     )
-    costs_raw = config.get("cost_model", {})
-    costs = CostModel(
-        spread_bps=costs_raw.get("spread_bps", 0),
-        slippage_bps=costs_raw.get("slippage_bps", 0),
-        fee_bps=costs_raw.get("fee_bps", 0),
-        tax_bps=costs_raw.get("tax_bps", 0),
-        stress_multiplier=costs_raw.get("stress_multiplier", 1),
-    )
+    costs = configured_costs(config)
     parameters = {
         key: config.get(key)
         for key in (
@@ -638,8 +746,14 @@ def record_immutable_experiment(
             "take_profit_pct",
             "max_hold_days",
             "position_size_pct",
+            "initial_capital",
+            "benchmark_tickers",
+            "validation",
         )
     }
+    parameters["objective"] = "virtual_functionality_no_return_target"
+    parameters["portfolio_accounting_version"] = "cash_mark_to_market_v1"
+    parameters["window_policy"] = "fixed_parameters_flat_start_end_liquidation"
     spec = ExperimentSpec.create(
         strategy_version=str(config.get("strategy_version", "unversioned")),
         data_snapshot_id=data_snapshot_id,
@@ -649,51 +763,33 @@ def record_immutable_experiment(
         ),
         environment="offline",
         parameters=parameters,
-        splits=(split,),
+        splits=splits,
         cost_model=costs,
         tuned_on_partition=str(config.get("parameter_tuning_partition", "validation")),
     )
-    initial_capital = safe_float(config.get("initial_capital"), 100000.0)
-
-    def partition_return(start, end) -> float:
-        if trades_df.empty:
-            return 0.0
-        exits = pd.to_datetime(trades_df["exit_date"], errors="coerce")
-        mask = (exits.dt.date >= start) & (exits.dt.date <= end)
-        return float(trades_df.loc[mask, "net_pnl"].sum()) / initial_capital * 100.0
-
-    validation_return = partition_return(split.validation_start, split.validation_end)
-    test_return = partition_return(split.test_start, split.test_end)
-    benchmark_return = 0.0
-    if benchmark_history:
-        first = next(iter(benchmark_history.values())).copy()
-        if not first.empty:
-            dates = pd.to_datetime(first["Date"], errors="coerce").dt.date
-            benchmark_return = calculate_benchmark_return(
-                first[(dates >= split.test_start) & (dates <= split.test_end)]
-            )
-    test_notional = Decimal("0")
-    if not trades_df.empty:
-        exits = pd.to_datetime(trades_df["exit_date"], errors="coerce")
-        test_mask = (
-            (exits.dt.date >= split.test_start) & (exits.dt.date <= split.test_end)
-        )
-        test_notional = Decimal(str(trades_df.loc[test_mask, "notional"].sum()))
-    stressed_penalty = float(costs.round_trip_cost(test_notional)) / initial_capital * 100.0
+    # Use the weakest window for gate metrics. These are observations, not a
+    # return target, and are not compounded into a fictitious trading history.
     metrics = ExperimentMetrics(
-        validation_excess_return_pct=validation_return,
-        test_excess_return_pct=test_return - benchmark_return,
-        test_max_drawdown_pct=0,
-        stressed_test_excess_return_pct=test_return - benchmark_return - stressed_penalty,
-        benchmark_return_pct=benchmark_return,
-        walk_forward_passed_folds=1 if test_return >= benchmark_return else 0,
-        walk_forward_total_folds=1,
-        deterministic_reproduction=False,
+        validation_excess_return_pct=float(evidence["validation_excess_return_pct"].min()),
+        test_excess_return_pct=float(evidence["test_excess_return_pct"].min()),
+        test_max_drawdown_pct=float(evidence["test_max_drawdown_pct"].min()),
+        stressed_test_excess_return_pct=float(evidence["stressed_test_excess_return_pct"].min()),
+        benchmark_return_pct=float(evidence["benchmark_return_pct"].min()),
+        walk_forward_passed_folds=int((evidence["test_excess_return_pct"] >= 0).sum()),
+        walk_forward_total_folds=len(splits),
+        deterministic_reproduction=reproducible,
         point_in_time_universe_passed=False,
         survivorship_checks_passed=False,
         exchange_calendar_passed=False,
-        cost_model_passed=True,
+        cost_model_passed=False,
     )
+    evidence_dir = run_path(run_id, "backtest_evidence")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    prices_path = evidence_dir / "historical_prices.csv"
+    folds_path = evidence_dir / "walk_forward.csv"
+    # Save actual inputs and every fold, not merely a hash of discarded inputs.
+    pd.DataFrame(snapshot_rows).to_csv(prices_path, index=False)
+    evidence.to_csv(folds_path, index=False)
     sources = tuple(
         path
         for path in (
@@ -702,16 +798,21 @@ def record_immutable_experiment(
             BACKTEST_EQUITY_CURVE_FILE,
             BACKTEST_DRAWDOWN_FILE,
             BACKTEST_BENCHMARK_FILE,
+            BACKTEST_REJECTED_FILE,
+            prices_path,
+            folds_path,
         )
         if path.is_file()
     )
+    registry = ExperimentRegistry(EXPERIMENT_REGISTRY_PATH)
+    spec = registry.resolve_identity(spec)
     artifact = write_experiment_artifact(
         run_path(run_id, "experiments"),
         spec=spec,
         metrics=metrics,
         source_artifacts=sources,
     )
-    ExperimentRegistry(EXPERIMENT_REGISTRY_PATH).record(spec, artifact)
+    registry.record(spec, artifact)
     return str(spec.experiment_id)
 
 
@@ -731,22 +832,12 @@ def run() -> None:
     end_date = str(config.get("end_date", "")).strip()
 
     initial_capital = safe_float(config.get("initial_capital"), 100000.0)
-    position_size_pct = safe_float(config.get("position_size_pct"), 10.0)
-    transaction_cost_bps = safe_float(config.get("transaction_cost_bps"), 0.0)
-    slippage_bps = safe_float(config.get("slippage_bps"), 0.0)
-    ma_fast_window = safe_int(config.get("ma_fast_window"), 20)
-    ma_slow_window = safe_int(config.get("ma_slow_window"), 50)
-    return_lookback_window = safe_int(config.get("return_lookback_window"), 60)
-    stop_loss_pct = safe_float(config.get("stop_loss_pct"), 8.0)
-    take_profit_pct = safe_float(config.get("take_profit_pct"), 15.0)
-    max_hold_days = safe_int(config.get("max_hold_days"), 30)
     min_history_days = safe_int(config.get("min_history_days"), 120)
     allow_short = bool(config.get("allow_short", False))
 
     if allow_short:
-        print("Note: allow_short=true is not implemented in this first version. Running long-only.")
+        raise StrategyValidationError("short selling is not supported by this research engine")
 
-    all_trades: list[dict[str, Any]] = []
     strategy_history: dict[str, pd.DataFrame] = {}
     health_results: list[MarketDataResult] = []
     tickers_tested = 0
@@ -766,31 +857,13 @@ def run() -> None:
 
         strategy_history[ticker] = history_df.copy()
 
-        ticker_trades = simulate_long_trades_for_ticker(
-            df=history_df,
-            ticker=ticker,
-            position_size_pct=position_size_pct,
-            stop_loss_pct=stop_loss_pct,
-            take_profit_pct=take_profit_pct,
-            max_hold_days=max_hold_days,
-            ma_fast_window=ma_fast_window,
-            ma_slow_window=ma_slow_window,
-            return_lookback_window=return_lookback_window,
-            initial_capital=initial_capital,
-            transaction_cost_bps=transaction_cost_bps,
-            slippage_bps=slippage_bps,
-        )
-
-        if ticker_trades:
-            all_trades.extend(ticker_trades)
-
         tickers_tested += 1
 
-    trades_df = pd.DataFrame(all_trades)
-    if trades_df.empty:
-        trades_df = _empty_trades_df()
-
-    equity_df, drawdown_df = build_equity_curve(trades_df, initial_capital, start_date, end_date)
+    sessions = history_sessions(strategy_history, start_date, end_date)
+    replay = evaluate_partition(strategy_history, config, str(sessions[0].date()),
+                                str(sessions[-1].date()))
+    trades_df = replay.accepted_trades
+    equity_df, drawdown_df = replay.equity_curve, replay.drawdown
     strategy_return_pct = safe_float(equity_df.iloc[-1]["cumulative_return_pct"], 0.0) if not equity_df.empty else 0.0
 
     benchmark_history: dict[str, pd.DataFrame] = {}
@@ -802,7 +875,9 @@ def run() -> None:
             end_date,
             health_results=health_results,
         )
-    benchmark_df = build_benchmark_comparison(benchmark_history, strategy_return_pct, start_date, end_date)
+    benchmark_df = build_benchmark_comparison(
+        benchmark_history, strategy_return_pct, str(sessions[0].date()),
+        str(sessions[-1].date()), configured_costs(config))
 
     summary_df = calculate_summary(
         trades_df,
@@ -813,6 +888,13 @@ def run() -> None:
         benchmark_df=benchmark_df,
     )
     summary_df["tickers_tested"] = tickers_tested
+    summary_df["rejected_trades"] = len(replay.rejected_trades)
+    summary_df["objective"] = "virtual_functionality_no_return_target"
+    summary_df["return_target_pct"] = None
+    summary_df["accounting"] = "cash_plus_marked_positions"
+    summary_df["data_qualification"] = "research_only_unqualified"
+    summary_df["start_date"] = str(sessions[0].date())
+    summary_df["end_date"] = str(sessions[-1].date())
 
     append_market_data_health_artifact(health_results)
 
@@ -821,6 +903,7 @@ def run() -> None:
     write_csv_with_run_id(equity_df, BACKTEST_EQUITY_CURVE_FILE, run_id=run_id)
     write_csv_with_run_id(drawdown_df, BACKTEST_DRAWDOWN_FILE, run_id=run_id)
     write_csv_with_run_id(benchmark_df, BACKTEST_BENCHMARK_FILE, run_id=run_id)
+    write_csv_with_run_id(replay.rejected_trades, BACKTEST_REJECTED_FILE, run_id=run_id)
 
     experiment_id = record_immutable_experiment(
         run_id=run_id,

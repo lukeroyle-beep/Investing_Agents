@@ -1,5 +1,9 @@
 enabled: true
 
+# Stage one proves virtual functionality. Performance is observed, not targeted.
+objective: virtual_functionality
+return_target_pct: null
+
 tickers:
   - AAPL
   - MSFT
@@ -48,6 +52,11 @@ validation:
   train_fraction: 0.60
   validation_fraction: 0.20
   minimum_walk_forward_folds: 3
+  walk_forward:
+    train_sessions: 252
+    validation_sessions: 63
+    test_sessions: 63
+    step_sessions: 63
 
 cost_model:
   spread_bps: 5.0
@@ -56,6 +65,8 @@ cost_model:
   tax_bps: 0.0
   stress_multiplier: 2.0
 
+# Existing advisory-promotion safeguards remain separate from functional
+# validation. No experiment can grant broker or scheduler permissions.
 promotion_criteria:
   minimum_validation_excess_return_pct: 0.0
   minimum_test_excess_return_pct: 0.0

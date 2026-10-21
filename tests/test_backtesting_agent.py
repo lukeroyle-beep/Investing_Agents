@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from agents.backtesting_agent import backtesting_agent as agent
 
@@ -95,6 +96,9 @@ def test_equity_drawdown_exposure_turnover_and_benchmark_outputs_are_determinist
                 "trade_return_pct": 10.0,
                 "weighted_return_pct": 1.0,
                 "hold_days": 2,
+                "shares": 10,
+                "entry_execution_price": 100,
+                "exit_execution_price": 110,
             },
             {
                 "ticker": "BBB",
@@ -105,6 +109,9 @@ def test_equity_drawdown_exposure_turnover_and_benchmark_outputs_are_determinist
                 "trade_return_pct": -2.5,
                 "weighted_return_pct": -0.5,
                 "hold_days": 2,
+                "shares": 10,
+                "entry_execution_price": 200,
+                "exit_execution_price": 195,
             },
         ]
     )
@@ -114,11 +121,15 @@ def test_equity_drawdown_exposure_turnover_and_benchmark_outputs_are_determinist
         initial_capital=10000,
         start_date="2024-01-01",
         end_date="2024-01-04",
+        histories={
+            "AAA": pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=4), "Close": [100, 100, 110, 110]}),
+            "BBB": pd.DataFrame({"Date": pd.date_range("2024-01-01", periods=4), "Close": [200, 200, 200, 195]}),
+        },
     )
 
     assert equity_df["equity"].tolist() == [10000.0, 10000.0, 10100.0, 10050.0]
-    assert equity_df["open_positions"].tolist() == [0, 1, 2, 1]
-    assert equity_df["turnover_pct"].sum() == 60.0
+    assert equity_df["open_positions"].tolist() == [0, 1, 1, 0]
+    assert equity_df["turnover_pct"].sum() == 60.5
     assert drawdown_df["drawdown_pct"].min() < 0
 
     benchmark_df = agent.build_benchmark_comparison(
@@ -148,6 +159,6 @@ def test_equity_drawdown_exposure_turnover_and_benchmark_outputs_are_determinist
     assert benchmark_df.iloc[0]["benchmark_ticker"] == "SPY"
     assert summary["winners"] == 1
     assert summary["losers"] == 1
-    assert summary["strategy_return_pct"] == 0.5
-    assert summary["turnover_pct"] == 60.0
+    assert summary["strategy_return_pct"] == pytest.approx(0.5)
+    assert summary["turnover_pct"] == 60.5
     assert summary["max_drawdown_pct"] < 0

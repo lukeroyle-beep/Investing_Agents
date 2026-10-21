@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import json
 
 import pandas as pd
 import pytest
@@ -202,3 +203,137 @@ def test_experiment_artifact_and_registry_are_immutable(tmp_path):
         write_experiment_artifact(
             tmp_path / "experiments", spec=changed, metrics=_metrics()
         )
+
+
+def _run_artifact(root, spec, *, metrics=None, history="date,close\n2024-01-02,100\n",
+                  folds="fold,return\n1,2\n", summary="run_id,return\nfirst,2\n"):
+    source_dir = root / "sources"
+    source_dir.mkdir(parents=True)
+    files = []
+    for name, contents in (
+        ("historical_prices.csv", history),
+        ("walk_forward.csv", folds),
+        ("backtest_summary.csv", summary),
+    ):
+        path = source_dir / name
+        path.write_text(contents, encoding="utf-8")
+        files.append(path)
+    return write_experiment_artifact(
+        root / "experiments", spec=spec, metrics=metrics or _metrics(),
+        source_artifacts=tuple(files),
+    )
+
+
+def test_identical_experiment_across_runs_reuses_identity_and_accepts_run_metadata(tmp_path):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    first = _spec()
+    assert registry.resolve_identity(first) == first
+    first_artifact = _run_artifact(tmp_path / "first", first)
+    registry.record(first, first_artifact)
+
+    candidate = _spec(created_at=datetime(2026, 10, 21, tzinfo=UTC))
+    assert candidate.experiment_id != first.experiment_id
+    assert candidate.experiment_key == first.experiment_key
+    replay = registry.resolve_identity(candidate)
+    assert replay == first
+    artifact = _run_artifact(
+        tmp_path / "second", replay, summary="run_id,return\nsecond,2\n"
+    )
+    registry.record(replay, artifact)
+    with registry._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM experiments").fetchone()[0] == 1
+        assert connection.execute("SELECT artifact_path FROM experiments").fetchone()[0] == str(first_artifact)
+
+
+def test_replayed_experiment_rejects_changed_metrics(tmp_path):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    first = _run_artifact(tmp_path / "first", spec)
+    registry.record(spec, first)
+    replay = registry.resolve_identity(_spec())
+    changed = _run_artifact(
+        tmp_path / "second", replay, metrics=_metrics(test_max_drawdown_pct="-9")
+    )
+    with pytest.raises(ExperimentRegistryError, match="metrics changed"):
+        registry.record(replay, changed)
+
+
+@pytest.mark.parametrize("change", ["history", "folds"])
+def test_replayed_experiment_rejects_changed_stable_evidence(tmp_path, change):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    registry.record(spec, _run_artifact(tmp_path / "first", spec))
+    replay = registry.resolve_identity(_spec())
+    changed = _run_artifact(tmp_path / "second", replay, **{change: "changed evidence\n"})
+    with pytest.raises(ExperimentRegistryError, match="replay evidence changed"):
+        registry.record(replay, changed)
+
+
+def test_replayed_experiment_cannot_drop_stable_evidence(tmp_path):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    registry.record(spec, _run_artifact(tmp_path / "first", spec))
+    replay = registry.resolve_identity(_spec())
+    empty = write_experiment_artifact(tmp_path / "second", spec=replay, metrics=_metrics())
+    with pytest.raises(ExperimentRegistryError, match="replay evidence changed"):
+        registry.record(replay, empty)
+
+
+@pytest.mark.parametrize("filename", ["historical_prices.csv", "walk_forward.csv", "backtest_summary.csv"])
+def test_registry_rechecks_stored_evidence_before_accepting_replay(tmp_path, filename):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    first = _run_artifact(tmp_path / "first", spec)
+    registry.record(spec, first)
+    (first.parent / filename).write_text("tampered\n", encoding="utf-8")
+    second = _run_artifact(tmp_path / "second", registry.resolve_identity(_spec()))
+    with pytest.raises(ExperimentRegistryError, match="evidence integrity failed"):
+        registry.record(spec, second)
+
+
+def test_registry_rejects_missing_or_changed_stored_manifest(tmp_path):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    first = _run_artifact(tmp_path / "first", spec)
+    registry.record(spec, first)
+    second = _run_artifact(tmp_path / "second", registry.resolve_identity(_spec()))
+    first.write_text(first.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(ExperimentRegistryError, match="artifact integrity failed"):
+        registry.record(spec, second)
+    first.unlink()
+    with pytest.raises(ExperimentRegistryError, match="artifact integrity failed"):
+        registry.record(spec, second)
+
+
+def test_resolve_identity_rejects_inconsistent_stored_spec(tmp_path):
+    registry = ExperimentRegistry(tmp_path / "experiments.sqlite3")
+    spec = _spec()
+    registry.record(spec, _run_artifact(tmp_path / "first", spec))
+    with registry._connect() as connection:
+        payload = json.loads(connection.execute("SELECT payload_json FROM experiments").fetchone()[0])
+        payload["strategy_version"] = "tampered"
+        connection.execute("UPDATE experiments SET payload_json = ?", (json.dumps(payload),))
+    with pytest.raises(ExperimentRegistryError, match="immutable experiment changed"):
+        registry.resolve_identity(_spec())
+
+
+def test_same_artifact_directory_rejects_metric_and_source_changes(tmp_path):
+    spec = _spec()
+    artifact = _run_artifact(tmp_path / "first", spec)
+    root = artifact.parent.parent
+    assert write_experiment_artifact(root, spec=spec, metrics=_metrics()) == artifact
+    with pytest.raises(ExperimentRegistryError, match="metrics changed"):
+        write_experiment_artifact(root, spec=spec, metrics=_metrics(test_excess_return_pct="99"))
+    sources = tuple(sorted((tmp_path / "first" / "sources").glob("*.csv")))
+    assert write_experiment_artifact(root, spec=spec, metrics=_metrics(), source_artifacts=sources) == artifact
+    (tmp_path / "first" / "sources" / "historical_prices.csv").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(ExperimentRegistryError, match="source changed"):
+        write_experiment_artifact(root, spec=spec, metrics=_metrics(), source_artifacts=sources)
+
+
+def test_same_artifact_directory_rechecks_immutable_copy_hashes(tmp_path):
+    spec = _spec()
+    artifact = _run_artifact(tmp_path / "first", spec)
+    (artifact.parent / "historical_prices.csv").write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ExperimentRegistryError, match="evidence integrity failed"):
+        write_experiment_artifact(artifact.parent.parent, spec=spec, metrics=_metrics())

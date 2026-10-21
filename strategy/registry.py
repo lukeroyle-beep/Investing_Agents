@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -21,6 +22,9 @@ from strategy.domain import (
 
 class ExperimentRegistryError(RuntimeError):
     pass
+
+
+STABLE_REPLAY_ARTIFACTS = frozenset({"historical_prices.csv", "walk_forward.csv"})
 
 
 def sha256_file(path: Path) -> str:
@@ -49,6 +53,47 @@ def _atomic_json(path: Path, payload: object) -> None:
         raise
 
 
+def _verified_artifact(path: Path, spec: ExperimentSpec) -> dict:
+    """Read an immutable manifest and verify every copied evidence file."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            payload.get("experiment_key") != spec.experiment_key
+            or payload.get("experiment_id") != str(spec.experiment_id)
+            or canonical_json(payload.get("spec")) != canonical_json(spec)
+        ):
+            raise ExperimentRegistryError("experiment artifact identity collision")
+        if not isinstance(payload.get("metrics"), dict):
+            raise ExperimentRegistryError("experiment artifact metrics are missing")
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            raise ExperimentRegistryError("experiment artifact evidence list is missing")
+        names: set[str] = set()
+        for item in artifacts:
+            name = item["file"]
+            if (
+                not isinstance(name, str)
+                or not name
+                or Path(name).name != name
+                or name in {".", "..", "experiment.json"}
+                or name in names
+            ):
+                raise ExperimentRegistryError("invalid experiment evidence filename")
+            names.add(name)
+            evidence = path.parent / name
+            if not evidence.is_file() or sha256_file(evidence) != item["sha256"]:
+                raise ExperimentRegistryError(f"experiment evidence integrity failed: {name}")
+        return payload
+    except ExperimentRegistryError:
+        raise
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        raise ExperimentRegistryError("experiment artifact is missing or malformed") from exc
+
+
+def _evidence_hashes(payload: dict) -> dict[str, str]:
+    return {item["file"]: item["sha256"] for item in payload["artifacts"]}
+
+
 def write_experiment_artifact(
     root: Path | str,
     *,
@@ -59,9 +104,17 @@ def write_experiment_artifact(
     directory = Path(root) / str(spec.experiment_id)
     manifest_path = directory / "experiment.json"
     if manifest_path.exists():
-        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if existing.get("experiment_key") != spec.experiment_key:
-            raise ExperimentRegistryError("experiment artifact identity collision")
+        existing = _verified_artifact(manifest_path, spec)
+        if canonical_json(existing["metrics"]) != canonical_json(metrics):
+            raise ExperimentRegistryError("immutable experiment metrics changed")
+        if source_artifacts:
+            hashes = _evidence_hashes(existing)
+            names = [source.name for source in source_artifacts]
+            if len(names) != len(set(names)) or set(names) != set(hashes):
+                raise ExperimentRegistryError("immutable experiment source artifacts changed")
+            for source in source_artifacts:
+                if not source.is_file() or sha256_file(source) != hashes[source.name]:
+                    raise ExperimentRegistryError(f"immutable experiment source changed: {source.name}")
         return manifest_path
     directory.mkdir(parents=True, exist_ok=False, mode=0o700)
     copied: list[dict[str, str]] = []
@@ -69,6 +122,8 @@ def write_experiment_artifact(
         for source in source_artifacts:
             if not source.is_file():
                 raise ExperimentRegistryError(f"missing source artifact: {source.name}")
+            if source.name == "experiment.json" or any(item["file"] == source.name for item in copied):
+                raise ExperimentRegistryError("duplicate or reserved source artifact filename")
             destination = directory / source.name
             shutil.copyfile(source, destination)
             destination.chmod(0o600)
@@ -129,10 +184,33 @@ class ExperimentRegistry:
         connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
+    def resolve_identity(self, spec: ExperimentSpec) -> ExperimentSpec:
+        """Reuse the first identity for an identical experiment, across runs."""
+        with closing(self._connect()) as connection:
+            existing = connection.execute(
+                "SELECT experiment_id, payload_json FROM experiments WHERE experiment_key = ?",
+                (spec.experiment_key,),
+            ).fetchone()
+        if existing is None:
+            return spec
+        try:
+            stored = json.loads(existing["payload_json"])
+            resolved = replace(
+                spec,
+                experiment_id=UUID(existing["experiment_id"]),
+                created_at=datetime.fromisoformat(stored["created_at"]),
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ExperimentRegistryError("stored experiment identity is malformed") from exc
+        if canonical_json(resolved) != existing["payload_json"]:
+            raise ExperimentRegistryError("immutable experiment changed")
+        return resolved
+
     def record(self, spec: ExperimentSpec, artifact_path: Path | str) -> None:
         artifact = Path(artifact_path)
         if not artifact.is_file():
             raise ExperimentRegistryError("experiment artifact is missing")
+        new_artifact = _verified_artifact(artifact, spec)
         payload = canonical_json(spec)
         with self._connect() as connection:
             existing = connection.execute(
@@ -142,6 +220,25 @@ class ExperimentRegistry:
             if existing:
                 if existing["payload_json"] != payload:
                     raise ExperimentRegistryError("immutable experiment changed")
+                previous_path = Path(existing["artifact_path"])
+                if (
+                    not previous_path.is_file()
+                    or sha256_file(previous_path) != existing["artifact_sha256"]
+                ):
+                    raise ExperimentRegistryError("registered experiment artifact integrity failed")
+                previous = _verified_artifact(previous_path, spec)
+                if canonical_json(previous["metrics"]) != canonical_json(new_artifact["metrics"]):
+                    raise ExperimentRegistryError("immutable experiment metrics changed")
+                previous_hashes = {
+                    name: digest for name, digest in _evidence_hashes(previous).items()
+                    if name in STABLE_REPLAY_ARTIFACTS
+                }
+                new_hashes = {
+                    name: digest for name, digest in _evidence_hashes(new_artifact).items()
+                    if name in STABLE_REPLAY_ARTIFACTS
+                }
+                if previous_hashes != new_hashes:
+                    raise ExperimentRegistryError("immutable experiment replay evidence changed")
                 return
             connection.execute(
                 """
