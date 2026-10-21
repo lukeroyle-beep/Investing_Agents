@@ -2,6 +2,11 @@
 
 21 October 2026. Objective: virtual functionality, with no return target.
 
+Subsequent account-read investigation and the next implementation checkpoint
+are recorded in [Demo account and risk evidence](demo_account_risk_milestone.md).
+In particular, a documented read-only POST succeeded after the GET failure
+recorded below. Actual capture acceptance remains unproven.
+
 ## Delivered software and evidence boundary
 
 The inspectable operator service now connects preparation, independent risk

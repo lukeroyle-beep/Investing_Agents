@@ -1,16 +1,19 @@
 """Strict read-only pre-trade capture; no credentials, stores or writes owned here.
 
 Contracts: official eToro API v1.398.0, checked 2026-10-21 using
-getTradingInfoDemoPortfolio, getAggregatedPortfolioDemo and getSecurities.
+getTradingInfoDemoPortfolio, postAggregatedPortfolioDemo and getSecurities.
 Reference: https://api-portal.etoro.com/api-reference
 Aggregate guide:
 https://api-portal.etoro.com/api-reference/trading--demo/get-aggregated-portfolio-snapshot
 
 The detailed portfolio enumerates every pending-order family. Most active-order
 schemas are untyped, so this initial scope requires *all* explicit collections
-to be empty. Copies, derivatives, crypto, leverage and non-USD holdings fail
-closed instead of disappearing from exposure. Execution-history completeness,
-full daily profit/loss and peak equity are not established by these reads.
+to be empty. Account valuation covers long, leverage-one stocks, funds and
+crypto with real-asset or CFD settlement, in a USD account (USD/GBX assets).
+Broker-provided account-currency exposure is distinct from margin/liquidation.
+This read scope grants no permission to trade those holdings. Copies, shorts,
+leverage and other asset shapes fail closed instead of disappearing from risk.
+Execution-history completeness, daily profit/loss and peak equity remain absent.
 """
 from __future__ import annotations
 
@@ -20,14 +23,17 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from brokers.base import BrokerAccountSnapshot, BrokerDataUnavailable, BrokerPosition
-from brokers.etoro.schemas import DEMO_PENDING_COLLECTIONS, EtoroDetailedPortfolio
+from brokers.etoro.schemas import (
+    DEMO_PENDING_COLLECTIONS, EtoroDetailedPortfolio, EtoroInstrumentAggregate,
+    EtoroSecurity,
+)
 from execution.domain import Environment, payload_hash
 
 if TYPE_CHECKING:
     from brokers.etoro.client import EtoroReadOnlyClient
 
 
-ACCOUNT_EVIDENCE_SCOPE = "usd_long_unleveraged_real_stocks_etfs_no_mirrors_no_pending"
+ACCOUNT_EVIDENCE_SCOPE = "usd_account_long_1x_stocks_etfs_crypto_real_cfd_usd_gbx_no_mirrors_no_pending"
 CONTRACT_VERSION = "v1.398.0"
 MAX_CAPTURE_SECONDS = 15
 MONEY_TOLERANCE = Decimal("0.02")
@@ -44,6 +50,8 @@ class EtoroPretradeAccountEvidence:
     capture_started_at: datetime
     capture_completed_at: datetime
     checked_pending_collections: tuple[str, ...]
+    instrument_valuations: tuple[EtoroInstrumentAggregate, ...]
+    security_metadata: tuple[EtoroSecurity, ...]
     scope: str = ACCOUNT_EVIDENCE_SCOPE
     contract_version: str = CONTRACT_VERSION
     daily_pnl: None = None
@@ -72,8 +80,10 @@ def _check_details(detail: EtoroDetailedPortfolio, expected_customer_id: str) ->
     for position in detail.positions:
         if position.customer_id != expected_customer_id:
             raise BrokerDataUnavailable("demo_account_identity_mismatch")
-        if position.mirror_id or not position.is_buy or position.leverage != 1 or position.settlement_type_id != 1:
-            raise BrokerDataUnavailable("account_scope_not_supported: mirrored, short, leveraged or derivative position")
+        # Official detailed-portfolio enum: 0=CFD, 1=Real Asset. Other
+        # derivatives need separate valuation/accounting qualification.
+        if position.mirror_id or not position.is_buy or position.leverage != 1 or position.settlement_type_id not in {0, 1}:
+            raise BrokerDataUnavailable("account_scope_not_supported: mirrored, short, leveraged or unsupported settlement")
 
 
 def capture_pretrade_account_evidence(
@@ -131,18 +141,19 @@ def capture_pretrade_account_evidence(
         raise BrokerDataUnavailable("account_security_metadata_coverage_mismatch")
     for instrument_id, units in units_by_instrument.items():
         item = by_instrument[instrument_id]
-        if item.currency != "USD" or item.average_leverage != 1 or item.units <= 0 or item.current_exposure <= 0:
+        if item.currency not in {"USD", "GBX"} or item.average_leverage != 1 or item.units <= 0 or item.current_exposure <= 0:
             raise BrokerDataUnavailable("account_scope_not_supported: asset currency, direction or leverage")
-        if metadata[instrument_id].instrument_type not in {"Stocks", "ETF"}:
+        if metadata[instrument_id].instrument_type not in {"Stocks", "ETF", "Crypto"}:
             raise BrokerDataUnavailable("account_scope_not_supported: instrument type")
         if abs(units - item.units) > UNITS_TOLERANCE:
             raise BrokerDataUnavailable("account_position_units_mismatch")
-        # This is an additional conservative scope constraint, not a general
-        # eToro valuation formula: fees, collateral or other adjustments that
-        # separate unleveraged exposure from invested margin plus P&L require
-        # a separately qualified valuation model. Never understate exposure.
-        if abs(item.current_exposure - margin_by_instrument[instrument_id] - item.pnl) > MONEY_TOLERANCE:
-            raise BrokerDataUnavailable("account_exposure_evidence_mismatch")
+        if item.margin < 0 or abs(item.margin - margin_by_instrument[instrument_id]) > MONEY_TOLERANCE:
+            raise BrokerDataUnavailable("account_margin_evidence_mismatch")
+        # This identity is explicitly documented for liquidation value. Market
+        # exposure is a separate broker field: collateral, fees and currency
+        # treatment mean it must never be replaced by margin plus P&L.
+        if abs(item.liquidation_value - item.margin - item.pnl) > MONEY_TOLERANCE:
+            raise BrokerDataUnavailable("account_liquidation_evidence_mismatch")
 
     totals = aggregate.totals
     if totals.frozen_cash != 0:
@@ -193,4 +204,6 @@ def capture_pretrade_account_evidence(
         capture_started_at=started,
         capture_completed_at=completed,
         checked_pending_collections=DEMO_PENDING_COLLECTIONS,
+        instrument_valuations=aggregate.instrument_aggregates,
+        security_metadata=securities,
     )

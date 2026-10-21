@@ -17,7 +17,11 @@
       "netUnits": 4.5,
       "netCurrentExposureAccountCurrency": 1000,
       "avgLeverage": 1,
-      "accountCurrencyReturn": 20
+      "accountCurrencyReturn": 20,
+      "totalMarginAccountCurrency": 1000,
+      "liquidationValueAccountCurrency": 1020,
+      "totalFeesAcctCcy": 0,
+      "totalTaxesAcctCcy": 0
     }
   ],
   "mirrors": []

@@ -17,6 +17,7 @@ from shared.market_data import (
 from shared.io_utils import load_yaml, write_csv_with_run_id
 from shared.paths import EXPERIMENT_REGISTRY_PATH, config_path, data_path, run_path
 from shared.run_context import get_or_create_run_id
+from shared.research_universe import selected_research_universe
 from strategy.domain import CostModel, ExperimentMetrics, ExperimentSpec, StrategyValidationError, content_hash
 from strategy.backtest_portfolio import replay_portfolio
 from strategy.registry import ExperimentRegistry, write_experiment_artifact
@@ -126,6 +127,11 @@ def load_backtest_config() -> dict[str, Any]:
     config = load_yaml(BACKTEST_CONFIG_FILE, empty_ok=True)
     merged = DEFAULT_CONFIG.copy()
     merged.update(config or {})
+    selection = selected_research_universe()
+    if selection is not None:
+        merged["tickers"] = list(selection.tickers)
+        merged["research_universe_version"] = selection.version
+        merged["research_universe_checksum"] = selection.checksum
     return merged
 
 
@@ -729,12 +735,13 @@ def record_immutable_experiment(
             for row in history.to_dict(orient="records"):
                 snapshot_rows.append({**row, "ticker": ticker, "role": role})
     data_snapshot_id = content_hash(snapshot_rows)
-    universe_checksum = content_hash(
-        {
-            "kind": "static_current_universe_unqualified",
-            "tickers": sorted(histories),
-        }
-    )
+    universe_identity = {
+        "kind": "static_current_universe_unqualified",
+        "tickers": sorted(histories),
+    }
+    if "research_universe_checksum" in config:
+        universe_identity["selected_manifest_checksum"] = config["research_universe_checksum"]
+    universe_checksum = content_hash(universe_identity)
     costs = configured_costs(config)
     parameters = {
         key: config.get(key)
@@ -754,6 +761,10 @@ def record_immutable_experiment(
     parameters["objective"] = "virtual_functionality_no_return_target"
     parameters["portfolio_accounting_version"] = "cash_mark_to_market_v1"
     parameters["window_policy"] = "fixed_parameters_flat_start_end_liquidation"
+    if "research_universe_checksum" in config:
+        parameters["research_universe_version"] = config["research_universe_version"]
+        parameters["research_universe_checksum"] = config["research_universe_checksum"]
+        parameters["selected_tickers"] = config["tickers"]
     spec = ExperimentSpec.create(
         strategy_version=str(config.get("strategy_version", "unversioned")),
         data_snapshot_id=data_snapshot_id,

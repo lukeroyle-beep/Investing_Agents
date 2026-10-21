@@ -21,6 +21,8 @@ from brokers.etoro.endpoints import (
     GET_DEMO_DETAILED_PORTFOLIO,
     GET_MARKET_RATES,
     GET_SECURITIES_V2,
+    POST_DEMO_AGGREGATE_PORTFOLIO,
+    READ_ONLY_ENDPOINTS,
     SEARCH_INSTRUMENTS,
     Endpoint,
     RateBucket,
@@ -305,6 +307,23 @@ class EtoroReadOnlyClient:
     def _get(self, endpoint: Endpoint, params: Mapping[str, Any]) -> Any:
         if endpoint.method != "GET":
             raise EtoroConfigurationError("Gate A endpoint is not read-only")
+        return self._read(endpoint, params)
+
+    def _read(self, endpoint: Endpoint, params: Mapping[str, Any]) -> Any:
+        # Exact operation allowlist, not a blanket permission for GET or POST.
+        # In particular a read-semantics POST must not admit an execution route,
+        # filters which hide positions, or a caller-selected request body.
+        if endpoint not in READ_ONLY_ENDPOINTS:
+            raise EtoroConfigurationError("Gate A endpoint is not allowlisted")
+        body = None
+        if endpoint == POST_DEMO_AGGREGATE_PORTFOLIO:
+            if params:
+                raise EtoroConfigurationError("aggregate account read must be unfiltered")
+            body = json.dumps({
+                "conversionMode": "eToroApp", "pnlLevel": "pnl",
+                "accountLevel": "totals", "instrumentLevel": "details",
+                "mirrorLevel": "details",
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")
         query = urllib.parse.urlencode(params, doseq=True)
         url = f"{self.config.base_url}{endpoint.path}"
         if query:
@@ -313,10 +332,11 @@ class EtoroReadOnlyClient:
         for attempt in range(self.config.max_read_retries + 1):
             self._limiters[endpoint.rate_bucket].acquire()
             request = HttpRequest(
-                method="GET",
+                method=endpoint.method,
                 url=url,
-                headers=self._headers(),
+                headers={**self._headers(), **({"content-type": "application/json"} if body is not None else {})},
                 timeout_seconds=self.config.timeout_seconds,
+                body=body,
             )
             request_id = request.headers["x-request-id"]
             try:
@@ -403,7 +423,8 @@ class EtoroReadOnlyClient:
         return response
 
     def get_demo_portfolio(self) -> EtoroPortfolioSnapshot:
-        payload = self._get(GET_DEMO_AGGREGATE_PORTFOLIO, {})
+        # Explicit supported contract, not a retry/fallback after a GET error.
+        payload = self._read(POST_DEMO_AGGREGATE_PORTFOLIO, {})
         return EtoroPortfolioSnapshot.parse(payload)
 
     def get_demo_detailed_portfolio(self) -> EtoroDetailedPortfolio:

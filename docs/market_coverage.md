@@ -3,6 +3,18 @@
 Verified against the merged pull request 2 baseline on 21 October 2026.
 This describes checked-in configuration, not proof that a live scan is running.
 
+## Opt-in aligned pilot
+
+The next account/risk milestone adds `config/demo_research_universe.yaml`.
+Setting `INVESTING_RESEARCH_UNIVERSE=config/demo_research_universe.yaml` selects
+the same six equities in both scanner and backtester: AAPL, MSFT, NVDA, AMZN,
+GOOGL and META. SPY and QQQ remain separate backtest benchmarks. Run
+`python tools/research_coverage.py` under that selection to inspect the exact
+membership and checksum without fetching data. This is configuration alignment,
+not a completed historical study or broker permission. Without the opt-in,
+the legacy coverage below remains in effect. See the
+[checkpoint and remaining work](demo_account_risk_milestone.md).
+
 ## Scanner universe
 
 `data_sources/stock_universe.csv` is a **curated list of 61 instruments**, not

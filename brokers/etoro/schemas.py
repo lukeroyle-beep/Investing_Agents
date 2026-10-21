@@ -194,6 +194,10 @@ class EtoroInstrumentAggregate:
     current_exposure: Decimal
     average_leverage: Decimal
     pnl: Decimal
+    margin: Decimal
+    liquidation_value: Decimal
+    transaction_fees: Decimal
+    taxes: Decimal
 
     @classmethod
     def parse(cls, value: Any) -> "EtoroInstrumentAggregate":
@@ -211,6 +215,10 @@ class EtoroInstrumentAggregate:
             ),
             average_leverage=leverage,
             pnl=_decimal(raw.get("accountCurrencyReturn"), "accountCurrencyReturn"),
+            margin=_decimal(raw.get("totalMarginAccountCurrency"), "totalMarginAccountCurrency"),
+            liquidation_value=_decimal(raw.get("liquidationValueAccountCurrency"), "liquidationValueAccountCurrency"),
+            transaction_fees=_decimal(raw.get("totalFeesAcctCcy"), "totalFeesAcctCcy"),
+            taxes=_decimal(raw.get("totalTaxesAcctCcy"), "totalTaxesAcctCcy"),
         )
 
 

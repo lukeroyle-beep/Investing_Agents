@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from collections import deque
 from pathlib import Path
 from uuid import UUID
@@ -26,8 +27,11 @@ from brokers.etoro.client import (
 from brokers.etoro.endpoints import (
     GET_DEMO_AGGREGATE_PORTFOLIO,
     GET_MARKET_RATES,
+    POST_DEMO_AGGREGATE_PORTFOLIO,
     READ_ONLY_ENDPOINTS,
     SEARCH_INSTRUMENTS,
+    SUBMIT_DEMO_ORDER_V3,
+    RateBucket,
 )
 from brokers.etoro.redaction import redact_text
 from brokers.etoro.schemas import EtoroSchemaError
@@ -96,14 +100,14 @@ def _client(transport: FakeTransport, **kwargs) -> EtoroReadOnlyClient:
     )
 
 
-def test_endpoint_snapshot_is_operation_versioned_and_get_only():
+def test_endpoint_snapshot_is_operation_versioned_with_one_read_semantics_post():
     assert SEARCH_INSTRUMENTS.path == "/api/v1/market-data/search"
     assert GET_MARKET_RATES.path == "/api/v1/market-data/instruments/rates"
     assert (
         GET_DEMO_AGGREGATE_PORTFOLIO.path
         == "/api/v1/trading/info/demo/aggregate-portfolio"
     )
-    assert {endpoint.method for endpoint in READ_ONLY_ENDPOINTS} == {"GET"}
+    assert [endpoint for endpoint in READ_ONLY_ENDPOINTS if endpoint.method != "GET"] == [POST_DEMO_AGGREGATE_PORTFOLIO]
     assert all("/real/" not in endpoint.path for endpoint in READ_ONLY_ENDPOINTS)
 
 
@@ -157,6 +161,42 @@ def test_demo_portfolio_contract_parses_account_and_positions():
     assert snapshot.instrument_aggregates[0].instrument_id == 1001
     assert snapshot.instrument_aggregates[0].average_leverage == 1
     assert snapshot.snapshot_id
+    request = transport.requests[0]
+    assert request.method == "POST"
+    assert request.headers["content-type"] == "application/json"
+    assert json.loads(request.body) == {
+        "conversionMode": "eToroApp", "pnlLevel": "pnl", "accountLevel": "totals",
+        "instrumentLevel": "details", "mirrorLevel": "details",
+    }
+
+
+@pytest.mark.parametrize("endpoint,params", [
+    (SUBMIT_DEMO_ORDER_V3, {}),
+    (replace(POST_DEMO_AGGREGATE_PORTFOLIO, path="/api/v1/trading/info/real/aggregate-portfolio"), {}),
+    (replace(POST_DEMO_AGGREGATE_PORTFOLIO, rate_bucket=RateBucket.MARKET_READ), {}),
+    (POST_DEMO_AGGREGATE_PORTFOLIO, {"instrumentIds": [1001]}),
+    (POST_DEMO_AGGREGATE_PORTFOLIO, {"mirrorFilters": []}),
+    (replace(SEARCH_INSTRUMENTS, path="/arbitrary"), {}),
+])
+def test_read_dispatch_rejects_mutations_real_routes_filters_and_unknown_endpoints(endpoint, params):
+    transport = FakeTransport([])
+    with pytest.raises(EtoroConfigurationError):
+        _client(transport)._read(endpoint, params)
+    assert transport.requests == []
+
+
+def test_get_and_post_aggregate_share_account_read_budget():
+    transport = FakeTransport([_json_response("demo_portfolio.json")] * 2)
+    client = _client(transport)
+    calls = []
+    class CountingLimiter:
+        def acquire(self):
+            calls.append("account_read")
+    client._limiters[RateBucket.ACCOUNT_READ] = CountingLimiter()
+    client._get(GET_DEMO_AGGREGATE_PORTFOLIO, {})
+    client.get_demo_portfolio()
+    assert calls == ["account_read", "account_read"]
+    assert [request.method for request in transport.requests] == ["GET", "POST"]
 
 
 def test_retry_after_is_honoured_and_each_retry_gets_a_new_request_id():
