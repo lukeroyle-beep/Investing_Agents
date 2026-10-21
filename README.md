@@ -44,6 +44,11 @@ preflight. Actual eToro submission remains blocked. See
 [market coverage](docs/market_coverage.md) for the curated 61-instrument scanner
 and separate 12-stock backtest; neither is a whole-market scan.
 
+The [historical pilot checkpoint](docs/historical_pilot_milestone.md) validates
+saved eToro daily prices for the optional six-stock pilot and both benchmarks.
+Its 599-observation replay passes functional checks, with source, calendar and
+corporate-action limits recorded explicitly. It grants no trading permission.
+
 ## Core characteristics
 
 - Deterministic orchestration through `run_pipeline.py`

@@ -1,0 +1,358 @@
+{
+  "assessment_date": "2026-10-21",
+  "source_manifest": {
+    "schema_version": 1,
+    "source": "etoro_public_api_saved_responses_unqualified",
+    "captured_at_utc": "2026-10-21T07:35:25.044Z",
+    "completed_before": "2026-10-21",
+    "securities_route": "/api/v2/market-data/instruments",
+    "securities_raw_body_sha256": "9ada52b0b55dcfe520aa1bd1280bd18dafd27d2c850842848bd225033010e65a",
+    "request": {
+      "direction": "asc",
+      "interval": "OneDay",
+      "candles_count": 600
+    },
+    "instruments": [
+      {
+        "symbol": "AAPL",
+        "role": "strategy",
+        "instrument_id": 1001,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/1001/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "935ef4eca586b738b2da8c900943f4a59ce9ad3c26d8ec4ed6c4465f8e4a9b82",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "AMZN",
+        "role": "strategy",
+        "instrument_id": 1005,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/1005/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "aaa167f524de228f840f41af3e4bf0cb55066ad047bf569a65bbebc4b5fee01f",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "GOOGL",
+        "role": "strategy",
+        "instrument_id": 6434,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/6434/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "608fa914b8d1f686231fb0a5bc056dc1b96119e10db2dae646d484d52abd18a2",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "META",
+        "role": "strategy",
+        "instrument_id": 1003,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/1003/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "334b0c2502dda0f2443974a0c8c9b949d327085c9da4f89a6a04ce82422b2fb0",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "MSFT",
+        "role": "strategy",
+        "instrument_id": 1004,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/1004/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "372dda82cb8e3b3e5c47a81428d0f631ce78bf5a3e9c81a902dae8808748ed53",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "NVDA",
+        "role": "strategy",
+        "instrument_id": 1137,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/1137/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "96a3782e3fb4859ef5453ce068669e90ec24ca2c64c290837a80e49426e575ba",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "QQQ",
+        "role": "benchmark",
+        "instrument_id": 3006,
+        "exchange_id": 4,
+        "route": "/api/v1/market-data/instruments/3006/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "4a1444733bdc3fb32d9b95e8ee063f4fe4862d56670ea0181a235f8207452fde",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      },
+      {
+        "symbol": "SPY",
+        "role": "benchmark",
+        "instrument_id": 3000,
+        "exchange_id": 5,
+        "route": "/api/v1/market-data/instruments/3000/history/candles/asc/OneDay/600",
+        "raw_body_sha256": "2d81f505d1746d9509e199943214c957e0c9291397ffb5528400f097e98d2cf3",
+        "received_candles": 600,
+        "retained_candles": 599,
+        "excluded_labels": [
+          "2026-10-21"
+        ]
+      }
+    ],
+    "historical_input_audit": {
+      "result": "pass",
+      "strategy_symbols": [
+        "AAPL",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "MSFT",
+        "NVDA"
+      ],
+      "benchmark_symbols": [
+        "QQQ",
+        "SPY"
+      ],
+      "instruments": [
+        {
+          "role": "strategy",
+          "ticker": "AAPL",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "AMZN",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "GOOGL",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "META",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "MSFT",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "NVDA",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "benchmark",
+          "ticker": "QQQ",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "benchmark",
+          "ticker": "SPY",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        }
+      ],
+      "requested_range": {
+        "start": "2022-01-01",
+        "end": null
+      },
+      "actual_range": {
+        "start": "2024-05-14",
+        "end": "2026-10-20"
+      },
+      "range_policy": "replay_all_supplied_sessions; requested_range_is_recorded_not_enforced",
+      "date_semantics": "naive_midnight_daily_labels; no_timezone_conversion",
+      "observed_sessions_aligned": true,
+      "exchange_calendar_qualified": false,
+      "corporate_action_treatment_qualified": false,
+      "limitations": [
+        "sessions_missing_from_every_series_cannot_be_detected_without_an_independent_calendar",
+        "identical_observed_dates_do_not_establish_exchange_sessions_or_price_adjustment_semantics"
+      ]
+    },
+    "normalization": "UTC-midnight provider label's literal date; no timezone shift, price adjustment, filling, sorting or calendar repair",
+    "qualification": {
+      "provider_session_label_semantics": false,
+      "exchange_calendar": false,
+      "corporate_action_treatment": false,
+      "dividend_treatment": false,
+      "independently_authenticated_capture": false,
+      "strategy_promotion_eligible": false,
+      "live_demo_qualified": false
+    },
+    "broker_orders_submitted": 0,
+    "return_target_pct": null,
+    "capture_file_sha256": "c91a602879ffe2c43ffb885ccc58802d00e6170d4c285c5b6252b8a8cf5cf7e7",
+    "normalized_csv_sha256": "5b157bdba92cc06030b7282708dc9d7e730a6e6c03fb4f9b2594b152a654c561"
+  },
+  "functional_validation": {
+    "objective": "virtual_functionality",
+    "return_target_pct": null,
+    "source_kind": "supplied_historical_snapshot_unqualified",
+    "functional_checks": {
+      "completed_trade_observed": true,
+      "identical_replay": true,
+      "identical_walk_forward": true,
+      "nonnegative_cash": true,
+      "flat_final_portfolio": true,
+      "final_cash_reconciles": true,
+      "configured_fold_count": true
+    },
+    "historical_input_audit": {
+      "result": "pass",
+      "strategy_symbols": [
+        "AAPL",
+        "AMZN",
+        "GOOGL",
+        "META",
+        "MSFT",
+        "NVDA"
+      ],
+      "benchmark_symbols": [
+        "QQQ",
+        "SPY"
+      ],
+      "instruments": [
+        {
+          "role": "strategy",
+          "ticker": "AAPL",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "AMZN",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "GOOGL",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "META",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "MSFT",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "strategy",
+          "ticker": "NVDA",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "benchmark",
+          "ticker": "QQQ",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        },
+        {
+          "role": "benchmark",
+          "ticker": "SPY",
+          "sessions": 599,
+          "start": "2024-05-14",
+          "end": "2026-10-20"
+        }
+      ],
+      "requested_range": {
+        "start": "2022-01-01",
+        "end": null
+      },
+      "actual_range": {
+        "start": "2024-05-14",
+        "end": "2026-10-20"
+      },
+      "range_policy": "replay_all_supplied_sessions; requested_range_is_recorded_not_enforced",
+      "date_semantics": "naive_midnight_daily_labels; no_timezone_conversion",
+      "observed_sessions_aligned": true,
+      "exchange_calendar_qualified": false,
+      "corporate_action_treatment_qualified": false,
+      "limitations": [
+        "sessions_missing_from_every_series_cannot_be_detected_without_an_independent_calendar",
+        "identical_observed_dates_do_not_establish_exchange_sessions_or_price_adjustment_semantics"
+      ]
+    },
+    "functional_result": "pass",
+    "broker_orders_submitted": 0,
+    "live_demo_qualified": false,
+    "strategy_promotion_eligible": false,
+    "unverified": [
+      "point_in_time_universe",
+      "survivorship",
+      "exchange_calendar",
+      "corporate_action_treatment",
+      "broker_cost_calibration",
+      "live_demo_execution"
+    ],
+    "sessions": 599,
+    "walk_forward_folds": 4,
+    "accepted_trades": 73,
+    "rejected_trades": 1017,
+    "observed_return_pct": 13.63435404066109,
+    "observed_max_drawdown_pct": -5.2135226523995275,
+    "input_sha256": "88c85f98518c354d94e53e997a1d6f409bd1f6e665ac00b0f1fd735177b3f476",
+    "result_sha256": "74998ffb6fa41efb8386e84b99372b2ec82e727759648463fb9c459da9963dcc"
+  },
+  "saved_input_reproduction": {
+    "identical_validation_report": true,
+    "input_sha256": "88c85f98518c354d94e53e997a1d6f409bd1f6e665ac00b0f1fd735177b3f476",
+    "result_sha256": "74998ffb6fa41efb8386e84b99372b2ec82e727759648463fb9c459da9963dcc"
+  },
+  "data_bundle_filename": "etoro-historical-pilot-evidence-20261021.zip",
+  "orders_submitted": 0,
+  "qualification_credit": false
+}

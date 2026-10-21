@@ -133,6 +133,11 @@ Reference fingerprints with the checked-in configuration:
 
 ## Next milestone
 
+Subsequent work: the [historical pilot checkpoint](historical_pilot_milestone.md)
+adds strict input membership and coverage checks, shared-universe selection,
+and a reproducible replay of actual saved eToro market prices. It retains the
+qualification limits below and does not complete the broker milestone.
+
 Complete the broker evidence and operator workflow described in
 [demo execution readiness](virtual_demo_execution_readiness.md), then observe
 an explicitly approved demo order through broker confirmation, fill ingestion
