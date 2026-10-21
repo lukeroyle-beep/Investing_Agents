@@ -7,6 +7,7 @@ from enum import StrEnum
 class RateBucket(StrEnum):
     ACCOUNT_READ = "account_read"
     MARKET_READ = "market_read"
+    DEMO_ELIGIBILITY = "demo_eligibility"
     WRITE = "write"
 
 
@@ -47,6 +48,13 @@ POST_DEMO_AGGREGATE_PORTFOLIO = Endpoint(
     rate_bucket=RateBucket.ACCOUNT_READ,
 )
 
+# Read-only configuration query; dedicated 20/minute provider limit.
+POST_DEMO_ELIGIBILITY = Endpoint(
+    operation="post_demo_eligibility", method="POST",
+    path="/api/v2/trading/info/demo/eligibility",
+    rate_bucket=RateBucket.DEMO_ELIGIBILITY,
+)
+
 # Official route specifications rechecked on 2026-10-21, API v1.398.0.
 # https://api-portal.etoro.com/api-reference
 GET_DEMO_DETAILED_PORTFOLIO = Endpoint(
@@ -59,6 +67,10 @@ GET_SECURITIES_V2 = Endpoint(
     operation="get_securities",
     method="GET",
     path="/api/v2/market-data/instruments",
+    rate_bucket=RateBucket.MARKET_READ,
+)
+GET_EXCHANGES = Endpoint(
+    operation="get_exchanges", method="GET", path="/api/v1/market-data/exchanges",
     rate_bucket=RateBucket.MARKET_READ,
 )
 
@@ -112,14 +124,16 @@ READ_ONLY_ENDPOINTS = (
     GET_MARKET_RATES,
     GET_DEMO_AGGREGATE_PORTFOLIO,
     POST_DEMO_AGGREGATE_PORTFOLIO,
+    POST_DEMO_ELIGIBILITY,
     GET_DEMO_DETAILED_PORTFOLIO,
     GET_SECURITIES_V2,
+    GET_EXCHANGES,
 )
 
 if any(
     endpoint.rate_bucket == RateBucket.WRITE
     or "/real/" in endpoint.path
-    or (endpoint.method != "GET" and endpoint != POST_DEMO_AGGREGATE_PORTFOLIO)
+    or (endpoint.method != "GET" and endpoint not in {POST_DEMO_AGGREGATE_PORTFOLIO, POST_DEMO_ELIGIBILITY})
     for endpoint in READ_ONLY_ENDPOINTS
 ):
     raise RuntimeError("Gate A endpoint table must remain read-only")

@@ -28,6 +28,7 @@ from brokers.etoro.endpoints import (
     GET_DEMO_AGGREGATE_PORTFOLIO,
     GET_MARKET_RATES,
     POST_DEMO_AGGREGATE_PORTFOLIO,
+    POST_DEMO_ELIGIBILITY,
     READ_ONLY_ENDPOINTS,
     SEARCH_INSTRUMENTS,
     SUBMIT_DEMO_ORDER_V3,
@@ -107,7 +108,7 @@ def test_endpoint_snapshot_is_operation_versioned_with_one_read_semantics_post()
         GET_DEMO_AGGREGATE_PORTFOLIO.path
         == "/api/v1/trading/info/demo/aggregate-portfolio"
     )
-    assert [endpoint for endpoint in READ_ONLY_ENDPOINTS if endpoint.method != "GET"] == [POST_DEMO_AGGREGATE_PORTFOLIO]
+    assert [endpoint for endpoint in READ_ONLY_ENDPOINTS if endpoint.method != "GET"] == [POST_DEMO_AGGREGATE_PORTFOLIO, POST_DEMO_ELIGIBILITY]
     assert all("/real/" not in endpoint.path for endpoint in READ_ONLY_ENDPOINTS)
 
 
