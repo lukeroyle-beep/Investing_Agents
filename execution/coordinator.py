@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
@@ -23,8 +23,8 @@ from execution.domain import (
     OrderSide,
     OrderType,
     RiskDecision,
-    RiskOutcome,
     SizingMethod,
+    _aware_utc,
 )
 from execution.instruments import InstrumentRegistry
 from execution.store import ExecutionStore
@@ -158,9 +158,11 @@ class ExecutionCoordinator:
         broker: str,
         operation: BrokerOperation = BrokerOperation.SUBMIT_ORDER,
     ) -> BrokerCommand:
+        self._validate_intent(intent)
+        if self.store.get_intent(intent.intent_hash) != intent:
+            raise DomainValidationError("intent differs from persisted evidence")
         if decision.intent_hash != intent.intent_hash:
             raise DomainValidationError("risk decision does not bind to this intent")
-        self.store.save_risk_decision(decision)
         command = BrokerCommand.create(
             intent_hash=intent.intent_hash,
             operation=operation,
@@ -168,13 +170,7 @@ class ExecutionCoordinator:
             environment=intent.environment,
             broker_payload=broker_payload,
         )
-        self.store.save_command(command)
-        target = (
-            CommandState.AWAITING_APPROVAL
-            if decision.outcome == RiskOutcome.ACCEPTED
-            else CommandState.RISK_REJECTED
-        )
-        return self.store.transition_command(command.command_id, target)
+        return self.store.save_risk_bound_command(command, decision)
 
     def record_approval(
         self,
@@ -183,17 +179,7 @@ class ExecutionCoordinator:
         approval: Approval,
         now: datetime,
     ) -> BrokerCommand:
-        if command.state != CommandState.AWAITING_APPROVAL:
-            raise DomainValidationError("command is not awaiting approval")
-        if approval.intent_hash != command.intent_hash:
-            raise DomainValidationError("approval does not bind to the command intent")
-        if approval.environment != command.environment:
-            raise DomainValidationError("approval environment mismatch")
-        moment = now.astimezone(timezone.utc)
-        if moment < approval.issued_at or moment >= approval.expires_at:
-            raise DomainValidationError("approval is not currently valid")
-        self.store.save_approval(approval)
-        return self.store.transition_command(command.command_id, CommandState.APPROVED)
+        return self.store.approve_command(command, approval, now=now)
 
     def mark_submission_pending(
         self,
@@ -210,6 +196,7 @@ class ExecutionCoordinator:
     ) -> BrokerCommand:
         if command.state != CommandState.APPROVED:
             raise DomainValidationError("command is not approved")
+        self._validate_intent(intent)
         submission_gate.authorize(
             intent=intent,
             decision=decision,
@@ -220,9 +207,14 @@ class ExecutionCoordinator:
             governance=governance,
             now=now,
         )
-        self.store.consume_approval(approval.approval_id, consumed_at=now)
-        return self.store.transition_command(
-            command.command_id, CommandState.SUBMISSION_PENDING
+        return self.store.authorize_submission(
+            command, intent, decision, approval,
+            authorized_at=now,
+            valid_until=min(
+                intent.expires_at, approval.expires_at,
+                decision.decided_at + timedelta(seconds=submission_gate.limits.account_max_age_seconds),
+                decision.quote_observed_at + timedelta(seconds=submission_gate.limits.quote_max_age_seconds),
+            ),
         )
 
     def submit_pending_command(
@@ -234,19 +226,27 @@ class ExecutionCoordinator:
         now: datetime,
     ) -> BrokerCommand:
         """Persist the request identity before the only broker send attempt."""
+        _aware_utc(now, "now")
         if command.state != CommandState.SUBMISSION_PENDING:
             raise DomainValidationError("command is not submission_pending")
+        if not self.config.broker_writes_enabled:
+            raise ExecutionDisabledError("broker writes are disabled by configuration")
+        self._validate_intent(intent)
+        if command.environment == Environment.REAL:
+            raise ExecutionDisabledError("Real execution is outside the authorized scope")
         if adapter.read_only:
             raise ExecutionDisabledError("selected broker adapter is read-only")
         if adapter.environment != command.environment:
             raise ExecutionDisabledError("broker adapter environment mismatch")
+        if adapter.broker_name != command.broker:
+            raise ExecutionDisabledError("broker adapter identity mismatch")
         attempt = CommandAttempt(
-            attempt_number=len(command.attempt_history) + 1,
+            attempt_number=1,
             request_id=command.logical_request_id,
             attempted_at=now,
             outcome="send_started",
         )
-        command = self.store.record_attempt(command.command_id, attempt)
+        command = self.store.claim_submission(command, intent, attempt)
         try:
             result = adapter.submit_order(intent, command)
         except Exception as exc:
@@ -259,6 +259,13 @@ class ExecutionCoordinator:
                 broker_reference_id=str(command.logical_request_id),
             )
             raise
+        if result.request_id != command.logical_request_id or result.ambiguous:
+            return self.store.transition_command(
+                command.command_id,
+                CommandState.UNKNOWN,
+                details={"broker_status": result.raw_status, "reason": "ambiguous_or_mismatched_response"},
+                broker_reference_id=str(command.logical_request_id),
+            )
         if not result.accepted_for_processing:
             return self.store.transition_command(
                 command.command_id,
@@ -285,6 +292,9 @@ class ExecutionCoordinator:
         current = self.store.get_command(command.command_id)
         if current is None:
             raise DomainValidationError("command is not persisted")
+        if (adapter.environment != current.environment
+                or adapter.broker_name != current.broker):
+            raise ExecutionDisabledError("reconciliation adapter identity mismatch")
         if current.state == CommandState.SUBMISSION_PENDING:
             current = self.store.transition_command(
                 current.command_id, CommandState.UNKNOWN
@@ -306,6 +316,8 @@ class ExecutionCoordinator:
                 f"command state {current.state} cannot be reconciled"
             )
         result = adapter.reconcile_command(current)
+        if result.command_id != current.command_id:
+            raise DomainValidationError("broker lookup returned another command identity")
         target = CommandState(result.lifecycle_state)
         current = self.store.transition_command(
             current.command_id,
@@ -314,7 +326,7 @@ class ExecutionCoordinator:
             broker_order_id=result.broker_order_id,
             broker_position_id=result.broker_position_id,
         )
-        if result.reconciled:
+        if result.reconciled and current.state != CommandState.RECONCILED:
             current = self.store.transition_command(
                 current.command_id,
                 CommandState.RECONCILED,

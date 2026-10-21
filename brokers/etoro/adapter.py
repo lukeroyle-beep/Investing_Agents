@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 from uuid import UUID
@@ -19,10 +20,11 @@ from brokers.base import (
     BrokerWriteDisabled,
 )
 from brokers.etoro.client import EtoroReadOnlyClient
+from brokers.etoro.account_evidence import EtoroPretradeAccountEvidence, capture_pretrade_account_evidence
 from brokers.etoro.execution_client import EtoroDemoExecutionClient
 from brokers.etoro.read_model import write_reconciliation_read_model
 from brokers.etoro.schemas import EtoroPortfolioSnapshot, EtoroSchemaError
-from execution.domain import BrokerCommand, Environment, OrderIntent
+from execution.domain import BrokerCommand, Environment, OrderIntent, payload_hash
 from execution.instruments import (
     BrokerInstrumentMapping,
     Instrument,
@@ -144,6 +146,20 @@ class EtoroDemoReadOnlyAdapter(BrokerAdapter):
             executions_complete=False,
         )
 
+    def get_pretrade_account_evidence(
+        self, *, expected_demo_customer_id: str, now: datetime | None = None,
+    ) -> EtoroPretradeAccountEvidence:
+        return capture_pretrade_account_evidence(
+            self.client, expected_demo_customer_id=expected_demo_customer_id, now=now,
+        )
+
+    def get_pretrade_account_snapshot(
+        self, *, expected_demo_customer_id: str, now: datetime | None = None,
+    ) -> BrokerAccountSnapshot:
+        return self.get_pretrade_account_evidence(
+            expected_demo_customer_id=expected_demo_customer_id, now=now,
+        ).snapshot
+
     def get_balances_and_pnl(self) -> BrokerBalancesAndPnl:
         snapshot = self.client.get_demo_portfolio()
         return BrokerBalancesAndPnl(
@@ -243,6 +259,8 @@ class EtoroDemoExecutionAdapter(EtoroDemoReadOnlyAdapter):
         self, intent: OrderIntent, command: BrokerCommand
     ) -> BrokerSubmissionResult:
         self._validate_command(command)
+        if command.intent_hash != intent.intent_hash:
+            raise BrokerWriteDisabled("command intent hash does not match submission intent")
         mapping = self.registry.broker_mapping(
             intent.internal_instrument_id,
             broker=self.broker_name,
@@ -258,6 +276,8 @@ class EtoroDemoExecutionAdapter(EtoroDemoReadOnlyAdapter):
             "amount": str(intent.sizing_value),
             "orderCurrency": intent.currency.lower(),
         }
+        if payload_hash(payload) != command.payload_hash:
+            raise BrokerWriteDisabled("command payload hash does not match submission payload")
         accepted = self.execution_client.submit_open_order(
             payload,
             request_id=command.logical_request_id,

@@ -64,11 +64,12 @@ Official references:
 - append-only experiment and promotion records.
 
 Backtesting snapshots are copied to
-`runtime/runs/<run_id>/experiments/<experiment_id>/`. The current legacy
-backtest uses a static ticker universe and calendar-day equity projection, so
-the recorded evidence explicitly marks point-in-time universe, survivorship,
-exchange-calendar, and deterministic-reproduction checks as unpassed. It
-therefore cannot promote itself.
+`runtime/runs/<run_id>/experiments/<experiment_id>/`. Pull request 2 replaced
+the old calendar-day, realised-only projection with cash-constrained daily
+position valuation and measured rolling evaluation windows. Deterministic
+replay is now tested, but the static ticker universe, survivorship, exchange
+calendar and broker-cost qualification flags remain unpassed. It therefore
+cannot promote itself. See `docs/virtual_backtest_validation.md`.
 
 Promotion evaluation uses criteria defined before the test evidence and can
 grant `advisory_only` capability only. It cannot grant credentials, broker

@@ -38,6 +38,21 @@ GET_DEMO_AGGREGATE_PORTFOLIO = Endpoint(
     rate_bucket=RateBucket.ACCOUNT_READ,
 )
 
+# Official route specifications rechecked on 2026-10-21, API v1.398.0.
+# https://api-portal.etoro.com/api-reference
+GET_DEMO_DETAILED_PORTFOLIO = Endpoint(
+    operation="get_demo_detailed_portfolio",
+    method="GET",
+    path="/api/v1/trading/info/demo/portfolio",
+    rate_bucket=RateBucket.ACCOUNT_READ,
+)
+GET_SECURITIES_V2 = Endpoint(
+    operation="get_securities",
+    method="GET",
+    path="/api/v2/market-data/instruments",
+    rate_bucket=RateBucket.MARKET_READ,
+)
+
 # Gate B routes are deliberately pinned per operation.  A queued/accepted
 # response from any mutation is not fill evidence; the matching lookup route
 # remains authoritative for lifecycle and Fill ingestion.
@@ -87,6 +102,8 @@ READ_ONLY_ENDPOINTS = (
     SEARCH_INSTRUMENTS,
     GET_MARKET_RATES,
     GET_DEMO_AGGREGATE_PORTFOLIO,
+    GET_DEMO_DETAILED_PORTFOLIO,
+    GET_SECURITIES_V2,
 )
 
 if any(endpoint.method != "GET" for endpoint in READ_ONLY_ENDPOINTS):

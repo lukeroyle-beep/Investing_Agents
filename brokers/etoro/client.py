@@ -18,14 +18,19 @@ import yaml
 
 from brokers.etoro.endpoints import (
     GET_DEMO_AGGREGATE_PORTFOLIO,
+    GET_DEMO_DETAILED_PORTFOLIO,
     GET_MARKET_RATES,
+    GET_SECURITIES_V2,
     SEARCH_INSTRUMENTS,
     Endpoint,
     RateBucket,
 )
 from brokers.etoro.schemas import (
     EtoroMarketRatesResponse,
+    EtoroDetailedPortfolio,
     EtoroPortfolioSnapshot,
+    EtoroSecuritiesPage,
+    EtoroSecurity,
     EtoroSchemaError,
     EtoroSearchResponse,
 )
@@ -400,3 +405,39 @@ class EtoroReadOnlyClient:
     def get_demo_portfolio(self) -> EtoroPortfolioSnapshot:
         payload = self._get(GET_DEMO_AGGREGATE_PORTFOLIO, {})
         return EtoroPortfolioSnapshot.parse(payload)
+
+    def get_demo_detailed_portfolio(self) -> EtoroDetailedPortfolio:
+        """Unfiltered, complete account shape; never infer omitted collections."""
+        return EtoroDetailedPortfolio.parse(self._get(GET_DEMO_DETAILED_PORTFOLIO, {}))
+
+    def get_security_metadata(self, broker_instrument_ids: tuple[int, ...]) -> tuple[EtoroSecurity, ...]:
+        identifiers = tuple(broker_instrument_ids)
+        if not identifiers:
+            return ()
+        if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in identifiers):
+            raise ValueError("instrument IDs must be positive integers")
+        requested = set(identifiers)
+        if len(requested) != len(identifiers) or len(requested) > 100:
+            raise ValueError("request must contain at most 100 distinct instrument IDs")
+        found: dict[int, EtoroSecurity] = {}
+        seen_tokens: set[str] = set()
+        params: dict[str, Any] = {
+            # The official v2 spelling is instrumentsIds (not instrumentIds).
+            "instrumentsIds": ",".join(str(item) for item in sorted(requested)),
+            "pageSize": 100,
+        }
+        for _ in range(100):
+            page = EtoroSecuritiesPage.parse(self._get(GET_SECURITIES_V2, params))
+            for security in page.securities:
+                if security.instrument_id not in requested or security.instrument_id in found:
+                    raise EtoroSchemaError("security metadata has duplicate or unexpected identity")
+                found[security.instrument_id] = security
+            if not page.has_next:
+                if set(found) != requested:
+                    raise EtoroSchemaError("security metadata does not cover every requested identity")
+                return tuple(found[item] for item in sorted(found))
+            if page.next_page_token in seen_tokens or not page.securities:
+                raise EtoroSchemaError("security metadata pagination made no progress")
+            seen_tokens.add(page.next_page_token)
+            params["pageToken"] = page.next_page_token
+        raise EtoroSchemaError("security metadata pagination exceeded its bounded limit")
