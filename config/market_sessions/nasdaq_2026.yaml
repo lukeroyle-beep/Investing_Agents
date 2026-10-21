@@ -1,0 +1,29 @@
+# Reviewed annual snapshot only. Do not extrapolate into another year.
+# This scheduled session is not broker permission or real-time halt evidence.
+schema_version: 1
+calendar_id: nasdaq_regular_2026_verified_2026-10-21
+exchange: NASDAQ
+year: 2026
+timezone: America/New_York
+coverage_start: "2026-01-01"
+coverage_end: "2026-12-31"
+verified_on: "2026-10-21"
+sources:
+  - https://www.nasdaq.com/market-activity/stock-market-holiday-schedule
+  - https://www.nasdaqtrader.com/trader.aspx?id=Calendar
+regular_open: "09:30"
+regular_close: "16:00"
+full_holidays:
+  - "2026-01-01"
+  - "2026-01-19"
+  - "2026-02-16"
+  - "2026-04-03"
+  - "2026-05-25"
+  - "2026-06-19"
+  - "2026-07-03"
+  - "2026-09-07"
+  - "2026-11-26"
+  - "2026-12-25"
+early_closes:
+  "2026-11-27": "13:00"
+  "2026-12-24": "13:00"

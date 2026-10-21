@@ -21,7 +21,9 @@ from brokers.etoro.endpoints import (
     GET_DEMO_DETAILED_PORTFOLIO,
     GET_MARKET_RATES,
     GET_SECURITIES_V2,
+    GET_EXCHANGES,
     POST_DEMO_AGGREGATE_PORTFOLIO,
+    POST_DEMO_ELIGIBILITY,
     READ_ONLY_ENDPOINTS,
     SEARCH_INSTRUMENTS,
     Endpoint,
@@ -37,6 +39,8 @@ from brokers.etoro.schemas import (
     EtoroSearchResponse,
 )
 from execution.domain import Environment
+from brokers.etoro.eligibility import EtoroEligibilityResponse, validated_ids
+from brokers.etoro.schemas import _exact_integer, _list, _mapping, _text
 
 
 class EtoroClientError(RuntimeError):
@@ -257,6 +261,9 @@ class EtoroReadOnlyClient:
         self._sleeper = sleeper
         self._jitter = jitter
         self._limiters = {
+            RateBucket.DEMO_ELIGIBILITY: SlidingWindowLimiter(
+                16, clock=monotonic_clock, sleeper=sleeper,
+            ),
             RateBucket.ACCOUNT_READ: SlidingWindowLimiter(
                 config.account_reads_per_minute,
                 clock=monotonic_clock,
@@ -324,6 +331,13 @@ class EtoroReadOnlyClient:
                 "accountLevel": "totals", "instrumentLevel": "details",
                 "mirrorLevel": "details",
             }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        elif endpoint == POST_DEMO_ELIGIBILITY:
+            if set(params) != {"instrumentIds"}:
+                raise EtoroConfigurationError("eligibility read accepts exact instrument IDs only")
+            identifiers = validated_ids(params["instrumentIds"])
+            body = json.dumps({"instrumentIds": identifiers, "currency": "USD"},
+                              sort_keys=True, separators=(",", ":")).encode("utf-8")
+            params = {}  # Identity selection is in the documented JSON body.
         query = urllib.parse.urlencode(params, doseq=True)
         url = f"{self.config.base_url}{endpoint.path}"
         if query:
@@ -426,6 +440,27 @@ class EtoroReadOnlyClient:
         # Explicit supported contract, not a retry/fallback after a GET error.
         payload = self._read(POST_DEMO_AGGREGATE_PORTFOLIO, {})
         return EtoroPortfolioSnapshot.parse(payload)
+
+    def get_demo_eligibility(self, broker_instrument_ids: tuple[int, ...]) -> EtoroEligibilityResponse:
+        identifiers = validated_ids(broker_instrument_ids)
+        payload = self._read(POST_DEMO_ELIGIBILITY, {"instrumentIds": identifiers})
+        return EtoroEligibilityResponse.parse(payload, identifiers)
+
+    def get_exchange_names(self, exchange_ids: tuple[int, ...]) -> dict[int, str]:
+        identifiers = validated_ids(exchange_ids)
+        raw = _mapping(self._get(GET_EXCHANGES, {
+            "exchangeIds": ",".join(str(value) for value in identifiers),
+        }), "exchangesResponse")
+        found = {}
+        for value in _list(raw.get("exchangeInfo"), "exchangeInfo"):
+            row = _mapping(value, "exchange")
+            identifier = _exact_integer(row.get("exchangeID"), "exchangeID", minimum=1)
+            if identifier in found:
+                raise EtoroSchemaError("duplicate exchange identity")
+            found[identifier] = _text(row.get("exchangeDescription"), "exchangeDescription").upper()
+        if set(found) != set(identifiers):
+            raise EtoroSchemaError("exchange response does not exactly cover requested identities")
+        return found
 
     def get_demo_detailed_portfolio(self) -> EtoroDetailedPortfolio:
         """Unfiltered, complete account shape; never infer omitted collections."""

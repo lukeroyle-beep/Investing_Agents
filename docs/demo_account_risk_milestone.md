@@ -4,6 +4,11 @@
 This is the next bounded development pass after merged pull request 3. It is a
 review checkpoint, not completion of broker-backed trading qualification.
 
+The following bounded pass is documented in
+[Demo market evidence](demo_market_evidence_milestone.md). It adds instrument
+eligibility and scheduled-session diagnostics while retaining the unresolved
+account-history and timestamp blocks described here.
+
 ## Scope and acceptance contract
 
 - AC-1: use the documented, unfiltered, read-only POST aggregate operation with
