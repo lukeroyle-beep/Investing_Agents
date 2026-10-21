@@ -21,6 +21,23 @@ Gitleaks on both platforms.
 `requirements.txt` is a generated UTF-8 compatibility export; it is not the
 dependency source of truth.
 
+## Virtual-functionality milestone
+
+The current objective is correct operation in a virtual trading environment,
+with **no capital-return target**. An offline accounting and replay check is
+available without credentials or broker access:
+
+```bash
+uv run --frozen python scripts/validate_virtual_backtest.py --synthetic --output-dir runtime/validation/virtual-backtest-example
+```
+
+Use a new output directory for each run. A pass proves the stated functional
+checks on synthetic data, not profitability or live demo qualification. See
+[backtest validation](docs/virtual_backtest_validation.md) for assumptions,
+saved-input replay and acceptance checks, and
+[demo execution readiness](docs/virtual_demo_execution_readiness.md) for the
+remaining broker-integration work. Demo and real submission stay disabled.
+
 ## Core characteristics
 
 - Deterministic orchestration through `run_pipeline.py`

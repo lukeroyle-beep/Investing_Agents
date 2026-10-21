@@ -40,7 +40,7 @@ def _primitive(value: Any) -> Any:
         return str(value)
     if isinstance(value, Decimal):
         return format(value, "f")
-    if isinstance(value, tuple):
+    if isinstance(value, (tuple, list)):
         return [_primitive(item) for item in value]
     if isinstance(value, Mapping):
         return {str(key): _primitive(item) for key, item in sorted(value.items())}
