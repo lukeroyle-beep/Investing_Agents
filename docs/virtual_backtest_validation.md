@@ -57,6 +57,12 @@ preserved all eight experiment evidence files and reused one registry identity.
 The maintained suite is the `tests/` directory selected by `pytest.ini`; see
 the readiness document for the unrelated legacy root-test collection issue.
 
+The first remote security audit also exposed four known vulnerabilities in
+the existing dependency lock. Only the affected packages were updated:
+`certifi` to `2026.10.19` and `urllib3` to `2.8.0`, with the compatibility export
+regenerated from the lock. The subsequent local strict dependency audit found
+no known vulnerabilities. This is not a guarantee that no vulnerabilities exist.
+
 ## Reproduce the offline evidence
 
 From the repository root, using the pinned environment:
