@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pandas as pd
+from shared.research_universe import selected_research_universe
 
 from shared.market_data import (
     MarketDataProvider,
@@ -103,7 +104,14 @@ def normalise_universe_source(df: pd.DataFrame) -> pd.DataFrame:
 def load_assets(path: str | os.PathLike[str] = UNIVERSE_FILE) -> list[dict]:
     df = pd.read_csv(Path(path), keep_default_na=False)
     df = normalise_universe_source(df)
-    return df.to_dict(orient="records")
+    assets = df.to_dict(orient="records")
+    selection = selected_research_universe()
+    if selection is None:
+        return assets
+    by_ticker = {asset["ticker"]: asset for asset in assets}
+    if set(selection.tickers) - set(by_ticker):
+        raise ValueError("selected research universe is missing from scanner source")
+    return [by_ticker[ticker] for ticker in selection.tickers]
 
 
 def fetch_asset_data(

@@ -38,7 +38,15 @@ class Transport:
 
     def send(self, request):
         self.requests.append(request)
-        assert request.method == "GET" and request.body is None
+        if request.method == "POST":
+            assert urlparse(request.url).path == "/api/v1/trading/info/demo/aggregate-portfolio"
+            assert json.loads(request.body) == {
+                "conversionMode": "eToroApp", "pnlLevel": "pnl",
+                "accountLevel": "totals", "instrumentLevel": "details",
+                "mirrorLevel": "details",
+            }
+        else:
+            assert request.method == "GET" and request.body is None
         assert "/real/" not in request.url
         return self.responses.popleft()
 
@@ -83,6 +91,8 @@ def _aggregate():
             "instrumentId": 1001, "assetCurrency": "USD", "netUnits": 10,
             "netCurrentExposureAccountCurrency": 1020, "avgLeverage": 1,
             "accountCurrencyReturn": 20,
+            "totalMarginAccountCurrency": 1000, "liquidationValueAccountCurrency": 1020,
+            "totalFeesAcctCcy": 0, "totalTaxesAcctCcy": 0,
         }], "mirrors": [],
     }
 
@@ -167,7 +177,7 @@ def test_new_order_family_is_not_silently_ignored():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("isBuy", False), ("leverage", 2), ("settlementTypeID", 0),
+    ("isBuy", False), ("leverage", 2), ("settlementTypeID", 2),
     ("settlementTypeID", 3), ("settlementTypeID", 99), ("mirrorID", 1),
 ])
 def test_unsupported_holdings_are_not_discarded(field, value):
@@ -249,7 +259,7 @@ def test_contradictory_totals_do_not_qualify(field, value):
 @pytest.mark.parametrize("field,value", [
     ("assetCurrency", "EUR"), ("avgLeverage", 2), ("netUnits", -10),
     ("netUnits", 9), ("netCurrentExposureAccountCurrency", 0),
-    ("netCurrentExposureAccountCurrency", 20),
+    ("totalMarginAccountCurrency", 20), ("liquidationValueAccountCurrency", 20),
 ])
 def test_contradictory_or_unsupported_aggregates_do_not_qualify(field, value):
     aggregate = _aggregate()
@@ -286,8 +296,8 @@ def test_metadata_exact_id_coverage_rejects_missing_duplicate_wrong_or_fractiona
         _capture(metadata=metadata)
 
 
-@pytest.mark.parametrize("kind", ["Crypto", "CFD", "Unknown", "stocks"])
-def test_real_settlement_does_not_imply_stock_or_etf(kind):
+@pytest.mark.parametrize("kind", ["CFD", "Unknown", "stocks", "Currencies", "Futures"])
+def test_settlement_does_not_imply_supported_instrument_type(kind):
     with pytest.raises(BrokerDataUnavailable, match="instrument type"):
         _capture(metadata=_page(_security(kind=kind)))
 
@@ -314,14 +324,74 @@ def test_invalid_or_cyclic_metadata_pagination_fails_closed(pages):
         client.get_security_metadata((1001, 1002))
 
 
-def test_aggregate_415_is_a_blocker_not_a_route_or_method_fallback():
+def test_aggregate_post_error_is_a_blocker_not_a_route_or_method_fallback():
     client, transport = _client([
         _detail(), HttpResponse(status_code=415, headers={}, body=b"synthetic error"),
     ])
     with pytest.raises(EtoroClientError, match="415"):
         capture_pretrade_account_evidence(client, expected_demo_customer_id="9001", now=NOW)
     assert len(transport.requests) == 2
-    assert all(item.method == "GET" for item in transport.requests)
+    assert [item.method for item in transport.requests] == ["GET", "POST"]
+
+
+def test_mixed_holdings_use_broker_account_currency_exposure_not_liquidation_value():
+    detail, aggregate = _detail(), _aggregate()
+    # Entirely synthetic three-instrument account: real USD stock, GBX CFD
+    # stock with additional collateral, and real USD crypto. These amounts
+    # deliberately do not reproduce a connected account.
+    for identifier, settlement, margin, units in [(1002, 0, 500, 20), (1003, 1, 200, 2)]:
+        detail["clientPortfolio"]["positions"].append({
+            "positionID": 6000 + identifier, "CID": 9001, "instrumentID": identifier,
+            "mirrorID": 0, "units": units, "amount": margin, "isBuy": True,
+            "leverage": 1, "settlementTypeID": settlement,
+        })
+    aggregate["instrumentAggregates"].extend([
+        {"instrumentId": 1002, "assetCurrency": "GBX", "netUnits": 20,
+         "netCurrentExposureAccountCurrency": 430, "avgLeverage": 1,
+         "accountCurrencyReturn": 10, "totalMarginAccountCurrency": 500,
+         "liquidationValueAccountCurrency": 510, "totalFeesAcctCcy": 2,
+         "totalTaxesAcctCcy": 1},
+        {"instrumentId": 1003, "assetCurrency": "USD", "netUnits": 2,
+         "netCurrentExposureAccountCurrency": 175, "avgLeverage": 1,
+         "accountCurrencyReturn": -25, "totalMarginAccountCurrency": 200,
+         "liquidationValueAccountCurrency": 175, "totalFeesAcctCcy": 3,
+         "totalTaxesAcctCcy": 0},
+    ])
+    aggregate["accountTotals"].update(
+        accountCurrentPnl=5, accountTotalValue=10705, accountTotalUsedMargin=1700,
+    )
+    evidence, _ = _capture(detail=detail, aggregate=aggregate, metadata=_page(
+        _security(), _security(1002), _security(1003, "Crypto"),
+    ))
+    assert len(evidence.snapshot.positions) == 3
+    assert evidence.snapshot.positions[1].currency == "USD"
+    assert evidence.snapshot.positions[1].current_exposure == 430
+    assert evidence.instrument_valuations[1].currency == "GBX"
+    assert evidence.instrument_valuations[1].liquidation_value == 510
+    assert evidence.instrument_valuations[1].transaction_fees == 2
+    assert evidence.instrument_valuations[1].taxes == 1
+    assert sum(p.current_exposure for p in evidence.snapshot.positions) == 1625
+    assert evidence.snapshot.equity == 10705
+    assert not evidence.snapshot.executions_complete
+
+
+@pytest.mark.parametrize("field", [
+    "totalMarginAccountCurrency", "liquidationValueAccountCurrency",
+    "totalFeesAcctCcy", "totalTaxesAcctCcy",
+])
+@pytest.mark.parametrize("value", [None, "NaN", True])
+def test_missing_or_malformed_account_currency_valuation_fields_fail(field, value):
+    aggregate = _aggregate()
+    aggregate["instrumentAggregates"][0][field] = value
+    with pytest.raises(EtoroSchemaError):
+        _capture(aggregate=aggregate)
+
+
+def test_naive_broker_time_is_not_silently_assumed_utc():
+    aggregate = _aggregate()
+    aggregate["timestamp"] = NOW.replace(tzinfo=None).isoformat()
+    with pytest.raises(EtoroSchemaError, match="timezone"):
+        _capture(aggregate=aggregate)
 
 
 def _submission_fixture():

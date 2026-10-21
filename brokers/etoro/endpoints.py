@@ -38,6 +38,15 @@ GET_DEMO_AGGREGATE_PORTFOLIO = Endpoint(
     rate_bucket=RateBucket.ACCOUNT_READ,
 )
 
+# Read-semantics POST, verified against postAggregatedPortfolioDemo on
+# 2026-10-21. The body selects detail levels; it never places an order.
+POST_DEMO_AGGREGATE_PORTFOLIO = Endpoint(
+    operation="post_demo_aggregate_portfolio",
+    method="POST",
+    path="/api/v1/trading/info/demo/aggregate-portfolio",
+    rate_bucket=RateBucket.ACCOUNT_READ,
+)
+
 # Official route specifications rechecked on 2026-10-21, API v1.398.0.
 # https://api-portal.etoro.com/api-reference
 GET_DEMO_DETAILED_PORTFOLIO = Endpoint(
@@ -102,9 +111,15 @@ READ_ONLY_ENDPOINTS = (
     SEARCH_INSTRUMENTS,
     GET_MARKET_RATES,
     GET_DEMO_AGGREGATE_PORTFOLIO,
+    POST_DEMO_AGGREGATE_PORTFOLIO,
     GET_DEMO_DETAILED_PORTFOLIO,
     GET_SECURITIES_V2,
 )
 
-if any(endpoint.method != "GET" for endpoint in READ_ONLY_ENDPOINTS):
+if any(
+    endpoint.rate_bucket == RateBucket.WRITE
+    or "/real/" in endpoint.path
+    or (endpoint.method != "GET" and endpoint != POST_DEMO_AGGREGATE_PORTFOLIO)
+    for endpoint in READ_ONLY_ENDPOINTS
+):
     raise RuntimeError("Gate A endpoint table must remain read-only")
