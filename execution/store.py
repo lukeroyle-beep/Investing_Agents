@@ -16,7 +16,6 @@ from execution.domain import (
     CommandState,
     DomainValidationError,
     Environment,
-    InvalidLifecycleTransition,
     OrderIntent,
     OrderSide,
     OrderType,
@@ -49,6 +48,10 @@ class DuplicateLogicalRequestError(ExecutionStoreError):
 
 class ApprovalReplayError(ExecutionStoreError):
     """Raised when an approval is consumed more than once."""
+
+
+class SubmissionReplayError(ExecutionStoreError):
+    """A send was already claimed; recovery must use broker lookup, never resend."""
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -165,6 +168,17 @@ class ExecutionStore:
                     details_json TEXT NOT NULL,
                     FOREIGN KEY(command_id) REFERENCES broker_commands(command_id),
                     UNIQUE(command_id, revision)
+                );
+                CREATE TABLE IF NOT EXISTS command_authorizations (
+                    command_id TEXT PRIMARY KEY,
+                    risk_decision_id TEXT NOT NULL UNIQUE,
+                    approval_id TEXT UNIQUE,
+                    authorized_at TEXT,
+                    valid_until TEXT,
+                    submission_claimed_at TEXT,
+                    FOREIGN KEY(command_id) REFERENCES broker_commands(command_id),
+                    FOREIGN KEY(risk_decision_id) REFERENCES risk_decisions(decision_id),
+                    FOREIGN KEY(approval_id) REFERENCES approvals(approval_id)
                 );
                 """
             )
@@ -460,13 +474,23 @@ class ExecutionStore:
             row = connection.execute(
                 """
                 SELECT payload_json FROM risk_decisions
-                WHERE intent_hash = ? ORDER BY persisted_at DESC LIMIT 1
+                WHERE intent_hash = ? ORDER BY rowid DESC LIMIT 1
                 """,
                 (intent_hash,),
             ).fetchone()
-        if not row:
-            return None
-        value = json.loads(row["payload_json"])
+        return self._risk_from_json(row["payload_json"]) if row else None
+
+    def get_risk_decision(self, decision_id: UUID | str) -> RiskDecision | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM risk_decisions WHERE decision_id = ?",
+                (str(decision_id),),
+            ).fetchone()
+        return self._risk_from_json(row["payload_json"]) if row else None
+
+    @staticmethod
+    def _risk_from_json(payload_json: str) -> RiskDecision:
+        value = json.loads(payload_json)
         return RiskDecision(
             decision_id=value["decision_id"],
             intent_hash=value["intent_hash"],
@@ -480,6 +504,48 @@ class ExecutionStore:
             decided_at=_parse_datetime(value["decided_at"]),
             schema_version=value["schema_version"],
         )
+
+    @staticmethod
+    def _approval_from_json(payload_json: str) -> Approval:
+        value = json.loads(payload_json)
+        return Approval(
+            approval_id=value["approval_id"],
+            intent_hash=value["intent_hash"],
+            approver=value["approver"],
+            environment=value["environment"],
+            limits=tuple(map(tuple, value["limits"])),
+            issued_at=_parse_datetime(value["issued_at"]),
+            expires_at=_parse_datetime(value["expires_at"]),
+            schema_version=value["schema_version"],
+        )
+
+    def get_approval(self, approval_id: UUID | str) -> Approval | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE approval_id = ?",
+                (str(approval_id),),
+            ).fetchone()
+        return self._approval_from_json(row["payload_json"]) if row else None
+
+    def get_command_risk_decision(self, command_id: UUID | str) -> RiskDecision | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """SELECT r.payload_json FROM command_authorizations a
+                JOIN risk_decisions r ON r.decision_id = a.risk_decision_id
+                WHERE a.command_id = ?""",
+                (str(command_id),),
+            ).fetchone()
+        return self._risk_from_json(row["payload_json"]) if row else None
+
+    def get_command_approval(self, command_id: UUID | str) -> Approval | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """SELECT p.payload_json FROM command_authorizations a
+                JOIN approvals p ON p.approval_id = a.approval_id
+                WHERE a.command_id = ?""",
+                (str(command_id),),
+            ).fetchone()
+        return self._approval_from_json(row["payload_json"]) if row else None
 
     def save_approval(self, approval: Approval) -> None:
         if self.get_intent(approval.intent_hash) is None:
@@ -514,37 +580,297 @@ class ExecutionStore:
     def save_command(self, command: BrokerCommand) -> None:
         if self.get_intent(command.intent_hash) is None:
             raise ExecutionStoreError("command references an unknown intent")
-        now = self._now_iso()
         with self._transaction() as connection:
+            self._insert_command(connection, command)
+
+    def _insert_command(
+        self, connection: sqlite3.Connection, command: BrokerCommand
+    ) -> None:
+        now = self._now_iso()
+        try:
+            connection.execute(
+                """INSERT INTO broker_commands
+                (command_id, logical_request_id, intent_hash, state, revision,
+                 payload_json, persisted_at, updated_at)
+                VALUES (?, ?, ?, ?, 0, ?, ?, ?)""",
+                (
+                    str(command.command_id), str(command.logical_request_id),
+                    command.intent_hash, str(command.state), dataclass_json(command),
+                    now, now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO command_events
+                (command_id, revision, previous_state, new_state, event_time, details_json)
+                VALUES (?, 0, NULL, ?, ?, ?)""",
+                (str(command.command_id), str(command.state), now, "{}"),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateLogicalRequestError(str(command.logical_request_id)) from exc
+
+    def save_risk_bound_command(
+        self, command: BrokerCommand, decision: RiskDecision
+    ) -> BrokerCommand:
+        """Persist risk, immutable command binding and initial decision atomically."""
+        if command.state != CommandState.PROPOSED or command.attempt_history:
+            raise DomainValidationError("new command must be proposed without attempts")
+        if command.intent_hash != decision.intent_hash:
+            raise DomainValidationError("risk decision does not bind to command")
+        with self._transaction() as connection:
+            intent_row = connection.execute(
+                "SELECT payload_json FROM order_intents WHERE intent_hash = ?",
+                (command.intent_hash,),
+            ).fetchone()
+            if not intent_row:
+                raise ExecutionStoreError("command references an unknown intent")
+            intent = self._intent_from_json(intent_row["payload_json"])
+            if command.environment != intent.environment:
+                raise DomainValidationError("command environment differs from intent")
+            if command.operation == BrokerOperation.SUBMIT_ORDER:
+                existing = connection.execute(
+                    "SELECT payload_json FROM broker_commands WHERE intent_hash = ?",
+                    (command.intent_hash,),
+                ).fetchall()
+                if any(
+                    self._command_from_json(row["payload_json"]).operation
+                    == BrokerOperation.SUBMIT_ORDER for row in existing
+                ):
+                    raise SubmissionReplayError(
+                        "intent already has a submission command; inspect/reconcile it"
+                    )
+            connection.execute(
+                """INSERT INTO risk_decisions
+                (decision_id, intent_hash, payload_json, persisted_at) VALUES (?, ?, ?, ?)""",
+                (str(decision.decision_id), decision.intent_hash,
+                 dataclass_json(decision), self._now_iso()),
+            )
+            self._insert_command(connection, command)
+            connection.execute(
+                """INSERT INTO command_authorizations (command_id, risk_decision_id)
+                VALUES (?, ?)""",
+                (str(command.command_id), str(decision.decision_id)),
+            )
+            target = (CommandState.AWAITING_APPROVAL
+                      if decision.outcome == RiskOutcome.ACCEPTED
+                      else CommandState.RISK_REJECTED)
+            row, current = self._command_in_transaction(connection, command.command_id)
+            return self._update_command(connection, row, current, current.transition(target))
+
+    def _command_in_transaction(
+        self, connection: sqlite3.Connection, command_id: UUID | str,
+        *, expected: BrokerCommand | None = None,
+    ) -> tuple[sqlite3.Row, BrokerCommand]:
+        row = connection.execute(
+            "SELECT payload_json, revision FROM broker_commands WHERE command_id = ?",
+            (str(command_id),),
+        ).fetchone()
+        if not row:
+            raise ExecutionStoreError(f"unknown command: {command_id}")
+        command = self._command_from_json(row["payload_json"])
+        if expected is not None and command != expected:
+            raise DomainValidationError("command snapshot is stale or differs from persisted evidence")
+        return row, command
+
+    def _update_command(
+        self, connection: sqlite3.Connection, row: sqlite3.Row,
+        command: BrokerCommand, updated: BrokerCommand,
+        *, details: dict[str, str] | None = None,
+    ) -> BrokerCommand:
+        revision = int(row["revision"]) + 1
+        now = self._now_iso()
+        cursor = connection.execute(
+            """UPDATE broker_commands
+            SET state = ?, revision = ?, payload_json = ?, updated_at = ?
+            WHERE command_id = ? AND revision = ?""",
+            (str(updated.state), revision, dataclass_json(updated), now,
+             str(command.command_id), revision - 1),
+        )
+        if cursor.rowcount != 1:
+            raise ExecutionStoreError("concurrent command transition rejected")
+        connection.execute(
+            """INSERT INTO command_events
+            (command_id, revision, previous_state, new_state, event_time, details_json)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (str(command.command_id), revision, str(command.state), str(updated.state),
+             now, json.dumps(details or {}, sort_keys=True, separators=(",", ":"))),
+        )
+        return updated
+
+    def _bound_risk(
+        self, connection: sqlite3.Connection, command: BrokerCommand
+    ) -> tuple[sqlite3.Row, RiskDecision]:
+        binding = connection.execute(
+            "SELECT * FROM command_authorizations WHERE command_id = ?",
+            (str(command.command_id),),
+        ).fetchone()
+        if not binding:
+            raise DomainValidationError("command has no persisted risk authorization")
+        risk_row = connection.execute(
+            "SELECT payload_json FROM risk_decisions WHERE decision_id = ?",
+            (binding["risk_decision_id"],),
+        ).fetchone()
+        decision = self._risk_from_json(risk_row["payload_json"])
+        latest = connection.execute(
+            "SELECT decision_id FROM risk_decisions WHERE intent_hash = ? ORDER BY rowid DESC LIMIT 1",
+            (command.intent_hash,),
+        ).fetchone()
+        if (decision.intent_hash != command.intent_hash
+                or decision.outcome != RiskOutcome.ACCEPTED
+                or not all(check.passed for check in decision.checks)
+                or latest["decision_id"] != str(decision.decision_id)):
+            raise DomainValidationError("bound risk decision is rejected or superseded")
+        return binding, decision
+
+    @staticmethod
+    def _validate_approval_binding(
+        command: BrokerCommand, decision: RiskDecision, approval: Approval,
+        *, now: datetime,
+    ) -> None:
+        limits = dict(approval.limits)
+        if (approval.intent_hash != command.intent_hash
+                or approval.environment != command.environment
+                or limits.get("risk_decision_id") != str(decision.decision_id)
+                or limits.get("account_snapshot_id") != decision.account_snapshot_id
+                or limits.get("quote_id") != decision.quote_id):
+            raise DomainValidationError("approval does not bind to command and risk evidence")
+        if (approval.issued_at < decision.decided_at
+                or now < approval.issued_at or now >= approval.expires_at):
+            raise DomainValidationError("approval is not currently valid")
+
+    def approve_command(
+        self, command: BrokerCommand, approval: Approval, *, now: datetime
+    ) -> BrokerCommand:
+        moment = _aware_utc(now, "now")
+        with self._transaction() as connection:
+            row, current = self._command_in_transaction(
+                connection, command.command_id, expected=command
+            )
+            if current.state != CommandState.AWAITING_APPROVAL:
+                raise DomainValidationError("command is not awaiting approval")
+            binding, decision = self._bound_risk(connection, current)
+            self._validate_approval_binding(current, decision, approval, now=moment)
+            if binding["approval_id"] is not None:
+                raise ApprovalReplayError("command already has an approval")
             try:
                 connection.execute(
-                    """
-                    INSERT INTO broker_commands
-                    (command_id, logical_request_id, intent_hash, state, revision,
-                     payload_json, persisted_at, updated_at)
-                    VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-                    """,
-                    (
-                        str(command.command_id),
-                        str(command.logical_request_id),
-                        command.intent_hash,
-                        str(command.state),
-                        dataclass_json(command),
-                        now,
-                        now,
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO command_events
-                    (command_id, revision, previous_state, new_state, event_time,
-                     details_json)
-                    VALUES (?, 0, NULL, ?, ?, ?)
-                    """,
-                    (str(command.command_id), str(command.state), now, "{}"),
+                    """INSERT INTO approvals
+                    (approval_id, intent_hash, payload_json, persisted_at, consumed_at)
+                    VALUES (?, ?, ?, ?, NULL)""",
+                    (str(approval.approval_id), approval.intent_hash,
+                     dataclass_json(approval), self._now_iso()),
                 )
             except sqlite3.IntegrityError as exc:
-                raise DuplicateLogicalRequestError(str(command.logical_request_id)) from exc
+                raise ApprovalReplayError(str(approval.approval_id)) from exc
+            connection.execute(
+                "UPDATE command_authorizations SET approval_id = ? WHERE command_id = ?",
+                (str(approval.approval_id), str(current.command_id)),
+            )
+            return self._update_command(
+                connection, row, current, current.transition(CommandState.APPROVED),
+                details={"approval_id": str(approval.approval_id)},
+            )
+
+    def _persisted_intent(
+        self, connection: sqlite3.Connection, command: BrokerCommand, intent: OrderIntent
+    ) -> None:
+        row = connection.execute(
+            "SELECT payload_json FROM order_intents WHERE intent_hash = ?",
+            (command.intent_hash,),
+        ).fetchone()
+        if (not row or self._intent_from_json(row["payload_json"]) != intent
+                or intent.intent_hash != command.intent_hash
+                or intent.environment != command.environment):
+            raise DomainValidationError("command does not match the persisted intent")
+
+    def authorize_submission(
+        self, command: BrokerCommand, intent: OrderIntent, decision: RiskDecision,
+        approval: Approval, *, authorized_at: datetime, valid_until: datetime,
+    ) -> BrokerCommand:
+        """Consume exactly the bound approval and enter pending in one transaction."""
+        moment = _aware_utc(authorized_at, "authorized_at")
+        deadline = _aware_utc(valid_until, "valid_until")
+        if deadline <= moment:
+            raise DomainValidationError("submission authorization has expired")
+        with self._transaction() as connection:
+            row, current = self._command_in_transaction(
+                connection, command.command_id, expected=command
+            )
+            if current.state != CommandState.APPROVED:
+                raise DomainValidationError("command is not approved")
+            self._persisted_intent(connection, current, intent)
+            binding, persisted_decision = self._bound_risk(connection, current)
+            if persisted_decision != decision or binding["approval_id"] != str(approval.approval_id):
+                raise DomainValidationError("supplied evidence differs from command authorization")
+            approval_row = connection.execute(
+                "SELECT payload_json FROM approvals WHERE approval_id = ?",
+                (str(approval.approval_id),),
+            ).fetchone()
+            if self._approval_from_json(approval_row["payload_json"]) != approval:
+                raise DomainValidationError("approval differs from persisted evidence")
+            self._validate_approval_binding(current, decision, approval, now=moment)
+            if deadline > min(intent.expires_at, approval.expires_at):
+                raise DomainValidationError("authorization exceeds intent or approval expiry")
+            cursor = connection.execute(
+                "UPDATE approvals SET consumed_at = ? WHERE approval_id = ? AND consumed_at IS NULL",
+                (moment.isoformat(), str(approval.approval_id)),
+            )
+            if cursor.rowcount != 1:
+                raise ApprovalReplayError(str(approval.approval_id))
+            connection.execute(
+                """UPDATE command_authorizations SET authorized_at = ?, valid_until = ?
+                WHERE command_id = ?""",
+                (moment.isoformat(), deadline.isoformat(), str(current.command_id)),
+            )
+            return self._update_command(
+                connection, row, current, current.transition(CommandState.SUBMISSION_PENDING),
+                details={"approval_id": str(approval.approval_id)},
+            )
+
+    def claim_submission(
+        self, command: BrokerCommand, intent: OrderIntent, attempt: CommandAttempt
+    ) -> BrokerCommand:
+        """Commit a durable at-most-once send claim before any transport invocation.
+
+        A crash immediately after this commit is deliberately ambiguous. Even if no
+        bytes were sent, another caller must look up the request rather than retry.
+        """
+        with self._transaction() as connection:
+            row, current = self._command_in_transaction(
+                connection, command.command_id, expected=command
+            )
+            if current.state != CommandState.SUBMISSION_PENDING:
+                raise DomainValidationError("command is not submission_pending")
+            self._persisted_intent(connection, current, intent)
+            binding, decision = self._bound_risk(connection, current)
+            if current.attempt_history or binding["submission_claimed_at"] is not None:
+                raise SubmissionReplayError("submission already claimed; broker lookup is required")
+            if (attempt.attempt_number != 1 or attempt.request_id != current.logical_request_id
+                    or attempt.outcome != "send_started"):
+                raise DomainValidationError("submission attempt must use the original request identity")
+            if (current.operation != BrokerOperation.SUBMIT_ORDER
+                    or not binding["authorized_at"] or not binding["valid_until"]):
+                raise DomainValidationError("command lacks a consumed submission authorization")
+            if not (_parse_datetime(binding["authorized_at"]) <= attempt.attempted_at
+                    < _parse_datetime(binding["valid_until"])):
+                raise DomainValidationError("submission authorization is stale")
+            approval_row = connection.execute(
+                "SELECT payload_json, consumed_at FROM approvals WHERE approval_id = ?",
+                (binding["approval_id"],),
+            ).fetchone()
+            if not approval_row or not approval_row["consumed_at"]:
+                raise DomainValidationError("submission approval has not been consumed")
+            self._validate_approval_binding(
+                current, decision, self._approval_from_json(approval_row["payload_json"]),
+                now=attempt.attempted_at,
+            )
+            connection.execute(
+                "UPDATE command_authorizations SET submission_claimed_at = ? WHERE command_id = ?",
+                (attempt.attempted_at.isoformat(), str(current.command_id)),
+            )
+            return self._update_command(
+                connection, row, current, current.with_attempt(attempt),
+                details={"attempt_number": "1", "submission_claim": "durable"},
+            )
 
     @staticmethod
     def _command_from_json(payload_json: str) -> BrokerCommand:
@@ -606,115 +932,26 @@ class ExecutionStore:
         broker_reference_id: str | None = None,
         broker_position_id: str | None = None,
     ) -> BrokerCommand:
-        now = self._now_iso()
         with self._transaction() as connection:
-            row = connection.execute(
-                """
-                SELECT payload_json, revision FROM broker_commands
-                WHERE command_id = ?
-                """,
-                (str(command_id),),
-            ).fetchone()
-            if not row:
-                raise ExecutionStoreError(f"unknown command: {command_id}")
-            command = self._command_from_json(row["payload_json"])
+            row, command = self._command_in_transaction(connection, command_id)
             updated = command.transition(
                 new_state,
                 broker_order_id=broker_order_id,
                 broker_reference_id=broker_reference_id,
                 broker_position_id=broker_position_id,
             )
-            revision = int(row["revision"]) + 1
-            cursor = connection.execute(
-                """
-                UPDATE broker_commands
-                SET state = ?, revision = ?, payload_json = ?, updated_at = ?
-                WHERE command_id = ? AND revision = ?
-                """,
-                (
-                    str(updated.state),
-                    revision,
-                    dataclass_json(updated),
-                    now,
-                    str(command_id),
-                    revision - 1,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ExecutionStoreError("concurrent command transition rejected")
-            cursor = connection.execute(
-                """
-                INSERT INTO command_events
-                (command_id, revision, previous_state, new_state, event_time,
-                 details_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(command_id),
-                    revision,
-                    str(command.state),
-                    str(updated.state),
-                    now,
-                    json.dumps(details or {}, sort_keys=True, separators=(",", ":")),
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ExecutionStoreError("command event append rejected")
-        return updated
+            return self._update_command(connection, row, command, updated, details=details)
 
     def record_attempt(
         self,
         command_id: UUID | str,
         attempt: CommandAttempt,
     ) -> BrokerCommand:
-        now = self._now_iso()
-        with self._transaction() as connection:
-            row = connection.execute(
-                """
-                SELECT payload_json, revision FROM broker_commands
-                WHERE command_id = ?
-                """,
-                (str(command_id),),
-            ).fetchone()
-            if not row:
-                raise ExecutionStoreError(f"unknown command: {command_id}")
-            command = self._command_from_json(row["payload_json"])
-            updated = command.with_attempt(attempt)
-            revision = int(row["revision"]) + 1
-            cursor = connection.execute(
-                """
-                UPDATE broker_commands
-                SET revision = ?, payload_json = ?, updated_at = ?
-                WHERE command_id = ? AND revision = ?
-                """,
-                (
-                    revision,
-                    dataclass_json(updated),
-                    now,
-                    str(command_id),
-                    revision - 1,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ExecutionStoreError("concurrent command attempt update rejected")
-            connection.execute(
-                """
-                INSERT INTO command_events
-                (command_id, revision, previous_state, new_state, event_time,
-                 details_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(command_id),
-                    revision,
-                    str(command.state),
-                    str(command.state),
-                    now,
-                    json.dumps(
-                        {"attempt_number": str(attempt.attempt_number)},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                ),
-            )
-        return updated
+        """Compatibility entry point with the same single-send claim guarantees."""
+        command = self.get_command(command_id)
+        if command is None:
+            raise ExecutionStoreError(f"unknown command: {command_id}")
+        intent = self.get_intent(command.intent_hash)
+        if intent is None:
+            raise ExecutionStoreError("command references an unknown intent")
+        return self.claim_submission(command, intent, attempt)

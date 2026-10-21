@@ -38,6 +38,12 @@ saved-input replay and acceptance checks, and
 [demo execution readiness](docs/virtual_demo_execution_readiness.md) for the
 remaining broker-integration work. Demo and real submission stay disabled.
 
+The next [operator workflow milestone](docs/demo_operator_milestone.md) adds
+an isolated approval-to-fill exercise and a fail-closed read-only account
+preflight. Actual eToro submission remains blocked. See
+[market coverage](docs/market_coverage.md) for the curated 61-instrument scanner
+and separate 12-stock backtest; neither is a whole-market scan.
+
 ## Core characteristics
 
 - Deterministic orchestration through `run_pipeline.py`

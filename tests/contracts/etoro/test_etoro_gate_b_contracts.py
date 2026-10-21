@@ -312,6 +312,12 @@ def test_lookup_contract_covers_async_terminal_and_race_states(
 def test_coordinator_reconciles_fill_and_fill_agent_ingests_once(
     tmp_path, isolated_workspace, monkeypatch
 ):
+    from risk.approval import ApprovalAuthority
+    from risk.kill_switch import KillSwitchStatus
+    from risk.pretrade import AccountEvidence, PreTradeRiskEvaluator, QuoteEvidence, RiskLimits
+    from risk.submission_gate import GovernanceWritePolicy, SubmissionGate
+    from shared.paths import RISK_CONFIG_PATH
+
     store = ExecutionStore(tmp_path / "execution.sqlite3")
     registry = InstrumentRegistry(store)
     instrument = registry.register(
@@ -354,9 +360,6 @@ def test_coordinator_reconciles_fill_and_fill_agent_ingests_once(
         broker_payload=_open_payload(),
         logical_request_id=REQUEST_ID,
     )
-    store.save_command(command)
-    for state in ("awaiting_approval", "approved", "submission_pending"):
-        command = store.transition_command(command.command_id, state)
     coordinator = ExecutionCoordinator(
         store=store,
         registry=registry,
@@ -371,6 +374,34 @@ def test_coordinator_reconciles_fill_and_fill_agent_ingests_once(
             allowed_sides=("buy",),
             allowed_leverage=Decimal("1"),
         ),
+    )
+    limits = RiskLimits.load(RISK_CONFIG_PATH)
+    decision = PreTradeRiskEvaluator(limits).evaluate(
+        intent=intent,
+        instrument=instrument,
+        account=AccountEvidence(
+            snapshot_id="offline-contract-account", environment="demo", observed_at=NOW,
+            currency="USD", equity=Decimal("10000"), cash=Decimal("9000"),
+            daily_pnl=Decimal("0"), peak_equity=Decimal("10000"), positions=(),
+            pending_orders=(), pending_orders_complete=True,
+        ),
+        quote=QuoteEvidence(
+            quote_id="offline-contract-quote", internal_instrument_id=instrument.internal_instrument_id,
+            observed_at=NOW, bid=Decimal("99.9"), ask=Decimal("100"), regular_session_open=True,
+        ),
+        now=NOW,
+    )
+    command = store.save_risk_bound_command(command, decision)
+    approval = ApprovalAuthority(limits).issue(
+        intent=intent, decision=decision, approver="offline-contract-human@example.test",
+        now=NOW, human_confirmed=True,
+    )
+    command = coordinator.record_approval(command=command, approval=approval, now=NOW)
+    command = coordinator.mark_submission_pending(
+        command=command, intent=intent, decision=decision, approval=approval,
+        kill_switch=KillSwitchStatus(False, True, "demo", 1, "offline fixture", NOW),
+        regular_session_open=True, submission_gate=SubmissionGate(limits),
+        governance=GovernanceWritePolicy("demo_manual", True, True, True), now=NOW,
     )
     adapter = EtoroDemoExecutionAdapter(
         client=_read_client(),

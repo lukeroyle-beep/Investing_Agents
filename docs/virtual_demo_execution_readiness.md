@@ -2,6 +2,11 @@
 
 Assessment date: 21 October 2026.
 
+Follow-up: [the operator workflow milestone](demo_operator_milestone.md) adds
+restricted read-only account capture, durable single-send controls and an
+isolated end-to-end fixture exercise. The live broker/account blockers below
+are not thereby cleared; the follow-up records current acceptance failures.
+
 ## Objective and evidence boundary
 
 The current objective is to demonstrate correct functionality and successful

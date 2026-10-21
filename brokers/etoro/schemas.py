@@ -202,7 +202,7 @@ class EtoroInstrumentAggregate:
         if leverage < 0:
             raise EtoroSchemaError("average leverage must not be negative")
         return cls(
-            instrument_id=_integer(raw.get("instrumentId"), "instrumentId"),
+            instrument_id=_exact_integer(raw.get("instrumentId"), "instrumentId", minimum=1),
             currency=_text(raw.get("assetCurrency"), "assetCurrency").upper(),
             units=_decimal(raw.get("netUnits"), "netUnits"),
             current_exposure=_decimal(
@@ -231,13 +231,17 @@ class EtoroPortfolioSnapshot:
             EtoroInstrumentAggregate.parse(item)
             for item in _list(raw.get("instrumentAggregates"), "instrumentAggregates")
         )
-        mirrors = _list(raw.get("mirrors", []), "mirrors")
+        mirrors = _list(raw.get("mirrors"), "mirrors")
+        identifiers = [item.instrument_id for item in aggregates]
+        if len(identifiers) != len(set(identifiers)):
+            raise EtoroSchemaError("aggregate portfolio has duplicate instrument identities")
         identity_payload = {
             "cid": raw.get("cid"),
             "timestamp": raw.get("timestamp"),
             "accountCurrency": raw.get("accountCurrency"),
             "accountTotals": raw.get("accountTotals"),
             "instrumentAggregates": raw.get("instrumentAggregates"),
+            "mirrors": raw.get("mirrors"),
         }
         return cls(
             customer_id=_text(raw.get("cid"), "cid"),
@@ -257,6 +261,135 @@ def _optional_text(value: Any) -> str | None:
         return None
     result = str(value).strip()
     return result or None
+
+
+# These are all order collections in the official unfiltered Demo portfolio
+# contract (getTradingInfoDemoPortfolio, API v1.398.0, 2026-10-21). Even the
+# obsolete collections must be explicitly present and empty for strict scope.
+DEMO_PENDING_COLLECTIONS = (
+    "orders", "stockOrders", "entryOrders", "exitOrders", "ordersForOpen",
+    "ordersForClose", "ordersForCloseMultiple",
+)
+
+
+def _exact_integer(value: Any, field: str, *, minimum: int = 0) -> int:
+    if isinstance(value, bool):
+        raise EtoroSchemaError(f"{field} must be an integer")
+    number = _decimal(value, field)
+    if number != number.to_integral_value() or number < minimum:
+        raise EtoroSchemaError(f"{field} must be an integer >= {minimum}")
+    return int(number)
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroDetailedPosition:
+    position_id: str
+    customer_id: str
+    instrument_id: int
+    mirror_id: int
+    units: Decimal
+    amount: Decimal
+    is_buy: bool
+    leverage: Decimal
+    settlement_type_id: int
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroDetailedPosition":
+        raw = _mapping(value, "position")
+        if not isinstance(raw.get("isBuy"), bool):
+            raise EtoroSchemaError("position.isBuy must be an explicit boolean")
+        result = cls(
+            position_id=str(_exact_integer(raw.get("positionID"), "positionID", minimum=1)),
+            customer_id=str(_exact_integer(raw.get("CID"), "CID", minimum=1)),
+            instrument_id=_exact_integer(raw.get("instrumentID"), "instrumentID", minimum=1),
+            mirror_id=_exact_integer(raw.get("mirrorID"), "mirrorID"),
+            units=_decimal(raw.get("units"), "position.units"),
+            amount=_decimal(raw.get("amount"), "position.amount"),
+            is_buy=raw["isBuy"],
+            leverage=_decimal(raw.get("leverage"), "position.leverage"),
+            settlement_type_id=_exact_integer(raw.get("settlementTypeID"), "settlementTypeID"),
+        )
+        if result.units <= 0 or result.amount < 0 or result.leverage <= 0:
+            raise EtoroSchemaError("position has invalid units, amount or leverage")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroDetailedPortfolio:
+    positions: tuple[EtoroDetailedPosition, ...]
+    mirror_count: int
+    pending_collection_counts: tuple[tuple[str, int], ...]
+    credit: Decimal
+    bonus_credit: Decimal
+    snapshot_id: str
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroDetailedPortfolio":
+        raw = _mapping(_mapping(value, "portfolio_response").get("clientPortfolio"), "clientPortfolio")
+        known = {"positions", "mirrors", "credit", "bonusCredit", *DEMO_PENDING_COLLECTIONS}
+        # An added/unhandled order family must not disappear from our evidence.
+        if any("order" in str(key).lower() and key not in known for key in raw):
+            raise EtoroSchemaError("unhandled order collection in detailed portfolio")
+        positions = tuple(EtoroDetailedPosition.parse(item) for item in _list(raw.get("positions"), "positions"))
+        identifiers = [item.position_id for item in positions]
+        if len(identifiers) != len(set(identifiers)):
+            raise EtoroSchemaError("detailed portfolio has duplicate position identities")
+        counts = tuple((name, len(_list(raw.get(name), name))) for name in DEMO_PENDING_COLLECTIONS)
+        result = cls(
+            positions=positions,
+            mirror_count=len(_list(raw.get("mirrors"), "mirrors")),
+            pending_collection_counts=counts,
+            credit=_decimal(raw.get("credit"), "credit"),
+            bonus_credit=_decimal(raw.get("bonusCredit"), "bonusCredit"),
+            snapshot_id=payload_hash(raw),
+        )
+        if result.credit < 0 or result.bonus_credit < 0:
+            raise EtoroSchemaError("detailed portfolio cash must not be negative")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroSecurity:
+    instrument_id: int
+    symbol: str
+    instrument_type: str
+    exchange_id: int
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroSecurity":
+        raw = _mapping(value, "security")
+        return cls(
+            instrument_id=_exact_integer(raw.get("instrumentId"), "instrumentId", minimum=1),
+            symbol=_text(raw.get("symbol"), "symbol"),
+            instrument_type=_text(raw.get("type"), "type"),
+            exchange_id=_exact_integer(raw.get("exchangeId"), "exchangeId", minimum=1),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroSecuritiesPage:
+    securities: tuple[EtoroSecurity, ...]
+    has_next: bool
+    next_page_token: str | None
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroSecuritiesPage":
+        raw = _mapping(value, "securities_response")
+        pagination = _mapping(raw.get("pagination"), "pagination")
+        if not isinstance(pagination.get("hasNext"), bool):
+            raise EtoroSchemaError("pagination.hasNext must be an explicit boolean")
+        has_next = pagination["hasNext"]
+        raw_token = pagination.get("nextPageToken")
+        if raw_token is not None and not isinstance(raw_token, str):
+            raise EtoroSchemaError("next page token must be a string or null")
+        token = _optional_text(raw_token)
+        if has_next and not token:
+            raise EtoroSchemaError("next page token is missing")
+        return cls(
+            securities=tuple(EtoroSecurity.parse(item) for item in _list(raw.get("results"), "results")),
+            has_next=has_next,
+            next_page_token=token,
+        )
 
 
 def _optional_decimal(value: Any, field: str) -> Decimal | None:

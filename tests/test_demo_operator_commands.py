@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from scripts.validate_demo_operator import exercise
+from brokers.base import BrokerAccountSnapshot
+from execution.domain import Environment
+from tools import demo_account_preflight as preflight
+
+
+def test_fixture_exercises_economic_writer_without_claiming_live_qualification(tmp_path):
+    report = exercise(tmp_path / "exercise")
+    assert report["functional_result"] == "pass"
+    assert all(report["functional_checks"].values())
+    assert report["broker_orders_submitted"] == 0
+    assert report["human_approval_simulated"] is True
+    assert report["live_demo_qualified"] is False
+    assert report["qualification_credit"] is False
+    assert report["return_target_pct"] is None
+    with pytest.raises(FileExistsError):
+        exercise(tmp_path / "exercise")
+
+
+def test_disabled_preflight_does_not_load_credentials_or_create_control_stores(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(preflight.EtoroDemoReadOnlyConfig, "load",
+                        lambda _: SimpleNamespace(enabled=False))
+    monkeypatch.setattr(preflight.EtoroReadOnlyClient, "from_config",
+                        lambda _: pytest.fail("disabled preflight must not create a client"))
+    report_path = tmp_path / "preflight.json"
+    assert preflight.main(["--output", str(report_path)]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["submission_available"] is False
+    assert report["account_evidence_complete"] is False
+    assert "expected_demo_customer_id_required" in report["blockers"]
+    assert list(tmp_path.rglob("*.sqlite3")) == []
+    before = report_path.read_bytes()
+    with pytest.raises(SystemExit):
+        preflight.main(["--output", str(report_path)])
+    assert report_path.read_bytes() == before
+
+
+def test_enabled_config_without_reviewed_customer_identity_never_reads_account(monkeypatch, capsys):
+    monkeypatch.setattr(preflight.EtoroDemoReadOnlyConfig, "load",
+                        lambda _: SimpleNamespace(enabled=True))
+    monkeypatch.setattr(preflight.EtoroReadOnlyClient, "from_config",
+                        lambda _: pytest.fail("missing account identity must block client creation"))
+    assert preflight.main([]) == 2
+    assert json.loads(capsys.readouterr().out)["broker_orders_submitted"] == 0
+
+
+def test_capture_failure_is_redacted_and_cannot_be_qualified(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("secret response body and customer identifier")
+    monkeypatch.setattr(preflight, "capture_pretrade_account_evidence", fail)
+    report = preflight.preflight_report(client=object(), expected_demo_customer_id="private-customer")
+    encoded = json.dumps(report)
+    assert "secret response" not in encoded
+    assert "private-customer" not in encoded
+    assert report["capture_error_type"] == "RuntimeError"
+    assert report["account_evidence_complete"] is False
+    assert report["live_demo_qualified"] is False
+
+
+def test_successful_narrow_capture_still_cannot_grant_execution(monkeypatch):
+    now = datetime(2026, 10, 21, 14, tzinfo=timezone.utc)
+
+    @dataclass
+    class Evidence:
+        snapshot: object
+        capture_started_at: datetime = now
+        capture_completed_at: datetime = now
+        checked_pending_collections: tuple = ("fixture-empty-pending",)
+        scope: str = "fixture-narrow-scope"
+
+    snapshot = BrokerAccountSnapshot(
+        snapshot_id="fixture", environment=Environment.DEMO, observed_at=now,
+        currency="USD", equity=Decimal("100"), available_cash=Decimal("100"),
+        balance=Decimal("100"), frozen_cash=Decimal("0"), current_pnl=Decimal("0"),
+        used_margin=Decimal("0"), positions=(), pending_orders=(),
+        pending_orders_complete=True, executions_complete=False)
+    monkeypatch.setattr(preflight, "capture_pretrade_account_evidence",
+                        lambda *args, **kwargs: Evidence(snapshot))
+    report = preflight.preflight_report(client=object(), expected_demo_customer_id="123", now=now)
+    assert report["restricted_position_and_empty_pending_evidence_captured"] is True
+    assert report["pending_orders_complete"] is True
+    assert report["executions_complete"] is False
+    assert report["submission_available"] is False
+    assert report["account_evidence_complete"] is False
+    assert report["qualification_credit"] is False
+    assert len(report["account_evidence_sha256"]) == 64
