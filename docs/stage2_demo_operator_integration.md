@@ -138,7 +138,8 @@ in chat, shell command arguments, source, screenshots or Git. If the intended
 runtime is elsewhere, configure that host instead; this Mac's absence says
 nothing about another host. The normal client has no dotenv loader.
 
-From the checkout root, using the pinned `uv` 0.11.6 toolchain, run setup
+From the checkout root, use `uvx --from uv==0.11.6 uv` to select the pinned
+toolchain even when the host's default `uv` differs. Run setup
 and capture in the same terminal session. Environment values entered in a
 separate terminal are not inherited by an already-running agent process:
 
@@ -149,7 +150,7 @@ print
 read -r -s 'ETORO_DEMO_USER_KEY?Existing Demo Read user key: '
 print
 export ETORO_DEMO_API_KEY ETORO_DEMO_USER_KEY
-uv run --frozen python - <<'PY'
+uvx --from uv==0.11.6 uv run --frozen python - <<'PY'
 import getpass, json, os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,7 +183,7 @@ identity is unknown, stop setup and obtain that evidence privately.
 Only after setup or authoritative evidence changes, one owner can run:
 
 ```zsh
-uv run --frozen python tools/demo_operator_capture.py \
+uvx --from uv==0.11.6 uv run --frozen python tools/demo_operator_capture.py \
   --config runtime/demo-operator-private/read.yaml \
   --identity-file runtime/demo-operator-private/identity.json \
   --evidence-parent runtime/demo-operator-private/captures \
