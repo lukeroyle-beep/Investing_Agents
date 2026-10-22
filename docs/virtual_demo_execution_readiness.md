@@ -2,6 +2,11 @@
 
 Assessment date: 21 October 2026.
 
+Latest connection checkpoint: [Stage 1 readiness, 22 October 2026](stage1_demo_connection_readiness.md)
+records the merged PR #6 base, current official contract review, missing local
+Demo access/identity, and passing offline checks. Stage 1 remains blocked;
+actual repository-backed account capture and usable risk evidence are unverified.
+
 Follow-up: [the operator workflow milestone](demo_operator_milestone.md) adds
 restricted read-only account capture, durable single-send controls and an
 isolated end-to-end fixture exercise. The live broker/account blockers below
