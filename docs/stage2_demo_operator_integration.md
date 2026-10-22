@@ -1,5 +1,10 @@
 # Stage 2: gated eToro Demo operator integration
 
+Historical merged checkpoint below. The later single-read diagnostic and
+22 October requests integration are distinguished in the
+[offline transport checkpoint](requests_transport_offline_checkpoint.md).
+Neither establishes full live capture acceptance; Stage 2 remains **BLOCKED**.
+
 22 October 2026. **BLOCKED for broker-backed order preparation.** Offline
 capture tooling is implemented; actual repository acceptance remains unproven.
 There is no proposed order, approved intent, risk baseline or trading enablement.
