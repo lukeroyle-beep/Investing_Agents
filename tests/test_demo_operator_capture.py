@@ -2,26 +2,25 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 import io
 import json
 import stat
-import urllib.error
-import urllib.request
 from collections import deque
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from brokers.etoro.capture_transport import (
-    CaptureBoundaryError, CaptureHttpTransport, RecordingCaptureTransport,
-    _NoRedirect,
+    CaptureBoundaryError, RecordingCaptureTransport,
 )
 from brokers.etoro.client import HttpRequest, HttpResponse
-from brokers.etoro.endpoints import GET_DEMO_DETAILED_PORTFOLIO
+from brokers.etoro.endpoints import GET_DEMO_DETAILED_PORTFOLIO, POST_DEMO_AGGREGATE_PORTFOLIO
 from brokers.etoro.schemas import DEMO_PENDING_COLLECTIONS
 from tests.contracts.etoro.test_etoro_account_evidence import (
     _aggregate, _detail, _page, _security,
@@ -242,7 +241,8 @@ def test_full_fake_bracket_retains_raw_hashes_receipts_and_never_creates_economi
         request_path = destination / f"{stem}-request.json"
         response_path = destination / f"{stem}-response.json"
         body_path = destination / f"{stem}-response.bin"
-        expected.update((request_path, response_path, body_path))
+        expected.update((request_path, response_path, body_path,
+                         destination / f"{stem}-decoded.bin", destination / f"{stem}-decoded.json"))
         receipt = json.loads(request_path.read_text())
         result = json.loads(response_path.read_text())
         requested = datetime.fromisoformat(receipt["requested_at"])
@@ -308,6 +308,40 @@ def test_existing_attempt_claim_cannot_be_retried_or_overwritten(setup):
     assert marker.read_bytes() == b"original unfinished attempt"
 
 
+def test_interrupt_during_send_keeps_durable_claim_and_refuses_duplicate(setup):
+    destination = setup.evidence / "synthetic-one"
+
+    class InterruptedTransport:
+        calls = 0
+
+        def send(self, request):
+            self.calls += 1
+            # The ambiguous send must already have durable private evidence.
+            assert (destination / "setup-receipt.json").is_file()
+            receipt = json.loads((destination / "001-request.json").read_text())
+            assert receipt["method"] == "GET"
+            assert receipt["path"] == GET_DEMO_DETAILED_PORTFOLIO.path
+            raise KeyboardInterrupt("synthetic interrupted send")
+
+    interrupted = InterruptedTransport()
+    with pytest.raises(KeyboardInterrupt):
+        _run(setup, interrupted)
+    assert interrupted.calls == 1
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    assert set(before) == {"setup-receipt.json", "001-request.json"}
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    for path in destination.iterdir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert b"synthetic-api-secret" not in path.read_bytes()
+        assert b"synthetic-user-secret" not in path.read_bytes()
+
+    retry = FakeTransport(_bracket())
+    report = _run(setup, retry)
+    assert report["blockers"][0] == "attempt_already_exists_no_retry"
+    assert report["broker_requests"] == 0 and retry.requests == []
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == before
+
+
 @pytest.mark.parametrize("attempt", ["", "../escape", "with space", "A", "x" * 65])
 def test_attempt_names_cannot_escape_or_alias_evidence_directory(setup, attempt):
     transport = FakeTransport()
@@ -320,35 +354,6 @@ def _request(*, method="GET", url=None):
     return HttpRequest(method=method,
                        url=url or "https://public-api.etoro.com" + GET_DEMO_DETAILED_PORTFOLIO.path,
                        headers={"x-api-key": "synthetic-api-secret"}, timeout_seconds=15)
-
-
-@pytest.mark.parametrize("url", ["https://public-api.etoro.com/redirected", "https://evil.invalid/"])
-def test_redirect_handler_never_forwards_credentials_even_to_same_host(url):
-    request = urllib.request.Request("https://public-api.etoro.com/initial",
-                                     headers={"x-api-key": "synthetic-api-secret"})
-    assert _NoRedirect().redirect_request(request, None, 302, "Found", {}, url) is None
-
-
-def test_http_transport_installs_redirect_refusal_and_returns_first_http_error(monkeypatch):
-    handlers, sent = [], []
-
-    class Opener:
-        def open(self, request, *, timeout):
-            sent.append(request)
-            raise urllib.error.HTTPError(request.full_url, 302, "Found",
-                                         {"Location": "https://evil.invalid/"},
-                                         io.BytesIO(b"original redirect body"))
-
-    def build_opener(handler):
-        handlers.append(handler)
-        return Opener()
-
-    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
-    result = CaptureHttpTransport().send(_request())
-    assert len(sent) == 1 and len(handlers) == 1
-    assert isinstance(handlers[0], _NoRedirect)
-    assert result.status_code == 302 and result.body == b"original redirect body"
-    assert result.headers == {}
 
 
 @pytest.mark.parametrize("method,url", [
@@ -446,3 +451,122 @@ def test_private_write_syncs_file_before_containing_directory(tmp_path, monkeypa
     monkeypatch.setattr(capture.os, "fsync", record_sync)
     capture.private_write(tmp_path / "receipt.json", b"{}")
     assert syncs == [stat.S_IFREG, stat.S_IFDIR]
+
+
+def _requests_bracket(monkeypatch, responses):
+    from urllib3.connectionpool import HTTPSConnectionPool
+    from urllib3.response import HTTPResponse
+
+    pending, calls = deque(responses), []
+
+    def urlopen(pool, **kwargs):
+        assert pool.host == "public-api.etoro.com"
+        calls.append(kwargs)
+        response = pending.popleft()
+        return HTTPResponse(body=io.BytesIO(gzip.compress(response.body)),
+                            status=response.status_code, headers={"Content-Encoding": "gzip"},
+                            preload_content=False, decode_content=False)
+
+    monkeypatch.setattr(HTTPSConnectionPool, "urlopen", urlopen)
+    return calls
+
+
+@pytest.mark.parametrize("through_main", [False, True])
+def test_real_requests_full_bracket_stays_blocked_and_persists_before_parsing(
+        setup, monkeypatch, capsys, through_main):
+    from brokers.etoro import client as client_module
+
+    calls = _requests_bracket(monkeypatch, _bracket())
+    original_loads = json.loads
+    parsed_sequences = []
+
+    def parse(body):
+        sequence = len(calls)
+        directory = setup.evidence / "synthetic-one"
+        stem = f"{sequence:03d}"
+        decoded = (directory / f"{stem}-decoded.bin").read_bytes()
+        receipt = original_loads((directory / f"{stem}-decoded.json").read_text())
+        assert decoded == body.encode()
+        assert receipt["body_sha256"] == hashlib.sha256(decoded).hexdigest()
+        assert (directory / f"{stem}-response.json").exists()
+        parsed_sequences.append(sequence)
+        return original_loads(body)
+
+    monkeypatch.setattr(client_module, "json", SimpleNamespace(loads=parse, dumps=json.dumps))
+    if through_main:
+        assert launcher.main([
+            "--config", str(setup.config), "--identity-file", str(setup.identity),
+            "--evidence-parent", str(setup.evidence), "--attempt", "synthetic-one",
+        ]) == 2
+        report = original_loads(capsys.readouterr().out)
+    else:
+        report = _run(setup, None)
+    assert parsed_sequences == [1, 2, 3, 4]
+    assert [call["method"] for call in calls] == ["GET", "POST", "GET", "GET"]
+    assert calls[1]["url"] == POST_DEMO_AGGREGATE_PORTFOLIO.path
+    assert original_loads(calls[1]["body"]) == {
+        "conversionMode": "eToroApp", "pnlLevel": "pnl", "accountLevel": "totals",
+        "instrumentLevel": "details", "mirrorLevel": "details",
+    }
+    assert report["status"] == "BLOCKED" and report["broker_requests"] == 4
+    assert report["restricted_position_and_empty_pending_evidence_captured"] is True
+    for flag in ("preparation_available", "approval_available", "submission_available",
+                 "baseline_created", "qualification_credit", "account_evidence_complete"):
+        assert report[flag] is False
+    assert report["broker_orders_submitted"] == 0
+    assert {path.name for path in setup.root.iterdir()} == {"config", "runtime"}
+    assert len(list((setup.evidence / "synthetic-one").iterdir())) == 22
+
+
+def test_real_requests_malformed_json_retains_both_views_and_stops(setup, monkeypatch):
+    calls = _requests_bracket(monkeypatch, [_response(b'{broken-json "private-sentinel"')])
+    report = _run(setup, None)
+    assert report["capture_error_type"] == "EtoroSchemaError"
+    assert len(calls) == report["broker_requests"] == 1
+    directory = setup.evidence / "synthetic-one"
+    assert gzip.decompress((directory / "001-response.bin").read_bytes()) == (directory / "001-decoded.bin").read_bytes()
+    assert "private-sentinel" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("method,path,body,query", [
+    ("POST", POST_DEMO_AGGREGATE_PORTFOLIO.path, None, ""),
+    ("POST", POST_DEMO_AGGREGATE_PORTFOLIO.path, b'{}', ""),
+    ("POST", POST_DEMO_AGGREGATE_PORTFOLIO.path, b'{"instrumentIds":[1001]}', ""),
+    ("GET", POST_DEMO_AGGREGATE_PORTFOLIO.path, None, ""),
+    ("GET", GET_DEMO_DETAILED_PORTFOLIO.path, b'{}', ""),
+    ("GET", GET_DEMO_DETAILED_PORTFOLIO.path, None, "?instrumentIds=1001"),
+])
+def test_recorder_rejects_filtered_or_changed_account_operations(tmp_path, method, path, body, query):
+    transport = FakeTransport()
+    recorder = RecordingCaptureTransport(tmp_path, transport=transport)
+    request = replace(_request(method=method, url="https://public-api.etoro.com" + path + query), body=body)
+    with pytest.raises(CaptureBoundaryError, match="capture_route_not_allowed"):
+        recorder.send(request)
+    assert transport.requests == [] and list(tmp_path.iterdir()) == []
+
+
+def test_timeout_is_reduced_after_request_receipt_sync(tmp_path):
+    times = iter((10, 13, 15))
+    transport = FakeTransport([_response({})])
+    recorder = RecordingCaptureTransport(tmp_path, transport=transport, clock=lambda: next(times))
+    recorder.send(_request())
+    assert transport.requests[0].timeout_seconds == 10
+
+
+def test_collector_validity_gate_is_separate_from_request_initiation_budget(setup, monkeypatch):
+    from brokers.etoro import account_evidence
+
+    start = datetime.now(timezone.utc)
+    times = iter((start, start + timedelta(seconds=16)))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(times)
+
+    monkeypatch.setattr(account_evidence, "datetime", Clock)
+    transport = FakeTransport(_bracket())
+    report = _run(setup, transport)
+    assert report["broker_requests"] == 4
+    assert report["capture_failure_code"] == "account_capture_timing_not_valid"
+    assert report["status"] == "BLOCKED" and report["qualification_credit"] is False
