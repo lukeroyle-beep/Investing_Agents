@@ -33,16 +33,19 @@ Independent implementation and installed-launcher reviews completed on
 22 October, before these sends. The source manifest matches the reviewed
 implementation commit; the installed helper matches its reviewed hash. Fresh
 independent code and retained-evidence reviews were also obtained for delivery.
-The original source used for capture is unchanged; delivery adds documentation
-and one synthetic interruption regression.
+The original source used for capture is unchanged; delivery adds documentation,
+one synthetic interruption regression and the audit-tool dependency repair
+described below. No capture was repeated after these changes.
 
 ## Integration and retained controls
 
 The capture-specific transport now uses ordinary `requests`, declared directly
-in `pyproject.toml` and locked at 2.34.2. Only root dependency metadata edges
-changed in `uv.lock`; resolved external packages and the generated
-`requirements.txt` are unchanged. The existing collector and launcher retain
-their architecture and strict checks.
+in `pyproject.toml` and locked at 2.34.2. The integration initially changed only
+root dependency metadata edges in `uv.lock`. Delivery additionally updates the
+transitive development dependency `filelock` from 3.32.4 to 4.2.1 to repair the
+required security check. All other resolved external packages and the generated
+runtime `requirements.txt` remain unchanged. The existing collector and launcher
+retain their architecture and strict checks.
 
 - A fresh session uses verified TLS, the ordinary library User-Agent,
   `trust_env=False`, no ambient auth/cookies/proxies and zero adapter retries.
@@ -145,6 +148,16 @@ guard. Frozen sync, offline lock validation, exact compatibility export,
 dependency declaration/consistency, source compilation and whitespace checks
 passed. CI and security results for the published final head are recorded on
 the PR; local tests alone do not claim alternate-OS or security-scan success.
+
+The first published-head security audit found three advisories in inherited
+`filelock` 3.32.4: [CVE-2026-112940](https://github.com/tox-dev/filelock/security/advisories/GHSA-v4x8-3wr5-3wq8),
+[CVE-2026-112913](https://github.com/tox-dev/filelock/security/advisories/GHSA-9vhv-jxww-xfm5)
+and [CVE-2026-112907](https://github.com/tox-dev/filelock/security/advisories/GHSA-567q-5qvw-pf92).
+The workflow and maintainer advisories identify 4.2.1 as fixed. A targeted pinned-uv update changes
+only that package record and its distribution hashes; no audit exception or
+workflow relaxation is introduced. It is used through the development audit
+tooling, not the capture transport. The historical capture environment remains
+recorded as it actually ran; the update grants no new broker acceptance.
 
 Sensitive raw evidence, identity provenance and launch manifests remain in
 ignored owner-only runtime storage on the intended host. Independent inspection
