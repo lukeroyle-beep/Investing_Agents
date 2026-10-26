@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from brokers.base import BrokerAccountSnapshot, BrokerDataUnavailable, BrokerPosition
 from brokers.etoro.schemas import (
     DEMO_PENDING_COLLECTIONS, EtoroDetailedPortfolio, EtoroInstrumentAggregate,
-    EtoroSecurity, EtoroPositionValuation,
+    EtoroPnlPortfolio, EtoroSecurity, EtoroPositionValuation,
 )
 from execution.domain import Environment, payload_hash
 
@@ -265,6 +265,22 @@ def _structural_state(detail: EtoroDetailedPortfolio) -> tuple:
             tuple(sorted(detail.positions, key=lambda item: item.position_id)))
 
 
+def _pnl_expected_identity(expected_demo_customer_id: str) -> str:
+    if isinstance(expected_demo_customer_id, bool):
+        raise BrokerDataUnavailable("expected_demo_account_identity_required")
+    expected = str(expected_demo_customer_id).strip()
+    if not expected.isascii() or not expected.isdecimal() or int(expected) <= 0:
+        raise BrokerDataUnavailable("expected_demo_account_identity_required")
+    return str(int(expected))
+
+
+def _check_pnl_valuation_limit(account_max_age_seconds: int) -> None:
+    if (isinstance(account_max_age_seconds, bool)
+            or not isinstance(account_max_age_seconds, int)
+            or not 0 < account_max_age_seconds <= MAX_CAPTURE_SECONDS):
+        raise BrokerDataUnavailable("account_valuation_limit_not_valid")
+
+
 def capture_pnl_account_evidence(
     client: "EtoroReadOnlyClient", *, expected_demo_customer_id: str,
     now: datetime | None = None, account_max_age_seconds: int = MAX_CAPTURE_SECONDS,
@@ -275,20 +291,10 @@ def capture_pnl_account_evidence(
     stale/future mark is retained with a false freshness result and cannot be
     passed as an account snapshot to the baseline or pre-trade risk evaluator.
     """
-    from brokers.etoro.schemas import exact_datetime_epoch_seconds
-
     if client.environment != Environment.DEMO or not client.read_only:
         raise BrokerDataUnavailable("account_capture_requires_demo_read_only_client")
-    if isinstance(expected_demo_customer_id, bool):
-        raise BrokerDataUnavailable("expected_demo_account_identity_required")
-    expected = str(expected_demo_customer_id).strip()
-    if not expected.isascii() or not expected.isdecimal() or int(expected) <= 0:
-        raise BrokerDataUnavailable("expected_demo_account_identity_required")
-    expected = str(int(expected))
-    if (isinstance(account_max_age_seconds, bool)
-            or not isinstance(account_max_age_seconds, int)
-            or not 0 < account_max_age_seconds <= MAX_CAPTURE_SECONDS):
-        raise BrokerDataUnavailable("account_valuation_limit_not_valid")
+    expected = _pnl_expected_identity(expected_demo_customer_id)
+    _check_pnl_valuation_limit(account_max_age_seconds)
     started = _moment(now or datetime.now(timezone.utc))
     first = client.get_demo_detailed_portfolio()
     _check_details(first, expected)
@@ -302,6 +308,37 @@ def capture_pnl_account_evidence(
     currencies = client.get_demo_position_currencies(expected, first.positions)
     last = client.get_demo_detailed_portfolio()
     completed = _moment(now or datetime.now(timezone.utc))
+    return validate_pnl_account_evidence(
+        first=first, pnl=pnl, securities=securities, currencies=currencies,
+        last=last, expected_demo_customer_id=expected,
+        capture_started_at=started, capture_completed_at=completed,
+        account_max_age_seconds=account_max_age_seconds,
+    )
+
+
+def validate_pnl_account_evidence(
+    *, first: EtoroDetailedPortfolio, pnl: EtoroPnlPortfolio,
+    securities: tuple[EtoroSecurity, ...],
+    currencies: tuple["EtoroPositionCurrencyMetadata", ...],
+    last: EtoroDetailedPortfolio, expected_demo_customer_id: str,
+    capture_started_at: datetime, capture_completed_at: datetime,
+    account_max_age_seconds: int = MAX_CAPTURE_SECONDS,
+) -> EtoroPnlAccountEvidence:
+    """Validate strictly parsed bracket inputs without reading or storing data.
+
+    Supplied collection times bound the original capture only. No current
+    clock, broker client, baseline or whole-account observation is introduced.
+    """
+    from brokers.etoro.schemas import exact_datetime_epoch_seconds
+
+    expected = _pnl_expected_identity(expected_demo_customer_id)
+    _check_pnl_valuation_limit(account_max_age_seconds)
+    started = _moment(capture_started_at)
+    completed = _moment(capture_completed_at)
+    _check_details(first, expected)
+    if not first.positions:
+        raise BrokerDataUnavailable("pnl_account_identity_unproven_without_positions")
+    _check_details(pnl.detailed, expected)
     _check_details(last, expected)
     if completed < started or (completed - started).total_seconds() > MAX_CAPTURE_SECONDS:
         raise BrokerDataUnavailable("account_capture_timing_not_valid")
