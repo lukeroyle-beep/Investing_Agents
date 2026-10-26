@@ -87,6 +87,41 @@ is no baseline or order conversion in the P&L report.
 
 ## Capture status and operator handoff
 
+The operator and both preflight reports expose two independent booleans:
+
+| Outcome | `capture_complete` | `restricted_capture_accepted` |
+| --- | --- | --- |
+| Invalid input, missing setup, or consumed attempt | false | false |
+| Transport, schema, identity, metadata, or reconciliation failure | false | false |
+| Validated P&L bracket with stale or future valuations | true | false |
+| Validated bracket, fresh valuations, and successful requested account-evidence write | true | true |
+| Account-evidence write or sync fails after a validated bracket | true | false |
+
+`capture_complete` means the capture helper returned validated bracket evidence.
+It does not merely count completed HTTP responses: reconciliation may fail after
+every read has returned. P&L valuation freshness is assessed separately; the
+legacy aggregate helper rejects stale or future evidence before returning.
+`restricted_capture_accepted` accepts only this restricted evidence scope. A
+direct preflight without an evidence sink makes no persistence claim.
+
+Risk and exposure blockers do not erase a valid capture. The P&L report keeps
+`status` and `trading_readiness` at `BLOCKED`; the operator keeps `status=BLOCKED`.
+Both preflights keep `account_evidence_complete` false. All existing trading
+authorization flags remain false, and the operator retains exit code 2. No
+whole-account timestamp, baseline or trading permission follows from either
+new field.
+
+Final `readiness.json` persistence is separate from capture acceptance. If it
+fails, the returned report adds `private_report_storage_failed` without revoking
+valid captured evidence. A sync failure can occur after report bytes exist, so
+the two capture fields never assert final-report durability. Inspect the
+returned result and retained files after any storage failure; do not rerun.
+
+Existing retained attempts and pinned private launchers are not migrated or
+rewritten. Any retrospective assessment belongs in a separate artifact. The
+checkpoint below records the original pre-capture handoff, not the current state
+of a subsequently consumed attempt.
+
 | Evidence layer | Current result |
 | --- | --- |
 | Repository transport | NOT ATTEMPTED: both normal Demo credential environment variables are absent in this process. |

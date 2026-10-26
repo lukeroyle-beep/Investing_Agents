@@ -28,6 +28,7 @@ def pnl_preflight_report(*, client, expected_demo_customer_id, now=None,
         "approval_available": False, "baseline_created": False,
         "real_execution_available": False, "live_demo_qualified": False,
         "qualification_credit": False, "account_evidence_complete": False,
+        "capture_complete": False, "restricted_capture_accepted": False,
         "restricted_position_and_empty_pending_evidence_captured": False,
         "structural_cash_consistency": "NOT_VERIFIED",
         "reconciliation": "NOT_VERIFIED", "valuation_freshness": "NOT_VERIFIED",
@@ -46,6 +47,9 @@ def pnl_preflight_report(*, client, expected_demo_customer_id, now=None,
         if reason in PNL_FAILURES:
             report["capture_failure_code"] = reason
         return report
+    # Completion means validated bracket evidence, not merely HTTP success.
+    # Freshness and requested evidence storage qualify acceptance separately.
+    report["capture_complete"] = True
     # Store the lossless evidence only in the launcher's owner-only directory.
     # No identity, amount, holding or original position timestamp is published.
     if evidence_sink is not None:
@@ -64,6 +68,7 @@ def pnl_preflight_report(*, client, expected_demo_customer_id, now=None,
             "guide_cash_and_equity_calculation",
         ],
         "broker_margin_verified_against_invested": False,
+        "restricted_capture_accepted": evidence.valuations_fresh,
         "valuation_freshness": "PASS" if evidence.valuations_fresh else "FAIL",
         "restricted_position_and_empty_pending_evidence_captured": evidence.valuations_fresh,
         "position_count": len(evidence.positions), "pending_order_count": 0,
