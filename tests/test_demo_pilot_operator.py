@@ -507,20 +507,23 @@ def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp
         def account(self, expected):
             assert expected == "123"
             calls.append("account")
-            return account_at(NOW)
+            return account_at(fake.now)
         def market(self, instrument):
             calls.append("market")
             return QuoteEvidence("synthetic-bridge-quote", instrument.internal_instrument_id,
-                NOW, D(100), D(100), True), {}
+                fake.now - timedelta(seconds=24), D(100), D(100), True), {"received_at":fake.now.isoformat()}
         def profile_callback(self, args):
             return fake.profile(args)
         def call(self, tool, arguments):
             calls.append(tool)
             assert tool == "etoro_prepare_trade", "unapproved bridge must not place an order"
+            # A seven-second prepare would expire a previously captured rate.
+            # The final market read must occur after that operation.
+            fake.now += timedelta(seconds=7)
             return {"result": fake.prepare(arguments)}
 
     monkeypatch.setattr(bridge, "Host", LocalHost)
-    monkeypatch.setattr(bridge, "NOW", lambda: NOW)
+    monkeypatch.setattr(bridge, "NOW", lambda: fake.now)
     monkeypatch.setattr(bridge, "INSTRUMENT", 1001)
     monkeypatch.setattr(bridge, "SYMBOL", "AAPL")
     monkeypatch.setattr(bridge, "CLASSIFICATIONS", ((1001, "AAPL", "Apple", "technology", "equity"),

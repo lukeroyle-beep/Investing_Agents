@@ -243,6 +243,15 @@ def run(args):
             emit({"event":"lookup_hold", "command_id":args.recover,
                   "broker_state":observed.lifecycle_state, "recovery":"lookup_only_no_resubmission"})
             return
+    else:
+        # Prepare first, then capture account and market evidence close to
+        # admission. A valid but aging rate must not wait through preparation.
+        eligibility = response_object(host.read("/api/v2/trading/info/demo/eligibility",
+            body=json.dumps({"instrumentIds":[INSTRUMENT],"currency":"USD"}))["result"])
+        intent = OrderIntent.create(strategy_id="demo-pilot-v1", run_id=str(uuid4()),
+            internal_instrument_id=instrument.internal_instrument_id, environment="demo", side="buy", order_type="market",
+            sizing_method="fixed_notional", sizing_value="10", currency="USD", expires_at=NOW()+timedelta(minutes=3))
+        preview = adapter.preview(intent=intent, instrument_id=INSTRUMENT)
     account = host.account(expected)
     if ledger_path.exists():
         ledger = PilotLedger(ledger_path, expected)
@@ -269,16 +278,16 @@ def run(args):
         snapshot = workflow.reconcile_pilot(args.recover, adapter=adapter, pre_account=pre, post_account=account, now=NOW())
         emit({"event":"reconciled", "pilot_pnl":snapshot["pilot_pnl"], "position_count":snapshot["position_count"]})
         return
-    eligibility = response_object(host.read("/api/v2/trading/info/demo/eligibility",
-        body=json.dumps({"instrumentIds":[INSTRUMENT],"currency":"USD"}))["result"])
     quote, state = host.market(instrument)
-    intent = OrderIntent.create(strategy_id="demo-pilot-v1", run_id=str(uuid4()),
-        internal_instrument_id=instrument.internal_instrument_id, environment="demo", side="buy", order_type="market",
-        sizing_method="fixed_notional", sizing_value="10", currency="USD", expires_at=NOW()+timedelta(minutes=3))
-    preview = adapter.preview(intent=intent, instrument_id=INSTRUMENT)
     account.validate_fresh(NOW())
     command = workflow.prepare(intent=intent, account=account, quote=quote, preview=preview, now=NOW())
     binding = workflow.bind_preview(command.command_id, adapter=adapter, preview=preview, eligibility=eligibility, now=NOW())
+    # Binding may refresh identity. Do not present expired admission evidence.
+    admission_now = NOW()
+    account.validate_fresh(admission_now)
+    if (not 0 <= (admission_now-quote.observed_at).total_seconds() <= 30
+            or not 0 <= (admission_now-instant(state.get("received_at"), "market_time")).total_seconds() <= 15):
+        raise ValueError("pilot_admission_evidence_expired_before_approval")
     proof = workflow.evidence.read_preparation(command.command_id)
     emit({"event":"awaiting_approval", "status":"AWAITING EXACT-ORDER APPROVAL", "command_id":str(command.command_id),
         "confirmation_hash":binding["confirmation_hash"], "confirmation":binding["confirmation"],
@@ -292,8 +301,8 @@ def run(args):
     workflow.approve(command.command_id, adapter=adapter, confirmation_hash=binding["confirmation_hash"],
         approver="Luke", human_confirmed=True, now=NOW())
     usage = host.usage()
-    quote, state = host.market(instrument)
     pre = host.account(expected)
+    quote, state = host.market(instrument)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
     if not switch.state_path.exists() and not switch.audit_path.exists():
         switch.initialize_engaged(operator_id="Luke", reason="new explicit Demo pilot", now=NOW())
