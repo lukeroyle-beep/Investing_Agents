@@ -430,6 +430,11 @@ Current build status:
 - independent Demo pre-trade risk, approval, and kill switch: **implemented, writes disabled**
 - eToro Demo Gate A contract adapter: **read-only implementation; connected MCP Demo smoke passed, repository adapter remains disabled by default**
 
+The separately selected [bounded Demo integration pilot](docs/demo_pilot_v1.md)
+uses an immutable attribution ledger, supported MCP evidence and exact human
+order approval. The existing strict policy and default write settings remain
+unchanged. A pilot implementation or preview does not establish a confirmed fill.
+
 ## Disclaimer
 
 This repository is for portfolio analysis, governance, and advisory workflow development.

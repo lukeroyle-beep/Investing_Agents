@@ -1,0 +1,306 @@
+{
+  "source": "supported eToro MCP get_route_spec",
+  "route_id": "getRates",
+  "request_started_at": "2026-10-26T17:43:15.470Z",
+  "response_received_at": "2026-10-26T17:43:17.738Z",
+  "spec": {
+    "routeId": "getRates",
+    "method": "GET",
+    "path": "/api/v2/market-data/rates",
+    "operation": {
+      "tags": [
+        "Market Data"
+      ],
+      "summary": "Retrieve bid/ask rates for one or more instruments",
+      "description": "**Rate limit:** 120 requests per 60 seconds. This is a **shared quota** — the same budget is consumed by a group of related endpoints, so calling any of them reduces what is left for the others (you cannot call each at the full rate independently). Endpoints sharing this quota:\n- `GET /api/v1/market-data/exchanges`\n- `GET /api/v1/market-data/instrument-types`\n- `GET /api/v1/market-data/instruments`\n- `GET /api/v1/market-data/instruments/history/closing-price`\n- `GET /api/v1/market-data/instruments/rates`\n- `GET /api/v1/market-data/instruments/{instrumentId}/history/candles/{direction}/{interval}/{candlesCount}`\n- `GET /api/v1/market-data/search`\n- `GET /api/v1/market-data/stocks-industries`\n- `GET /api/v2/market-data/instruments`\n- `GET /api/v2/market-data/instruments/search`\n\n---\n\nReturns current bid/ask rates keyed by instrument ID. Each rate carries a `quoteType` indicating whether it is `realtime` or `delayed`.\n\nReturns 200 when all requested instruments are found, 206 when only a subset is available.",
+      "operationId": "getRates",
+      "parameters": [
+        {
+          "name": "x-request-id",
+          "in": "header",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid",
+            "example": "8ceaa258-96a1-4630-9e40-407d3b69344f"
+          },
+          "description": "A unique request identifier."
+        },
+        {
+          "name": "instrumentIds",
+          "in": "query",
+          "description": "List of instrument IDs to fetch rates for (max 1000).",
+          "required": true,
+          "style": "form",
+          "explode": false,
+          "schema": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 1000
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Rates for all requested instruments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ratesResponse"
+              }
+            }
+          },
+          "headers": {
+            "RateLimit-Limit": {
+              "description": "Maximum number of requests allowed per window. This budget is SHARED across 11 endpoints (it is NOT per-endpoint): a request to any endpoint in the group spends the same budget. See this operation's description for the full list of endpoints sharing it.",
+              "schema": {
+                "type": "integer"
+              },
+              "example": 120
+            },
+            "RateLimit-Remaining": {
+              "description": "Requests remaining in the current window for this quota.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Reset": {
+              "description": "Seconds until the current window resets.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Policy": {
+              "description": "Quota policy in the form `<limit>;w=<window-seconds>`.",
+              "schema": {
+                "type": "string"
+              },
+              "example": "120;w=60"
+            }
+          }
+        },
+        "206": {
+          "description": "Rates for a subset of the requested instruments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ratesResponse"
+              }
+            }
+          },
+          "headers": {
+            "RateLimit-Limit": {
+              "description": "Maximum number of requests allowed per window. This budget is SHARED across 11 endpoints (it is NOT per-endpoint): a request to any endpoint in the group spends the same budget. See this operation's description for the full list of endpoints sharing it.",
+              "schema": {
+                "type": "integer"
+              },
+              "example": 120
+            },
+            "RateLimit-Remaining": {
+              "description": "Requests remaining in the current window for this quota.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Reset": {
+              "description": "Seconds until the current window resets.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Policy": {
+              "description": "Quota policy in the form `<limit>;w=<window-seconds>`.",
+              "schema": {
+                "type": "string"
+              },
+              "example": "120;w=60"
+            }
+          }
+        },
+        "400": {
+          "description": "Invalid request parameters"
+        },
+        "401": {
+          "description": "Bad or missing API key. Rejected by the gateway before the request reaches this service; uses the gateway error envelope (errorCode/errorMessage), not this route's apiErrorEnvelope.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/gatewayErrorEnvelope"
+              }
+            }
+          }
+        },
+        "404": {
+          "description": "Could not retrieve data for any instrument id"
+        },
+        "422": {
+          "description": "Missing X-Request-Id header (errorCode: RequestIdRequired). Rejected by the gateway before the request reaches this service; uses the gateway error envelope (errorCode/errorMessage), not this route's apiErrorEnvelope.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/gatewayErrorEnvelope"
+              }
+            }
+          }
+        },
+        "429": {
+          "description": "Too Many Requests — the shared rate limit (120 requests / 60s) was exceeded.",
+          "headers": {
+            "RateLimit-Limit": {
+              "description": "Maximum number of requests allowed per window. This budget is SHARED across 11 endpoints (it is NOT per-endpoint): a request to any endpoint in the group spends the same budget. See this operation's description for the full list of endpoints sharing it.",
+              "schema": {
+                "type": "integer"
+              },
+              "example": 120
+            },
+            "RateLimit-Remaining": {
+              "description": "Requests remaining in the current window for this quota.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Reset": {
+              "description": "Seconds until the current window resets.",
+              "schema": {
+                "type": "integer"
+              }
+            },
+            "RateLimit-Policy": {
+              "description": "Quota policy in the form `<limit>;w=<window-seconds>`.",
+              "schema": {
+                "type": "string"
+              },
+              "example": "120;w=60"
+            },
+            "Retry-After": {
+              "description": "Seconds to wait before retrying.",
+              "schema": {
+                "type": "integer"
+              },
+              "example": 60
+            }
+          }
+        },
+        "500": {
+          "description": "Internal server error"
+        }
+      },
+      "security": [
+        {
+          "apiKeyAuth": [],
+          "userKeyAuth": []
+        },
+        {
+          "oauth2": [
+            "etoro-public:real:read"
+          ]
+        },
+        {
+          "oauth2": [
+            "etoro-public:demo:read"
+          ]
+        },
+        {
+          "oauth2": [
+            "etoro-public:real:write"
+          ]
+        },
+        {
+          "oauth2": [
+            "etoro-public:demo:write"
+          ]
+        },
+        {
+          "oauth2": [
+            "etoro-public:market-data:read"
+          ]
+        }
+      ],
+      "x-ratelimit": {
+        "limit": 120,
+        "window": 60,
+        "shared": true,
+        "defaultPool": false,
+        "sharedWith": [
+          "GET /api/v1/market-data/exchanges",
+          "GET /api/v1/market-data/instrument-types",
+          "GET /api/v1/market-data/instruments",
+          "GET /api/v1/market-data/instruments/history/closing-price",
+          "GET /api/v1/market-data/instruments/rates",
+          "GET /api/v1/market-data/instruments/{instrumentId}/history/candles/{direction}/{interval}/{candlesCount}",
+          "GET /api/v1/market-data/search",
+          "GET /api/v1/market-data/stocks-industries",
+          "GET /api/v2/market-data/instruments",
+          "GET /api/v2/market-data/instruments/search"
+        ]
+      }
+    },
+    "schemas": {
+      "gatewayErrorEnvelope": {
+        "type": "object",
+        "description": "Error envelope used for gateway-level rejections (bad/missing API key -> 401, missing X-Request-Id -> 422) that occur before the request reaches this service. Unlike apiErrorEnvelope, this shape is {errorCode, errorMessage} with no success/error wrapper.",
+        "properties": {
+          "errorCode": {
+            "type": "string",
+            "description": "Machine-readable error code, e.g. Unauthorized, RequestIdRequired"
+          },
+          "errorMessage": {
+            "type": "string",
+            "description": "Human-readable error message"
+          }
+        }
+      },
+      "rate": {
+        "type": "object",
+        "description": "Bid/ask rate for a single instrument",
+        "properties": {
+          "instrumentId": {
+            "type": "integer",
+            "description": "Instrument identifier"
+          },
+          "bid": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Current bid price"
+          },
+          "ask": {
+            "type": "number",
+            "format": "double",
+            "nullable": true,
+            "description": "Current ask price"
+          },
+          "date": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "UTC timestamp of the rate"
+          },
+          "quoteType": {
+            "type": "string",
+            "description": "Whether the rate is realtime or delayed",
+            "enum": [
+              "realtime",
+              "delayed"
+            ]
+          }
+        }
+      },
+      "ratesResponse": {
+        "type": "object",
+        "description": "Rates for the requested instruments.",
+        "properties": {
+          "results": {
+            "type": "array",
+            "description": "Rates for the requested instruments, in request order.",
+            "items": {
+              "$ref": "#/components/schemas/rate"
+            }
+          }
+        }
+      }
+    }
+  }
+}
