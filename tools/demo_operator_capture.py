@@ -102,6 +102,7 @@ def run_capture(*, config_path, identity_path, evidence_parent, attempt, transpo
               "preparation_available": False, "approval_available": False,
               "baseline_created": False, "broker_orders_submitted": 0,
               "broker_requests": 0, "qualification_credit": False,
+              "capture_complete": False, "restricted_capture_accepted": False,
               "blockers": list(UNPROVEN_GATES)}
     if account_source not in {"pnl", "aggregate"}:
         report["blockers"].insert(0, "invalid_account_source")
@@ -156,6 +157,8 @@ def run_capture(*, config_path, identity_path, evidence_parent, attempt, transpo
     try:
         private_json(destination / "readiness.json", report)
     except OSError:
+        # Capture acceptance describes validated evidence, not final-report
+        # durability. A sync failure may occur after report bytes exist.
         report["blockers"].insert(0, "private_report_storage_failed")
     # preflight has no success-to-intent conversion. No baseline argument is
     # passed and no ExecutionStore, ApprovalAuthority or write adapter is used.

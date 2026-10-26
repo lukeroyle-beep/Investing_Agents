@@ -58,6 +58,8 @@ def preflight_report(*, client=None, expected_demo_customer_id=None, now=None,
         "live_demo_qualified": False,
         "qualification_credit": False,
         "account_evidence_complete": False,
+        "capture_complete": False,
+        "restricted_capture_accepted": False,
         "blockers": list(UNPROVEN_GATES),
     }
     if not expected_demo_customer_id:
@@ -81,6 +83,9 @@ def preflight_report(*, client=None, expected_demo_customer_id=None, now=None,
         return report
     snapshot = evidence.snapshot
     report.update({
+        # The aggregate capture helper already enforces valuation freshness.
+        "capture_complete": True,
+        "restricted_capture_accepted": True,
         "account_evidence_complete": False,  # daily loss/history still absent
         "restricted_position_and_empty_pending_evidence_captured": True,
         "account_evidence_sha256": payload_hash(json.loads(dataclass_json(evidence))),
