@@ -127,7 +127,7 @@ def test_preflight_preserves_baseline_and_exposes_existing_risk_breaches(tmp_pat
         snapshot_id="fixture-first", environment=Environment.DEMO, observed_at=now,
         currency="USD", equity=Decimal("100"), available_cash=Decimal("30"),
         balance=Decimal("30"), frozen_cash=Decimal("0"), current_pnl=Decimal("10"),
-        used_margin=Decimal("60"), positions=(BrokerPosition(
+        used_margin=Decimal("60"), invested_amount=Decimal("60"), positions=(BrokerPosition(
             None, 1001, Decimal("1"), Decimal("70"), Decimal("1"), Decimal("10"), "USD"),),
         pending_orders=(), pending_orders_complete=True, executions_complete=False)
     evidence = Evidence(snapshot)

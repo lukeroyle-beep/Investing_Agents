@@ -213,3 +213,25 @@ def test_append_only_database_and_hash_chain_integrity(tmp_path):
         ledger.latest()
     with pytest.raises(RiskBaselineError, match="integrity"):
         store(tmp_path)
+
+
+def test_holdings_require_invested_principal_and_never_substitute_margin(tmp_path):
+    from brokers.base import BrokerPosition
+    holding = BrokerPosition("p1", 1, D("1"), D("250"), D("1"), D("10"), "USD")
+    snap = replace(snapshot("1110"), available_cash=D("1000"),
+                   current_pnl=D("10"), used_margin=D("40"), positions=(holding,))
+    ledger = store(tmp_path)
+    with pytest.raises(RiskBaselineError, match="invested_amount_required"):
+        record(ledger, snap)
+    with pytest.raises(RiskBaselineError, match="equity_not_reconciled"):
+        record(ledger, replace(snap, invested_amount=snap.used_margin))
+    result = record(ledger, replace(snap, invested_amount=D("100")))
+    assert result.baseline_at == snap.observed_at
+    assert not result.submission_available
+
+
+def test_cent_difference_is_not_silently_reconciled(tmp_path):
+    ledger = store(tmp_path)
+    with pytest.raises(RiskBaselineError, match="equity_not_reconciled"):
+        record(ledger, replace(snapshot(), equity=D("1000.01")))
+    assert ledger.latest() is None

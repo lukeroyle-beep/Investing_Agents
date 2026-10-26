@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from execution.accounting import PerformanceEvidence
+    from execution.account_source import RiskAccountSource
 from uuid import UUID, uuid4
 
 import yaml
@@ -141,6 +145,8 @@ class PositionEvidence:
     internal_instrument_id: UUID
     sector: str
     signed_market_value: Decimal
+    broker_position_id: str | None = None
+    broker_instrument_id: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -185,34 +191,54 @@ class PendingOrderEvidence:
 class AccountEvidence:
     snapshot_id: str
     environment: Environment
-    observed_at: datetime
+    observed_at: datetime | None
     currency: str
     equity: Decimal
     cash: Decimal
-    daily_pnl: Decimal
-    peak_equity: Decimal
+    daily_pnl: Decimal | None
+    peak_equity: Decimal | None
     positions: tuple[PositionEvidence, ...]
     pending_orders: tuple[PendingOrderEvidence, ...]
     pending_orders_complete: bool
+    # v1 remains for offline fixtures. Live operators require this explicit v2
+    # contract and independently validated broker provenance.
+    contract_version: str = "legacy-fixture-v1"
+    account_id: str | None = None
+    component_time: RiskAccountSource | None = None
+    performance: PerformanceEvidence | None = None
+    invested_amount: Decimal | None = None
+    unrealised_pnl: Decimal | None = None
+    estimated_order_costs: Decimal = Decimal("0")
+    positions_complete: bool = False
+    issuer_by_instrument: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         # Per-position P&L times or receipt/capture times do not establish an
         # authoritative whole-account observation for this risk contract.
-        if not isinstance(self.observed_at, datetime):
+        if self.contract_version not in {"legacy-fixture-v1", "account-risk-v2"}:
+            raise RiskEvidenceError("unsupported_account_risk_contract")
+        if self.observed_at is None and (self.contract_version != "account-risk-v2" or self.component_time is None):
             raise RiskEvidenceError("whole_account_observation_time_required")
         object.__setattr__(self, "environment", Environment(self.environment))
-        object.__setattr__(
-            self, "observed_at", _aware_utc(self.observed_at, "observed_at")
-        )
+        if self.observed_at is not None:
+            object.__setattr__(self, "observed_at", _aware_utc(self.observed_at, "observed_at"))
+        if self.component_time is not None and self.observed_at is not None:
+            raise RiskEvidenceError("component_time_is_not_atomic_account_time")
         object.__setattr__(self, "currency", str(self.currency).strip().upper())
-        for name in ("equity", "cash", "daily_pnl", "peak_equity"):
-            object.__setattr__(self, name, decimal_value(getattr(self, name), name))
+        for name in ("equity", "cash", "daily_pnl", "peak_equity", "invested_amount", "unrealised_pnl", "estimated_order_costs"):
+            if getattr(self, name) is not None:
+                object.__setattr__(self, name, decimal_value(getattr(self, name), name))
         object.__setattr__(self, "positions", tuple(self.positions))
         object.__setattr__(self, "pending_orders", tuple(self.pending_orders))
+        object.__setattr__(self, "issuer_by_instrument", tuple(
+            (str(_uuid(identity, "issuer_instrument_id")), str(issuer).strip().lower())
+            for identity, issuer in self.issuer_by_instrument))
         if not self.snapshot_id.strip() or not self.currency:
             raise RiskEvidenceError("account snapshot identity is incomplete")
-        if self.equity <= 0 or self.peak_equity <= 0 or self.cash < 0:
+        if self.equity <= 0 or (self.peak_equity is not None and self.peak_equity <= 0) or self.cash < 0 or self.estimated_order_costs < 0:
             raise RiskEvidenceError("account balances are invalid")
+        if self.contract_version == "legacy-fixture-v1" and (self.daily_pnl is None or self.peak_equity is None):
+            raise RiskEvidenceError("legacy_fixture_performance_required")
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +296,22 @@ class PreTradeRiskEvaluator:
         quote: QuoteEvidence,
         now: datetime,
     ) -> RiskDecision:
+        # Arithmetic must retain every source coefficient before ratio checks;
+        # binary floats and the process-wide 28-digit Decimal context are not
+        # an acceptable admission tolerance around a hard risk limit.
+        values = [account.equity, account.cash, intent.sizing_value, quote.ask,
+                  account.estimated_order_costs, account.invested_amount, account.unrealised_pnl,
+                  account.daily_pnl, account.peak_equity]
+        values += [x.signed_market_value for x in account.positions]
+        values += [x.remaining_notional for x in account.pending_orders]
+        decimals = [x for x in values if isinstance(x, Decimal) and x.is_finite()]
+        largest = max((x.adjusted() for x in decimals), default=0)
+        smallest = min((x.as_tuple().exponent for x in decimals), default=0)
+        with localcontext() as context:
+            context.prec = max(80, 2 * (largest - smallest + 1) + len(decimals))
+            return self._evaluate(intent=intent, instrument=instrument, account=account, quote=quote, now=now)
+
+    def _evaluate(self, *, intent, instrument, account, quote, now) -> RiskDecision:
         moment = _aware_utc(now, "now")
         if quote.internal_instrument_id != instrument.internal_instrument_id:
             raise RiskEvidenceError("quote instrument identity mismatch")
@@ -335,15 +377,82 @@ class PreTradeRiskEvaluator:
         )
         projected_cash = account.cash - pending_buys - (
             order_notional if intent.side == OrderSide.BUY else Decimal("0")
-        )
-        drawdown = max(
-            Decimal("0"), _fraction(account.peak_equity - account.equity, account.peak_equity)
-        )
-        daily_loss = max(
-            Decimal("0"), -_fraction(account.daily_pnl, account.equity)
-        )
+        ) - account.estimated_order_costs
+        versioned = account.contract_version == "account-risk-v2"
+        performance_reasons = []
+        if versioned:
+            from execution.accounting import AccountValuation, PerformanceEvidence, MODEL_VERSION
+            performance = account.performance
+            if not isinstance(performance, PerformanceEvidence):
+                performance_reasons.append("performance_evidence_missing")
+            elif (not performance.projection_valid() or not performance.qualified or not performance.history_complete
+                  or performance.reasons or performance.model_version != MODEL_VERSION
+                  or performance.current_snapshot_id != account.snapshot_id
+                  or performance.account_id != account.account_id
+                  or performance.currency != account.currency):
+                performance_reasons.append("performance_evidence_unqualified_or_unbound")
+            elif not 0 <= (moment - performance.coverage_end_at).total_seconds() <= self.limits.account_max_age_seconds:
+                performance_reasons.append("performance_evidence_stale")
+            if isinstance(performance, PerformanceEvidence):
+                valuation = performance.current_valuation
+                if (not isinstance(valuation, AccountValuation)
+                        or valuation.account_id != account.account_id
+                        or valuation.snapshot_id != account.snapshot_id
+                        or valuation.currency != account.currency
+                        or valuation.equity != account.equity or valuation.cash != account.cash
+                        or valuation.invested_amount != account.invested_amount
+                        or valuation.unrealised_pnl != account.unrealised_pnl
+                        or valuation.coverage_at != performance.coverage_end_at
+                        or valuation.gross_exposure != sum((abs(x.signed_market_value) for x in account.positions), Decimal("0"))):
+                    performance_reasons.append("performance_valuation_binding_mismatch")
+                elif account.component_time is not None:
+                    if (valuation.valuation_at is not None
+                            or valuation.time_model != account.component_time.model_version
+                            or valuation.time_evidence_hash != account.component_time.time_evidence_hash
+                            or valuation.component_start_at != account.component_time.earliest_component_at
+                            or valuation.component_end_at != account.component_time.latest_component_at
+                            or valuation.broker_margin != account.component_time.broker_margin):
+                        performance_reasons.append("performance_time_binding_mismatch")
+                elif valuation.valuation_at != account.observed_at:
+                    performance_reasons.append("performance_time_binding_mismatch")
+            daily_loss = performance.daily_loss_fraction if not performance_reasons else None
+            drawdown = performance.drawdown_fraction if not performance_reasons else None
+            if (daily_loss is None or drawdown is None
+                    or not daily_loss.is_finite() or not drawdown.is_finite()
+                    or daily_loss < 0 or drawdown < 0):
+                performance_reasons.append("performance_metrics_unknown")
+        else:
+            # Historical offline fixture contract. The connector operator
+            # rejects it; it cannot stand in for verified account history.
+            drawdown = max(Decimal("0"), _fraction(account.peak_equity - account.equity, account.peak_equity))
+            daily_loss = max(Decimal("0"), -_fraction(account.daily_pnl, account.equity))
         quote_age = (moment - quote.observed_at).total_seconds()
-        account_age = (moment - account.observed_at).total_seconds()
+        time_reasons = ()
+        if account.component_time is not None:
+            from execution.account_source import RiskAccountSource
+            if not isinstance(account.component_time, RiskAccountSource):
+                time_reasons = ("typed_component_time_required",)
+            else:
+                time_reasons = account.component_time.validate_at(moment, self.limits.account_max_age_seconds)
+                source = account.component_time
+                if (source.demo_customer_id != account.account_id or source.currency != account.currency
+                        or source.equity != account.equity or source.available_cash != account.cash
+                        or source.invested_amount != account.invested_amount or source.current_pnl != account.unrealised_pnl
+                        or source.source_evidence_sha256 != account.snapshot_id):
+                    time_reasons += ("component_account_binding_mismatch",)
+                expected_positions = {(x.broker_position_id, x.broker_instrument_id): x.current_exposure
+                                      for x in source.positions}
+                actual_positions = {(x.broker_position_id, x.broker_instrument_id): x.signed_market_value
+                                    for x in account.positions}
+                if (len(actual_positions) != len(account.positions)
+                        or len(expected_positions) != len(source.positions)
+                        or expected_positions != actual_positions or account.pending_orders):
+                    time_reasons += ("component_positions_or_pending_coverage_mismatch",)
+            account_age = None
+            account_fresh = not time_reasons
+        else:
+            account_age = (moment - account.observed_at).total_seconds()
+            account_fresh = 0 <= account_age <= self.limits.account_max_age_seconds
 
         checks: list[RiskCheck] = []
 
@@ -369,14 +478,39 @@ class PreTradeRiskEvaluator:
         add("intent_expiry", moment < intent.expires_at, intent.expires_at.isoformat(), moment.isoformat())
         add("quote_freshness", 0 <= quote_age <= self.limits.quote_max_age_seconds,
             quote_age, self.limits.quote_max_age_seconds)
-        add("account_freshness", 0 <= account_age <= self.limits.account_max_age_seconds,
-            account_age, self.limits.account_max_age_seconds)
+        add("account_freshness", account_fresh,
+            time_reasons if account.component_time is not None else account_age, self.limits.account_max_age_seconds)
         add("regular_hours", (not self.limits.regular_hours_only) or quote.regular_session_open,
             quote.regular_session_open, True)
         add("pending_orders_complete", account.pending_orders_complete,
             account.pending_orders_complete, True)
         add("pending_orders_consistent", not contradictory_pending,
             not contradictory_pending, True)
+        if versioned:
+            add("positions_complete", account.positions_complete, account.positions_complete, True)
+            add("account_identity", bool(account.account_id), bool(account.account_id), True)
+            identity_ok = (account.invested_amount is not None and account.unrealised_pnl is not None
+                           and account.equity == account.cash + account.invested_amount + account.unrealised_pnl)
+            add("equity_identity", identity_ok, identity_ok, "cash + invested + unrealised")
+            add("performance_coverage", not performance_reasons, performance_reasons, "complete bound fresh history")
+            classifications = all(x.sector != "unknown" for x in (*account.positions, *pending_orders)) and instrument.sector != "unknown"
+            add("exposure_classification", classifications, classifications, True)
+            issuer_map = dict(account.issuer_by_instrument)
+            instrument_ids = {str(x.internal_instrument_id) for x in (*account.positions, *pending_orders)} | {str(instrument.internal_instrument_id)}
+            issuer_coverage = (len(issuer_map) == len(account.issuer_by_instrument)
+                               and all(str(issuer_map.get(x, "")).strip() not in {"", "unknown"} for x in instrument_ids))
+            add("issuer_classification", issuer_coverage, issuer_coverage, "reviewed issuer identity for every instrument")
+            issuer_totals = {issuer_map.get(str(instrument.internal_instrument_id), "unknown"): abs(order_notional)}
+            sector_totals = {instrument.sector: abs(order_notional)}
+            for item in (*account.positions, *pending_orders):
+                value = abs(item.signed_market_value) if isinstance(item, PositionEvidence) else item.remaining_notional
+                issuer = issuer_map.get(str(item.internal_instrument_id), "unknown")
+                issuer_totals[issuer] = issuer_totals.get(issuer, Decimal("0")) + value
+                sector_totals[item.sector] = sector_totals.get(item.sector, Decimal("0")) + value
+            max_issuer = max(issuer_totals.values(), default=Decimal("0")) / account.equity
+            max_sector = max(sector_totals.values(), default=Decimal("0")) / account.equity
+            add("all_issuer_exposure", max_issuer <= self.limits.max_issuer_fraction, max_issuer, self.limits.max_issuer_fraction)
+            add("all_sector_exposure", max_sector <= self.limits.max_sector_fraction, max_sector, self.limits.max_sector_fraction)
         add("order_size", _fraction(order_notional, account.equity) <= self.limits.max_order_equity_fraction,
             _fraction(order_notional, account.equity), self.limits.max_order_equity_fraction)
         add("issuer_exposure", abs(_fraction(projected_issuer, account.equity)) <= self.limits.max_issuer_fraction,
@@ -389,9 +523,9 @@ class PreTradeRiskEvaluator:
             _fraction(projected_net, account.equity), self.limits.max_net_fraction)
         add("cash_buffer", _fraction(projected_cash, account.equity) >= self.limits.min_cash_buffer_fraction,
             _fraction(projected_cash, account.equity), self.limits.min_cash_buffer_fraction)
-        add("daily_loss_stop", daily_loss < self.limits.daily_loss_stop_fraction,
+        add("daily_loss_stop", daily_loss is not None and daily_loss < self.limits.daily_loss_stop_fraction,
             daily_loss, self.limits.daily_loss_stop_fraction)
-        add("drawdown_stop", drawdown < self.limits.drawdown_stop_fraction,
+        add("drawdown_stop", drawdown is not None and drawdown < self.limits.drawdown_stop_fraction,
             drawdown, self.limits.drawdown_stop_fraction)
 
         reasons = tuple(check.name for check in checks if not check.passed)

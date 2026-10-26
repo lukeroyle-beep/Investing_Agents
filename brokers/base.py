@@ -71,6 +71,12 @@ class BrokerExecution:
     fees: Decimal
     taxes: Decimal
     currency: str
+    # Authoritative invested principal in account currency. Rounded average
+    # execution prices are valuation data, not a substitute for this amount.
+    executed_amount: Decimal | None = None
+    # Exact broker timestamp spelling; datetime is only its microsecond view.
+    # eToro can supply seven fractional digits, which must survive admission.
+    executed_at_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +95,8 @@ class BrokerAccountSnapshot:
     pending_orders: tuple[BrokerOrder, ...]
     pending_orders_complete: bool
     executions_complete: bool
+    # Cost capital is not margin and cannot be inferred from gross exposure.
+    invested_amount: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

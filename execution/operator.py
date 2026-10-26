@@ -18,12 +18,14 @@ from pathlib import Path
 from typing import Any
 
 from brokers.base import BrokerAdapter
+from brokers.etoro.schemas import EtoroSchemaError, _pnl_timestamp, exact_datetime_epoch_seconds
 from execution.coordinator import ExecutionCoordinator
 from execution.domain import (
     Approval, BrokerCommand, CommandState, Environment, OrderIntent, OrderSide,
     OrderType, SizingMethod, _aware_utc, canonical_json, payload_hash,
 )
 from execution.fill_ingestion import stage_broker_executions
+from execution.accounting import _sum as exact_sum
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.kill_switch import KillSwitchStatus
 from risk.pretrade import AccountEvidence, PreTradeRiskEvaluator, QuoteEvidence, RiskLimits
@@ -131,6 +133,8 @@ class _CapturedLookup:
 
 
 class DemoOperator:
+    broker_name = "fake"
+    source_kind = "fixture"
     def __init__(self, *, coordinator: ExecutionCoordinator, limits: RiskLimits,
                  evidence_store: OperatorEvidenceStore, staged_fills_path: Path | str):
         self.coordinator, self.limits = coordinator, limits
@@ -179,7 +183,7 @@ class DemoOperator:
                 or instrument.asset_type not in {"equity", "etf"}):
             raise OperatorEvidenceError("operator scope is Demo unleveraged USD long equity/ETF market orders")
         mapping = self.coordinator.registry.broker_mapping(
-            intent.internal_instrument_id, broker="fake", environment=Environment.DEMO)
+            intent.internal_instrument_id, broker=self.broker_name, environment=Environment.DEMO)
         decision = self.risk.evaluate(intent=intent, instrument=instrument,
                                       account=account, quote=quote, now=now)
         if existing_intent is None:
@@ -189,7 +193,7 @@ class DemoOperator:
                           "settlementType": "real", "orderType": "mkt", "leverage": 1,
                           "amount": str(intent.sizing_value), "orderCurrency": "usd"}
         command = self.coordinator.record_risk_decision(
-            intent=intent, decision=decision, broker_payload=broker_payload, broker="fake")
+            intent=intent, decision=decision, broker_payload=broker_payload, broker=self.broker_name)
         self.evidence.save_preparation(command.command_id, {
             "source_kind": source_kind, "prepared_at": _aware_utc(now, "now"),
             "command_id": command.command_id, "intent": intent, "instrument": instrument,
@@ -202,7 +206,7 @@ class DemoOperator:
         proof = self.evidence.read_preparation(command_id)
         self._fixture_source(proof["source_kind"])
         command = self.coordinator.store.get_command(command_id)
-        if command is None or command.broker != "fake" or command.environment != Environment.DEMO:
+        if command is None or command.broker != self.broker_name or command.environment != Environment.DEMO:
             raise OperatorEvidenceError("persisted fake Demo command is missing")
         intent = self.coordinator.store.get_intent(command.intent_hash)
         decision = self.coordinator.store.get_command_risk_decision(command.command_id)
@@ -212,7 +216,7 @@ class DemoOperator:
                 or command.payload_hash != payload_hash(proof["broker_payload"])):
             raise OperatorEvidenceError("persisted command, intent or risk binding differs from preparation")
         mapping = self.coordinator.registry.broker_mapping(
-            intent.internal_instrument_id, broker="fake", environment=Environment.DEMO)
+            intent.internal_instrument_id, broker=self.broker_name, environment=Environment.DEMO)
         if canonical_json(mapping) != canonical_json(proof["mapping"]):
             raise OperatorEvidenceError("immutable instrument mapping changed")
         if canonical_json(self.coordinator.registry.get(intent.internal_instrument_id)) != canonical_json(proof["instrument"]):
@@ -279,6 +283,10 @@ class DemoOperator:
         records: dict[str, Any] = {}
         for observation in self.evidence.read_observations(command.command_id):
             for execution in observation.get("executions", []):
+                if execution.get("executed_amount") is None:
+                    execution.pop("executed_amount", None)
+                if execution.get("executed_at_source") is None:
+                    execution.pop("executed_at_source", None)
                 records[execution["broker_execution_id"]] = execution
         seen = set()
         submitted_at = None
@@ -305,11 +313,32 @@ class DemoOperator:
                 value = Decimal(str(getattr(execution, name)))
                 if not value.is_finite() or value < 0 or (name in {"units", "price"} and value == 0):
                     raise OperatorEvidenceError("broker execution has invalid numeric values")
+            if execution.executed_amount is not None and (
+                    not execution.executed_amount.is_finite() or execution.executed_amount <= 0):
+                raise OperatorEvidenceError("broker execution has invalid invested principal")
+            if self.broker_name == "etoro" and execution.executed_amount is None:
+                raise OperatorEvidenceError("authoritative broker executed principal required")
             when = _aware_utc(execution.executed_at, "executed_at")
+            when_epoch = exact_datetime_epoch_seconds(when)
+            if execution.executed_at_source is not None:
+                try:
+                    _, source_epoch = _pnl_timestamp(execution.executed_at_source)
+                except EtoroSchemaError:
+                    raise OperatorEvidenceError("broker execution source timestamp invalid") from None
+                if not Decimal("0") <= source_epoch - when_epoch < Decimal("0.000001"):
+                    raise OperatorEvidenceError("broker execution source timestamp view mismatch")
+                when_epoch = source_epoch
+            elif self.broker_name == "etoro":
+                raise OperatorEvidenceError("exact broker execution source timestamp required")
             prepared = datetime.fromisoformat(proof["prepared_at"].replace("Z", "+00:00"))
-            if not max(prepared, submitted_at) <= when <= now:
+            if not exact_datetime_epoch_seconds(max(prepared, submitted_at)) <= when_epoch <= exact_datetime_epoch_seconds(now):
                 raise OperatorEvidenceError("broker execution timestamp is outside the command lifetime")
             serial = json.loads(canonical_json(execution))
+            # Keep old fixture receipts comparable without rewriting their bytes.
+            if execution.executed_amount is None:
+                serial.pop("executed_amount", None)
+            if execution.executed_at_source is None:
+                serial.pop("executed_at_source", None)
             if execution.broker_execution_id in records and records[execution.broker_execution_id] != serial:
                 raise OperatorEvidenceError("broker execution identity has contradictory evidence")
             records[execution.broker_execution_id] = serial
@@ -321,11 +350,12 @@ class DemoOperator:
                 or result.reconciled != (result.lifecycle_state in terminal_states)):
             raise OperatorEvidenceError("lookup terminal status is contradictory")
         for previous in self.evidence.read_observations(command.command_id):
-            if previous["result"]["reconciled"] and previous["result"]["lifecycle_state"] != result.lifecycle_state:
+            if "result" in previous and previous["result"]["reconciled"] and previous["result"]["lifecycle_state"] != result.lifecycle_state:
                 raise OperatorEvidenceError("terminal broker state changed")
         if result.lifecycle_state in {"filled", "partially_filled"} and not result.executions:
             raise OperatorEvidenceError("filled status lacks broker-confirmed executions")
-        if sum((Decimal(x["units"]) * Decimal(x["price"]) for x in records.values()), Decimal("0")) > intent.sizing_value:
+        if exact_sum(Decimal(x["executed_amount"]) if x.get("executed_amount") is not None
+                     else Decimal(x["units"]) * Decimal(x["price"]) for x in records.values()) > intent.sizing_value:
             raise OperatorEvidenceError("broker executions exceed approved notional")
         return records
 
@@ -338,13 +368,19 @@ class DemoOperator:
         if len(rows) != len(existing):
             raise OperatorEvidenceError("duplicate staged execution identity")
         for execution in executions:
-            row = existing.get(f"fake:demo:{execution.broker_execution_id}")
+            row = existing.get(f"{self.broker_name}:demo:{execution.broker_execution_id}")
             if not row:
                 continue
             numeric = {"quantity": execution.units, "fill_price": execution.price,
                        "broker_fee": execution.fees, "broker_tax": execution.taxes,
-                       "fees": execution.fees + execution.taxes}
-            strings = {"ticker": ticker, "broker": "fake", "environment": "demo",
+                       "fees": exact_sum((execution.fees, execution.taxes))}
+            if execution.executed_amount is not None:
+                if not row.get("executed_amount"):
+                    raise OperatorEvidenceError("staged execution lacks authoritative principal")
+                numeric["executed_amount"] = execution.executed_amount
+            elif row.get("executed_amount"):
+                raise OperatorEvidenceError("staged execution principal evidence changed")
+            strings = {"ticker": ticker, "broker": self.broker_name, "environment": "demo",
                        "broker_execution_id": execution.broker_execution_id,
                        "broker_order_id": execution.broker_order_id,
                        "broker_position_id": execution.broker_position_id,
@@ -354,6 +390,7 @@ class DemoOperator:
                        "side": execution.side, "action": execution.action}
             if (any(Decimal(row[name]) != value for name, value in numeric.items())
                     or any(row[name] != value for name, value in strings.items())
+                    or (execution.executed_at_source is not None and row["fill_timestamp"] != execution.executed_at_source)
                     or datetime.fromisoformat(row["fill_timestamp"].replace("Z", "+00:00")) != execution.executed_at):
                 raise OperatorEvidenceError("staged execution identity has contradictory values")
 
@@ -393,7 +430,7 @@ class DemoOperator:
         # Durable lookup evidence precedes lifecycle transitions and staging.
         # A crash at either boundary can be recovered by another read, not send.
         self.evidence.append_observation(command_id, {
-            "source_kind": "fixture", "observed_at": moment, "result": result,
+            "source_kind": self.source_kind, "observed_at": moment, "result": result,
             "executions": result.executions, "economic_reconciliation_verified": False,
             "qualification_credit": False,
         })
@@ -402,9 +439,9 @@ class DemoOperator:
                 command=command, adapter=_CapturedLookup(adapter, result))
         unique = {item.broker_execution_id: item for item in result.executions}
         stage_broker_executions(
-            self.staged_fills_path, executions=tuple(unique.values()), broker="fake",
+            self.staged_fills_path, executions=tuple(unique.values()), broker=self.broker_name,
             ticker_by_instrument_id={proof["mapping"]["broker_instrument_id"]: proof["instrument"]["canonical_symbol"]})
         return OperatorReceipt(
-            command_id=str(command.command_id), source_kind="fixture",
+            command_id=str(command.command_id), source_kind=self.source_kind,
             command_state=str(command.state), broker_terminal=result.reconciled,
             staged_execution_ids=tuple(sorted(unique)))
