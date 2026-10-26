@@ -17,8 +17,11 @@ import requests
 
 from brokers.etoro.client import HttpResponse
 from brokers.etoro.endpoints import (
-    GET_DEMO_DETAILED_PORTFOLIO, GET_SECURITIES_V2, POST_DEMO_AGGREGATE_PORTFOLIO,
+    GET_DEMO_DETAILED_PORTFOLIO, GET_DEMO_PNL_PORTFOLIO, GET_DEMO_POSITION_CURRENCIES, GET_SECURITIES_V2, POST_DEMO_AGGREGATE_PORTFOLIO,
 )
+
+from brokers.etoro.pnl_currency_metadata import PNL_CURRENCY_METADATA_QUERY, validate_demo_customer_id
+from brokers.etoro.schemas import EtoroSchemaError
 
 
 class CaptureBoundaryError(RuntimeError):
@@ -120,19 +123,28 @@ def _decode_body(response: RawCaptureResponse) -> bytes:
 def _check_route(request):
     parsed = urllib.parse.urlsplit(request.url)
     allowed = {(endpoint.method, endpoint.path) for endpoint in (
-        GET_DEMO_DETAILED_PORTFOLIO, GET_SECURITIES_V2, POST_DEMO_AGGREGATE_PORTFOLIO,
+        GET_DEMO_DETAILED_PORTFOLIO, GET_DEMO_PNL_PORTFOLIO, GET_DEMO_POSITION_CURRENCIES, GET_SECURITIES_V2, POST_DEMO_AGGREGATE_PORTFOLIO,
     )}
     if (parsed.scheme != "https" or parsed.netloc != "public-api.etoro.com"
             or parsed.fragment or (request.method, parsed.path) not in allowed):
         raise CaptureBoundaryError("capture_route_not_allowed")
-    if request.method == "POST":
+    if parsed.path == GET_DEMO_POSITION_CURRENCIES.path:
+        expected_query = {name: [value] for name, value in PNL_CURRENCY_METADATA_QUERY}
+        if (request.body is not None
+                or urllib.parse.parse_qs(parsed.query, keep_blank_values=True) != expected_query):
+            raise CaptureBoundaryError("capture_route_not_allowed")
+        try:
+            validate_demo_customer_id(request.headers.get("CID"))
+        except EtoroSchemaError as exc:
+            raise CaptureBoundaryError("capture_route_not_allowed") from exc
+    elif request.method == "POST":
         fixed_body = json.dumps({
             "conversionMode": "eToroApp", "pnlLevel": "pnl", "accountLevel": "totals",
             "instrumentLevel": "details", "mirrorLevel": "details",
         }, sort_keys=True, separators=(",", ":")).encode("utf-8")
         if parsed.query or request.body != fixed_body:
             raise CaptureBoundaryError("capture_route_not_allowed")
-    elif request.body is not None or (parsed.path == GET_DEMO_DETAILED_PORTFOLIO.path and parsed.query):
+    elif request.body is not None or (parsed.path in {GET_DEMO_DETAILED_PORTFOLIO.path, GET_DEMO_PNL_PORTFOLIO.path} and parsed.query):
         raise CaptureBoundaryError("capture_route_not_allowed")
     return parsed
 

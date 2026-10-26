@@ -19,7 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from brokers.etoro.capture_transport import RecordingCaptureTransport, private_json, sync_directory
 from brokers.etoro.client import EtoroCredentials, EtoroDemoReadOnlyConfig, EtoroReadOnlyClient
+from execution.domain import dataclass_json
 from risk.pretrade import RiskLimits
+from tools.demo_pnl_preflight import pnl_preflight_report
 from tools.demo_account_preflight import UNPROVEN_GATES, preflight_report
 
 
@@ -94,13 +96,16 @@ def _setup(config_path, identity_path, evidence_parent):
     }
 
 
-def run_capture(*, config_path, identity_path, evidence_parent, attempt, transport=None):
+def run_capture(*, config_path, identity_path, evidence_parent, attempt, transport=None, account_source="pnl"):
     """Separate broker-backed readiness path. Transport injection is for tests."""
     report = {"status": "BLOCKED", "submission_available": False,
               "preparation_available": False, "approval_available": False,
               "baseline_created": False, "broker_orders_submitted": 0,
               "broker_requests": 0, "qualification_credit": False,
               "blockers": list(UNPROVEN_GATES)}
+    if account_source not in {"pnl", "aggregate"}:
+        report["blockers"].insert(0, "invalid_account_source")
+        return report
     if not attempt or len(attempt) > 64 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in attempt):
         report["blockers"].insert(0, "invalid_attempt_name")
         return report
@@ -121,6 +126,7 @@ def run_capture(*, config_path, identity_path, evidence_parent, attempt, transpo
             **provenance, "started_at": datetime.now(timezone.utc).isoformat(),
             "identity_source": "independently_supplied_private_file",
             "max_read_retries": 0, "execution_enabled": False,
+            "account_source": account_source,
         })
     except FileExistsError:
         report["blockers"].insert(0, "attempt_already_exists_no_retry")
@@ -130,9 +136,23 @@ def run_capture(*, config_path, identity_path, evidence_parent, attempt, transpo
         return report
     recorder = RecordingCaptureTransport(destination, transport=transport)
     client = EtoroReadOnlyClient(config=config, credentials=credentials, transport=recorder)
-    capture = preflight_report(client=client, expected_demo_customer_id=expected, risk_limits=limits)
+    if account_source == "pnl":
+        capture = pnl_preflight_report(
+            client=client, expected_demo_customer_id=expected, risk_limits=limits,
+            evidence_sink=lambda evidence: private_json(
+                destination / "account-evidence.json", json.loads(dataclass_json(evidence))),
+        )
+    else:
+        capture = preflight_report(client=client, expected_demo_customer_id=expected, risk_limits=limits)
     report.update(capture)
     report["broker_requests"] = recorder.request_count
+    responses = [json.loads(path.read_text()) for path in sorted(destination.glob("*-response.json"))]
+    report["transport"] = {
+        "requests_attempted": recorder.request_count,
+        "responses_received": len(responses),
+        "complete_http_200_responses": sum(row["status_code"] == 200 and row["read_outcome"] == "complete" for row in responses),
+        "all_attempted_reads_http_200": bool(responses) and len(responses) == recorder.request_count and all(row["status_code"] == 200 and row["read_outcome"] == "complete" for row in responses),
+    }
     try:
         private_json(destination / "readiness.json", report)
     except OSError:
@@ -148,9 +168,10 @@ def main(argv=None):
     parser.add_argument("--identity-file", type=Path, required=True)
     parser.add_argument("--evidence-parent", type=Path, required=True)
     parser.add_argument("--attempt", required=True)
+    parser.add_argument("--account-source", choices=("pnl", "aggregate"), default="pnl")
     args = parser.parse_args(argv)
     report = run_capture(config_path=args.config, identity_path=args.identity_file,
-                         evidence_parent=args.evidence_parent, attempt=args.attempt)
+                         evidence_parent=args.evidence_parent, attempt=args.attempt, account_source=args.account_source)
     print(json.dumps(report, sort_keys=True, indent=2))
     return 2  # A successful restricted capture still lacks preparation evidence.
 

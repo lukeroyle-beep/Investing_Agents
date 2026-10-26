@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Mapping
 
 from execution.domain import payload_hash
@@ -354,6 +355,129 @@ class EtoroDetailedPortfolio:
         if result.credit < 0 or result.bonus_credit < 0:
             raise EtoroSchemaError("detailed portfolio cash must not be negative")
         return result
+
+
+# The PnL route supplies calculation times per position, not a whole-account
+# observation time. Keep their source spelling and seventh fractional digit.
+_PNL_TIMESTAMP = re.compile(
+    r"(?P<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+    r"(?P<fraction>\.[0-9]{1,7})?(?P<offset>Z|[+-][0-9]{2}:[0-9]{2})"
+)
+
+
+def exact_datetime_epoch_seconds(value: datetime) -> Decimal:
+    """Convert an aware clock instant without a floating-point timestamp."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise EtoroSchemaError("clock timestamp must include a timezone")
+    delta = value.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (Decimal(delta.days * 86400 + delta.seconds)
+            + Decimal(delta.microseconds) / Decimal(1000000))
+
+
+def _pnl_timestamp(value: Any) -> tuple[str, Decimal]:
+    field = "position.unrealizedPnL.timestamp"
+    match = _PNL_TIMESTAMP.fullmatch(value) if isinstance(value, str) else None
+    if match is None or match["offset"] == "-00:00":
+        # RFC 3339 -00:00 denotes an unknown local offset. It is not UTC proof.
+        raise EtoroSchemaError(f"{field} must be an explicit-offset ISO timestamp with at most seven fractional digits")
+    offset = match["offset"]
+    if offset != "Z" and (int(offset[1:3]) > 23 or int(offset[4:6]) > 59):
+        raise EtoroSchemaError(f"{field} has an invalid timezone offset")
+    try:
+        whole = datetime.fromisoformat(match["whole"] + offset.replace("Z", "+00:00"))
+        seconds = exact_datetime_epoch_seconds(whole)
+    except (ValueError, OverflowError) as exc:
+        raise EtoroSchemaError(f"{field} must be a valid ISO timestamp") from exc
+    fraction = match["fraction"]
+    if fraction:
+        seconds += Decimal("0" + fraction)
+    return value, seconds
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroPositionValuation:
+    """Broker valuation and fee components; none is an account observation."""
+
+    position_id: str
+    pnl: Decimal
+    pnl_asset_currency: Decimal
+    exposure_account_currency: Decimal
+    exposure_asset_currency: Decimal
+    margin_account_currency: Decimal
+    margin_asset_currency: Decimal
+    margin_currency_id: int
+    asset_currency_id: int
+    close_rate: Decimal
+    close_conversion_rate: Decimal
+    timestamp: str
+    timestamp_epoch_seconds: Decimal
+    total_fees: Decimal
+    total_external_fees: Decimal
+    total_external_taxes: Decimal
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroPositionValuation":
+        raw = _mapping(value, "position")
+        pnl = _mapping(raw.get("unrealizedPnL"), "position.unrealizedPnL")
+        timestamp, epoch_seconds = _pnl_timestamp(pnl.get("timestamp"))
+
+        def amount(name: str) -> Decimal:
+            return _decimal(pnl.get(name), f"position.unrealizedPnL.{name}")
+
+        result = cls(
+            position_id=str(_exact_integer(raw.get("positionID"), "positionID", minimum=1)),
+            pnl=amount("pnL"),
+            pnl_asset_currency=amount("pnlAssetCurrency"),
+            exposure_account_currency=amount("exposureInAccountCurrency"),
+            exposure_asset_currency=amount("exposureInAssetCurrency"),
+            margin_account_currency=amount("marginInAccountCurrency"),
+            margin_asset_currency=amount("marginInAssetCurrency"),
+            margin_currency_id=_exact_integer(pnl.get("marginCurrencyId"), "marginCurrencyId", minimum=1),
+            asset_currency_id=_exact_integer(pnl.get("assetCurrencyId"), "assetCurrencyId", minimum=1),
+            close_rate=amount("closeRate"),
+            close_conversion_rate=amount("closeConversionRate"),
+            timestamp=timestamp,
+            timestamp_epoch_seconds=epoch_seconds,
+            # Official definitions: overnight fees/dividends (negative=refund),
+            # external fees excluding those, and external taxes respectively.
+            # The equity guide uses amount + broker pnL with no further fee
+            # deduction, so retain these components without double-subtracting.
+            total_fees=_decimal(raw.get("totalFees"), "position.totalFees"),
+            total_external_fees=_decimal(raw.get("totalExternalFees"), "position.totalExternalFees"),
+            total_external_taxes=_decimal(raw.get("totalExternalTaxes"), "position.totalExternalTaxes"),
+        )
+        if result.close_rate <= 0 or result.close_conversion_rate <= 0:
+            raise EtoroSchemaError("position valuation rates must be positive")
+        if result.margin_account_currency < 0 or result.margin_asset_currency < 0:
+            raise EtoroSchemaError("position valuation margin must not be negative")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class EtoroPnlPortfolio:
+    """PnL route structure with independent, lossless position valuation times."""
+
+    detailed: EtoroDetailedPortfolio
+    account_currency_id: int
+    total_pnl: Decimal
+    valuations: tuple[EtoroPositionValuation, ...]
+    snapshot_id: str
+
+    @classmethod
+    def parse(cls, value: Any) -> "EtoroPnlPortfolio":
+        raw = _mapping(_mapping(value, "pnl_response").get("clientPortfolio"), "clientPortfolio")
+        # Reuse the strict detail contract for exact identities, holdings, cash,
+        # all seven explicit pending collections and duplicate-position checks.
+        detailed = EtoroDetailedPortfolio.parse(value)
+        valuations = tuple(EtoroPositionValuation.parse(item)
+                           for item in _list(raw.get("positions"), "positions"))
+        return cls(
+            detailed=detailed,
+            account_currency_id=_exact_integer(raw.get("accountCurrencyId"), "accountCurrencyId", minimum=1),
+            total_pnl=_decimal(raw.get("unrealizedPnL"), "clientPortfolio.unrealizedPnL"),
+            valuations=valuations,
+            snapshot_id=payload_hash(raw),
+        )
 
 
 @dataclass(frozen=True, slots=True)
