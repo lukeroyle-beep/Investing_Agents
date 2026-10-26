@@ -308,6 +308,40 @@ def test_existing_attempt_claim_cannot_be_retried_or_overwritten(setup):
     assert marker.read_bytes() == b"original unfinished attempt"
 
 
+def test_interrupt_during_send_keeps_durable_claim_and_refuses_duplicate(setup):
+    destination = setup.evidence / "synthetic-one"
+
+    class InterruptedTransport:
+        calls = 0
+
+        def send(self, request):
+            self.calls += 1
+            # The ambiguous send must already have durable private evidence.
+            assert (destination / "setup-receipt.json").is_file()
+            receipt = json.loads((destination / "001-request.json").read_text())
+            assert receipt["method"] == "GET"
+            assert receipt["path"] == GET_DEMO_DETAILED_PORTFOLIO.path
+            raise KeyboardInterrupt("synthetic interrupted send")
+
+    interrupted = InterruptedTransport()
+    with pytest.raises(KeyboardInterrupt):
+        _run(setup, interrupted)
+    assert interrupted.calls == 1
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    assert set(before) == {"setup-receipt.json", "001-request.json"}
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    for path in destination.iterdir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert b"synthetic-api-secret" not in path.read_bytes()
+        assert b"synthetic-user-secret" not in path.read_bytes()
+
+    retry = FakeTransport(_bracket())
+    report = _run(setup, retry)
+    assert report["blockers"][0] == "attempt_already_exists_no_retry"
+    assert report["broker_requests"] == 0 and retry.requests == []
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == before
+
+
 @pytest.mark.parametrize("attempt", ["", "../escape", "with space", "A", "x" * 65])
 def test_attempt_names_cannot_escape_or_alias_evidence_directory(setup, attempt):
     transport = FakeTransport()

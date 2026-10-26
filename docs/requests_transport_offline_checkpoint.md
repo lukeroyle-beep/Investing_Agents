@@ -1,5 +1,10 @@
 # Requests capture transport: offline checkpoint
 
+Historical offline checkpoint. The later [26 October capture and delivery
+report](requests_demo_capture_checkpoint.md) records the consumed bounded attempt
+and its timestamp rejection; do not treat the no-live-capture statements below
+as current operational status.
+
 22 October 2026. **Stage 2 remains BLOCKED. Full live collector acceptance is
 unverified.** This checkpoint implements and tests transport behavior only.
 No broker/market-data request, credential probe, runtime setup change, order,
