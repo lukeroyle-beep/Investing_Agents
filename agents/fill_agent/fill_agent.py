@@ -9,6 +9,10 @@ from typing import Optional
 import pandas as pd
 from pandas.errors import EmptyDataError
 
+from agents.fill_agent.live_broker_admission import (
+    assert_legacy_fill_inputs_admissible,
+    assert_legacy_fill_row_admissible,
+)
 from agents.shared.event_log import (
     append_cash_adjusted_event,
     append_fill_processed_event,
@@ -239,6 +243,8 @@ def ensure_broker_fills_file() -> pd.DataFrame:
 
 
 def read_fill_input() -> pd.DataFrame:
+    assert_legacy_fill_inputs_admissible(
+        manual_fills_path=MANUAL_FILLS_PATH, broker_fills_path=BROKER_FILLS_PATH)
     manual = ensure_manual_fills_file()
     broker = ensure_broker_fills_file()
 
@@ -595,6 +601,7 @@ def open_long_position(
     row: pd.Series,
     run_id: str,
 ) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+    assert_legacy_fill_row_admissible(row)
     ticker = str(row["ticker"]).upper()
     side = str(row["side"]).lower()
     quantity = float(row["quantity"])
@@ -707,6 +714,7 @@ def close_long_position(
     row: pd.Series,
     run_id: str,
 ) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+    assert_legacy_fill_row_admissible(row)
     ticker = str(row["ticker"]).upper()
     side = str(row["side"]).lower()
     quantity = float(row["quantity"])
@@ -925,6 +933,7 @@ def append_trade_fill(
     row: pd.Series,
     run_id: str,
 ) -> pd.DataFrame:
+    assert_legacy_fill_row_admissible(row)
     fill_id = str(row["fill_id"]).strip()
     if fill_id in set(trade_fills_df.get("fill_id", pd.Series(dtype=str)).astype(str)):
         raise RuntimeError(f"trade_fills.csv already contains fill_id={fill_id}")
@@ -964,6 +973,10 @@ def append_trade_fill(
 
 
 def run_fill_agent() -> None:
+    # This must precede run/event/runtime initialization: a staged broker fill
+    # cannot silently bootstrap a synthetic empty USD100,000 account.
+    assert_legacy_fill_inputs_admissible(
+        manual_fills_path=MANUAL_FILLS_PATH, broker_fills_path=BROKER_FILLS_PATH)
     run_id = current_run_id()
     ensure_event_log_exists()
 

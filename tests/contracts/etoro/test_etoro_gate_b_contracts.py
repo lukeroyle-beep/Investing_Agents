@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
-import pandas as pd
 import pytest
 
 from agents.fill_agent import fill_agent
+from agents.fill_agent.live_broker_admission import LiveBrokerEconomicApplicationBlocked
 from brokers.etoro.adapter import EtoroDemoExecutionAdapter
 from brokers.etoro.client import (
     EtoroCredentials,
@@ -309,7 +309,7 @@ def test_lookup_contract_covers_async_terminal_and_race_states(
     assert len(lookup.executions) == execution_count
 
 
-def test_coordinator_reconciles_fill_and_fill_agent_ingests_once(
+def test_coordinator_stages_once_but_legacy_fill_cannot_invent_account_economics(
     tmp_path, isolated_workspace, monkeypatch
 ):
     from risk.approval import ApprovalAuthority
@@ -433,11 +433,11 @@ def test_coordinator_reconciles_fill_and_fill_agent_ingests_once(
     )
     assert len(staged) == 1
     monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_GATE_B")
-    fill_agent.run_fill_agent()
-    fill_agent.run_fill_agent()
-    processed = pd.read_csv(data_dir / "processed_fills.csv")
-    trade_fills = pd.read_csv(data_dir / "trade_fills.csv")
-    assert len(processed) == 1
-    assert len(trade_fills) == 1
-    assert trade_fills.iloc[0]["broker_order_id"] == 13902598
-    assert trade_fills.iloc[0]["environment"] == "demo"
+    before = {str(p): p.read_bytes() for p in data_dir.rglob("*") if p.is_file()}
+    # Gate B proves transport/staging only. Actual economic application now
+    # requires the versioned exact runtime and fresh reconciled full accounts;
+    # legacy default cash would fabricate an unrelated broker balance.
+    for _ in range(2):
+        with pytest.raises(LiveBrokerEconomicApplicationBlocked):
+            fill_agent.run_fill_agent()
+    assert {str(p): p.read_bytes() for p in data_dir.rglob("*") if p.is_file()} == before

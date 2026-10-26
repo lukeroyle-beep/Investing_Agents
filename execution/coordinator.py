@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
+from uuid import UUID
 
 import pandas as pd
 import yaml
@@ -247,6 +248,10 @@ class ExecutionCoordinator:
             outcome="send_started",
         )
         command = self.store.claim_submission(command, intent, attempt)
+        # Connector hosts generate their own broker reference inside the
+        # sealed approval token. A local command UUID is not that reference.
+        fallback_reference = (None if getattr(adapter, "external_reference_identity", False)
+                              else str(command.logical_request_id))
         try:
             result = adapter.submit_order(intent, command)
         except Exception as exc:
@@ -256,7 +261,7 @@ class ExecutionCoordinator:
                 command.command_id,
                 CommandState.UNKNOWN,
                 details={"error_type": exc.__class__.__name__},
-                broker_reference_id=str(command.logical_request_id),
+                broker_reference_id=fallback_reference,
             )
             raise
         if result.request_id != command.logical_request_id or result.ambiguous:
@@ -264,7 +269,8 @@ class ExecutionCoordinator:
                 command.command_id,
                 CommandState.UNKNOWN,
                 details={"broker_status": result.raw_status, "reason": "ambiguous_or_mismatched_response"},
-                broker_reference_id=str(command.logical_request_id),
+                broker_order_id=result.broker_order_id,
+                broker_reference_id=result.broker_reference_id or fallback_reference,
             )
         if not result.accepted_for_processing:
             return self.store.transition_command(
@@ -318,12 +324,31 @@ class ExecutionCoordinator:
         result = adapter.reconcile_command(current)
         if result.command_id != current.command_id:
             raise DomainValidationError("broker lookup returned another command identity")
+        if current.broker_order_id and result.broker_order_id != current.broker_order_id:
+            raise DomainValidationError("broker lookup returned a conflicting order identity")
+        recovered_reference = None
+        if getattr(adapter, "external_reference_identity", False):
+            # The connector validates this against its durable broker response
+            # before performing the lookup. The local logical UUID is never a
+            # substitute. Persist the proven handle across a crash before ACK.
+            candidate = dict(result.details).get("connector_broker_reference_id")
+            if candidate:
+                try:
+                    recovered_reference = str(UUID(candidate))
+                except (ValueError, TypeError, AttributeError):
+                    raise DomainValidationError("broker lookup reference identity invalid") from None
+                if (current.broker_reference_id and recovered_reference != current.broker_reference_id
+                        or any(item.broker_reference_id != recovered_reference for item in result.executions)):
+                    raise DomainValidationError("broker lookup returned a conflicting reference identity")
+            elif result.executions:
+                raise DomainValidationError("external broker execution reference identity unproven")
         target = CommandState(result.lifecycle_state)
         current = self.store.transition_command(
             current.command_id,
             target,
             details=dict(result.details),
             broker_order_id=result.broker_order_id,
+            broker_reference_id=recovered_reference,
             broker_position_id=result.broker_position_id,
         )
         if result.reconciled and current.state != CommandState.RECONCILED:

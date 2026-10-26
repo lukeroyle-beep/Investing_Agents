@@ -40,7 +40,11 @@ remaining broker-integration work. Demo and real submission stay disabled.
 
 The next [operator workflow milestone](docs/demo_operator_milestone.md) adds
 an isolated approval-to-fill exercise and a fail-closed read-only account
-preflight. Actual eToro submission remains blocked. See
+preflight. The [first manual Demo cycle](docs/first_manual_demo_cycle.md)
+implements versioned risk/accounting, a supported connector bridge, exact
+approval, durable single send, lookup recovery and Fill-owned Decimal economics.
+Its normal and crash-recovery exercises are synthetic; live submission remains
+blocked by account risk and missing authoritative source coverage. See
 [market coverage](docs/market_coverage.md) for the curated 61-instrument scanner
 and separate 12-stock backtest; neither is a whole-market scan.
 

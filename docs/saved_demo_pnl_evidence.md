@@ -70,10 +70,14 @@ complete cash-flow/execution coverage for later intervals. Its since-inception
 indexed drawdown is not automatically the evaluator's raw peak-equity measure.
 This replay returns neither input type and never instantiates their stores.
 
-The next architecture decision is whether to obtain an authoritative whole-account
-observation or specify a separately reviewed component-time risk model. That
-decision must also define cash-flow-adjusted daily PnL and drawdown semantics;
-it cannot be resolved by timestamp substitution. Existing exposure limits,
+The additive [component-time contract](component_time_account_evidence.md) now
+defines a separately versioned non-atomic assessment through
+`PnlReplayAssessment.assess_component_time`. It requires an independently
+sourced authoritative cash observation as well as complete fresh components;
+matching receipt brackets alone cannot supply that observation. Original
+replay compatibility flags remain unchanged, and old captures stay stale.
+Cash-flow-adjusted daily PnL and drawdown require the separate accounting
+contract; neither follows from component qualification. Existing exposure limits,
 instrument/issuer/sector mappings, tradeability/session evidence, operator
 integration and explicit execution authorization remain separate requirements.
 The replay does not assess proposed trades or resolve any exposure breach.

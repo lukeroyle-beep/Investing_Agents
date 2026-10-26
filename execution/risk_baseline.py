@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from brokers.base import BrokerAccountSnapshot, BrokerPosition
 from execution.domain import Environment, canonical_json, decimal_value, payload_hash
+from execution.accounting import _sum
 
 
 class RiskBaselineError(ValueError):
@@ -191,7 +192,18 @@ class RiskBaselineStore:
             _number(getattr(snapshot, name))
         if snapshot.equity <= 0 or snapshot.used_margin < 0 or snapshot.frozen_cash < 0:
             raise RiskBaselineError("invalid_account_equity_or_margin")
-        if abs(snapshot.equity - snapshot.available_cash - snapshot.used_margin - snapshot.current_pnl) > Decimal("0.02"):
+        invested = snapshot.invested_amount
+        if invested is None:
+            if snapshot.positions:
+                raise RiskBaselineError("explicit_invested_amount_required")
+            invested = Decimal("0")
+        if not isinstance(invested, Decimal) or not invested.is_finite() or invested < 0:
+            raise RiskBaselineError("decimal_nonnegative_invested_amount_required")
+        if not snapshot.positions and invested != 0:
+            raise RiskBaselineError("invested_amount_without_positions")
+        # Margin is collateral; exposure is market risk. Neither is invested
+        # principal. A matched margin-based number cannot prove this identity.
+        if snapshot.equity != _sum((snapshot.available_cash, invested, snapshot.current_pnl)):
             raise RiskBaselineError("account_equity_not_reconciled")
         if (snapshot.pending_orders_complete is not True or snapshot.pending_orders
                 or not isinstance(snapshot.pending_orders, tuple)):

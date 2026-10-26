@@ -15,7 +15,8 @@ from typing import Any, Mapping
 
 from brokers.base import BrokerDataUnavailable
 from brokers.etoro.account_evidence import (
-    MAX_CAPTURE_SECONDS, EtoroPnlAccountEvidence, validate_pnl_account_evidence,
+    MAX_CAPTURE_SECONDS, AccountComponentTimeEvidence, ComponentCashObservation,
+    EtoroPnlAccountEvidence, assess_pnl_component_time_evidence, validate_pnl_account_evidence,
     _pnl_expected_identity,
 )
 from brokers.etoro.pnl_currency_metadata import parse_demo_position_currencies
@@ -54,6 +55,22 @@ class PnlReplayAssessment:
     @property
     def present_valuations_fresh(self) -> bool:
         return bool(self.present_valuation_freshness) and all(self.present_valuation_freshness)
+
+    def assess_component_time(
+        self, *, cash_observation: ComponentCashObservation | None = None,
+        max_component_skew_seconds: Decimal = Decimal("15"),
+    ) -> AccountComponentTimeEvidence:
+        """Separate versioned assessment; original replay flags stay unchanged.
+
+        Retains the original bracket and every original valuation timestamp.
+        Supplying a recent cash observation cannot refresh stale position or
+        structural evidence. This method grants no baseline/history authority.
+        """
+        return assess_pnl_component_time_evidence(
+            self.evidence, assessed_at=self.assessed_at,
+            cash_observation=cash_observation,
+            max_component_skew_seconds=max_component_skew_seconds,
+        )
 
 
 def assess_saved_pnl_capture(
