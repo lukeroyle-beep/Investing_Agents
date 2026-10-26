@@ -63,6 +63,16 @@ GET_DEMO_DETAILED_PORTFOLIO = Endpoint(
     path="/api/v1/trading/info/demo/portfolio",
     rate_bucket=RateBucket.ACCOUNT_READ,
 )
+GET_DEMO_PNL_PORTFOLIO = Endpoint(
+    operation="get_demo_pnl_portfolio", method="GET",
+    path="/api/v1/trading/info/demo/pnl", rate_bucket=RateBucket.ACCOUNT_READ,
+)
+# Only used as position currency metadata; its valuation times are unqualified.
+GET_DEMO_POSITION_CURRENCIES = Endpoint(
+    operation="get_demo_position_currencies", method="GET",
+    path="/api/v2/trading/info/demo/instrument-breakdown",
+    rate_bucket=RateBucket.ACCOUNT_READ,
+)
 GET_SECURITIES_V2 = Endpoint(
     operation="get_securities",
     method="GET",
@@ -126,6 +136,8 @@ READ_ONLY_ENDPOINTS = (
     POST_DEMO_AGGREGATE_PORTFOLIO,
     POST_DEMO_ELIGIBILITY,
     GET_DEMO_DETAILED_PORTFOLIO,
+    GET_DEMO_PNL_PORTFOLIO,
+    GET_DEMO_POSITION_CURRENCIES,
     GET_SECURITIES_V2,
     GET_EXCHANGES,
 )

@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Mapping, Protocol
@@ -19,6 +20,8 @@ import yaml
 from brokers.etoro.endpoints import (
     GET_DEMO_AGGREGATE_PORTFOLIO,
     GET_DEMO_DETAILED_PORTFOLIO,
+    GET_DEMO_PNL_PORTFOLIO,
+    GET_DEMO_POSITION_CURRENCIES,
     GET_MARKET_RATES,
     GET_SECURITIES_V2,
     GET_EXCHANGES,
@@ -32,11 +35,18 @@ from brokers.etoro.endpoints import (
 from brokers.etoro.schemas import (
     EtoroMarketRatesResponse,
     EtoroDetailedPortfolio,
+    EtoroDetailedPosition,
+    EtoroPnlPortfolio,
     EtoroPortfolioSnapshot,
     EtoroSecuritiesPage,
     EtoroSecurity,
     EtoroSchemaError,
     EtoroSearchResponse,
+)
+from brokers.etoro.pnl_currency_metadata import (
+    EtoroPositionCurrencyMetadata, PNL_CURRENCY_METADATA_QUERY,
+    parse_demo_position_currencies, validate_currency_metadata_positions,
+    validate_demo_customer_id,
 )
 from execution.domain import Environment
 from brokers.etoro.eligibility import EtoroEligibilityResponse, validated_ids
@@ -323,6 +333,7 @@ class EtoroReadOnlyClient:
         if endpoint not in READ_ONLY_ENDPOINTS:
             raise EtoroConfigurationError("Gate A endpoint is not allowlisted")
         body = None
+        extra_headers = {}
         if endpoint == POST_DEMO_AGGREGATE_PORTFOLIO:
             if params:
                 raise EtoroConfigurationError("aggregate account read must be unfiltered")
@@ -338,6 +349,12 @@ class EtoroReadOnlyClient:
             body = json.dumps({"instrumentIds": identifiers, "currency": "USD"},
                               sort_keys=True, separators=(",", ":")).encode("utf-8")
             params = {}  # Identity selection is in the documented JSON body.
+        elif endpoint == GET_DEMO_POSITION_CURRENCIES:
+            fixed = dict(PNL_CURRENCY_METADATA_QUERY)
+            if set(params) != {*fixed, "CID"} or any(params[key] != expected for key, expected in fixed.items()):
+                raise EtoroConfigurationError("currency metadata read must use unfiltered fixed detail levels")
+            extra_headers = {"CID": validate_demo_customer_id(params["CID"])}
+            params = fixed
         query = urllib.parse.urlencode(params, doseq=True)
         url = f"{self.config.base_url}{endpoint.path}"
         if query:
@@ -348,7 +365,7 @@ class EtoroReadOnlyClient:
             request = HttpRequest(
                 method=endpoint.method,
                 url=url,
-                headers={**self._headers(), **({"content-type": "application/json"} if body is not None else {})},
+                headers={**self._headers(), **extra_headers, **({"content-type": "application/json"} if body is not None else {})},
                 timeout_seconds=self.config.timeout_seconds,
                 body=body,
             )
@@ -366,6 +383,8 @@ class EtoroReadOnlyClient:
             status = response.status_code
             if status == 200:
                 try:
+                    if endpoint in {GET_DEMO_DETAILED_PORTFOLIO, GET_DEMO_PNL_PORTFOLIO, GET_DEMO_POSITION_CURRENCIES}:
+                        return json.loads(response.body.decode("utf-8"), parse_float=Decimal)
                     return json.loads(response.body.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise EtoroSchemaError(
@@ -461,6 +480,20 @@ class EtoroReadOnlyClient:
         if set(found) != set(identifiers):
             raise EtoroSchemaError("exchange response does not exactly cover requested identities")
         return found
+
+    def get_demo_pnl_portfolio(self) -> EtoroPnlPortfolio:
+        """Unfiltered P&L portfolio; no aggregate fallback or inferred time."""
+        return EtoroPnlPortfolio.parse(self._get(GET_DEMO_PNL_PORTFOLIO, {}))
+
+    def get_demo_position_currencies(
+        self, expected_demo_customer_id: str, positions: tuple[EtoroDetailedPosition, ...],
+    ) -> tuple[EtoroPositionCurrencyMetadata, ...]:
+        """One unfiltered structural/currency read; no valuation time fallback."""
+        validate_currency_metadata_positions(expected_demo_customer_id, positions)
+        payload = self._get(GET_DEMO_POSITION_CURRENCIES, {
+            **dict(PNL_CURRENCY_METADATA_QUERY), "CID": expected_demo_customer_id,
+        })
+        return parse_demo_position_currencies(payload, expected_demo_customer_id, positions)
 
     def get_demo_detailed_portfolio(self) -> EtoroDetailedPortfolio:
         """Unfiltered, complete account shape; never infer omitted collections."""

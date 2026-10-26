@@ -196,6 +196,10 @@ class AccountEvidence:
     pending_orders_complete: bool
 
     def __post_init__(self) -> None:
+        # Per-position P&L times or receipt/capture times do not establish an
+        # authoritative whole-account observation for this risk contract.
+        if not isinstance(self.observed_at, datetime):
+            raise RiskEvidenceError("whole_account_observation_time_required")
         object.__setattr__(self, "environment", Environment(self.environment))
         object.__setattr__(
             self, "observed_at", _aware_utc(self.observed_at, "observed_at")

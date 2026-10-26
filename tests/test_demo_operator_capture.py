@@ -87,7 +87,7 @@ def setup(tmp_path, monkeypatch):
 
 
 def _run(setup, transport, *, attempt="synthetic-one"):
-    return launcher.run_capture(config_path=setup.config, identity_path=setup.identity,
+    return launcher.run_capture(account_source="aggregate", config_path=setup.config, identity_path=setup.identity,
                                 evidence_parent=setup.evidence, attempt=attempt,
                                 transport=transport)
 
@@ -480,7 +480,7 @@ def test_real_requests_full_bracket_stays_blocked_and_persists_before_parsing(
     original_loads = json.loads
     parsed_sequences = []
 
-    def parse(body):
+    def parse(body, **kwargs):
         sequence = len(calls)
         directory = setup.evidence / "synthetic-one"
         stem = f"{sequence:03d}"
@@ -490,13 +490,14 @@ def test_real_requests_full_bracket_stays_blocked_and_persists_before_parsing(
         assert receipt["body_sha256"] == hashlib.sha256(decoded).hexdigest()
         assert (directory / f"{stem}-response.json").exists()
         parsed_sequences.append(sequence)
-        return original_loads(body)
+        return original_loads(body, **kwargs)
 
     monkeypatch.setattr(client_module, "json", SimpleNamespace(loads=parse, dumps=json.dumps))
     if through_main:
         assert launcher.main([
             "--config", str(setup.config), "--identity-file", str(setup.identity),
             "--evidence-parent", str(setup.evidence), "--attempt", "synthetic-one",
+            "--account-source", "aggregate",
         ]) == 2
         report = original_loads(capsys.readouterr().out)
     else:
