@@ -113,11 +113,20 @@ Only Luke's explicit approval of those terms permits the exact
 No elapsed-time, generic project or old-preview approval is accepted.
 
 After approval, the bridge refreshes usage, market and account evidence and
-revalidates all gates. Every available usage window must retain at least 25%:
+revalidates all gates. By default, every available usage window must retain at least 25%:
 the 20% work floor plus five percentage points for recovery. An unavailable
 primary window is unknown, not omitted. The persistent pilot kill switch is
 initialized only for the first explicitly approved order; an existing engaged
 switch is not silently reset. Strict/global configuration is not altered.
+
+The default remains a 20% work floor plus 5% recovery reserve. An explicit user
+instruction may select the pilot-only 10% work floor using
+`--work-floor-percent 10 --usage-authorization 'USER_AUTHORIZATION_REFERENCE'`.
+That profile stops work at 10% and requires at least 15% before submission.
+Its authorization reference and thresholds are retained with quota evidence;
+the displayed approval limits use the selected profile. Missing authorization,
+unknown/stale quota or a reduced recovery reserve still block admission. The
+strict connector rejects the pilot usage type and retains its original floor.
 
 The existing connector places once. Uncertainty permits lookup only, using
 actual broker order/reference IDs. Use `--recover COMMAND_ID` for this path;
