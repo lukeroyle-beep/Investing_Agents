@@ -1,8 +1,10 @@
 # Bounded eToro Demo integration pilot
 
-`demo-pilot-v1` is an explicitly selected manual virtual integration policy.
-The existing strict policy, configuration defaults, historical-loss requirements
-and qualification flags are unchanged. This pilot's accounting ledger attributes
+`demo-pilot-v1` is an explicitly selected virtual integration policy. The manual
+MCP path retains exact-order approval. A separate standing-mandate API path is
+limited to the one attempt described below. The existing strict policy,
+configuration defaults, historical-loss requirements and qualification flags
+are unchanged. This pilot's accounting ledger attributes
 broker position IDs within the existing Demo account; it is not another broker
 account, an account reset, or a real-money pilot.
 
@@ -56,10 +58,13 @@ only while retained evidence proves that no attributed position has closed.
 
 ## Supported source and freshness contract
 
-The actual execution host supplies the supported eToro MCP tools. There is no
-credential loader, connector-token extraction, direct HTTP fallback or retry
-loop. Profile verification checks Demo CID plus Demo read/write scopes, and
-portfolio position CIDs corroborate the pinned Demo identity.
+The actual execution host supplies the supported eToro MCP tools for retained
+source observations. The manual MCP bridge has no credential loader, token
+extraction, HTTP fallback or retry loop. The separately authorized standing
+workflow injects dedicated credentials into the bounded official Demo API client;
+it does not extract or reuse MCP credentials. Both routes verify the same Demo
+CID and Demo read/write scopes, while portfolio position CIDs corroborate the
+pinned Demo identity.
 
 A capture reads `/api/v1/me`, then brackets `/api/v1/trading/info/demo/pnl`
 between two `/api/v1/trading/info/demo/portfolio` reads. All seven pending-order
@@ -140,10 +145,134 @@ The reviewed runner currently selects the minimum $10 SBUX equity order for
 integration testing, subject to fresh admission and exact approval. This is not
 an investment recommendation. Other candidates need a reviewed identity mapping.
 
+## Standing mandate API workflow
+
+Luke's explicit 27 October 2026 authorization permits a separately bounded API
+workflow instead of another per-order MCP approval. Its scope is exactly one
+$10 USD principal market buy of SBUX (broker instrument 1142), an equity, long,
+leverage one, with real-asset settlement in the existing Demo account. All
+pilot cost, capital, issuer, cash, loss, daily, freshness and reconciliation
+controls above still apply. The work floor is 10% with five additional percentage
+points reserved for recovery, so an opening send requires at least 15% remaining
+in every available usage window.
+
+`standing-mandate.json` is exclusively created with the current human source
+reference and issue time. It binds the Demo account, exact scope and original
+pilot ledger path and inception hash. There is no invented calendar expiry:
+its scope ends at the first submission or revocation. Any earlier claim,
+including a rejected order or lost response, blocks another opening attempt
+across restarts and subsequent days. The worker stops after its first confirmed
+fill and reconciliation. A later attempt requires human review and separate
+authorization; creating a new ledger or replacing this artifact is not a retry
+procedure.
+
+Fresh accepted pilot risk, account and quote evidence generate an expiring
+`Approval` marked `authorization_kind=standing_mandate`. This records delegated
+authority; it does not pretend that a human confirmed the newly generated order.
+The exact eight-field official order payload, including real settlement, is
+hashed and bound to that approval. The shared Demo kill switch is rechecked
+before the durable claim. An engaged, missing or invalid switch prevents use.
+
+The direct execution client permits only profile verification, the official
+Demo create route `/api/v2/trading/execution/demo/orders`, and its order lookup.
+A request UUID and claim are persisted before the single POST. There are no
+transport retries or redirects. Uncertain outcomes use lookup by that retained
+reference; they never repeat the POST. Raw responses are retained privately
+before parsing. The generic client is not authority to trade: the mandate,
+operator and original ledger enforce the one-shot scope.
+
+### One-time dedicated-key setup
+
+Prerequisites are the existing private runtime, verified `pilot.sqlite3` and
+matching `pilot-inception.json`. The setup helper never initializes a runtime,
+creates an inception, scans credentials, reads environment keys, or launches a
+worker or schedule. Obtain dedicated API credentials through the provider's
+normal user-controlled setup; do not put them in chat, Git, shell arguments or
+an approval reference.
+
+Run this yourself in an interactive terminal, using the existing runtime and
+actual current-chat authorization reference:
+
+```sh
+.venv/bin/python scripts/setup_autonomous_demo_pilot.py \
+  --runtime PRIVATE_RUNTIME \
+  --authorization-reference 'CURRENT_HUMAN_STANDING_AUTHORIZATION_REFERENCE' \
+  --activate
+```
+
+Both keys are entered through hidden prompts. The helper refuses nonterminal or
+insecure input fallback. It verifies `/api/v1/me` for the existing Demo CID and
+both Demo read/write grants before saving keys. The dedicated
+`demo-api-credentials.json` uses exclusive creation, owner-only mode `0600`, and
+an existing owner-only `0700` runtime directory. The loader rejects symlinks,
+hard links, broader permissions and malformed files. Secret values are never
+included in tool arguments, normal output or diagnostic messages.
+
+Without `--activate`, setup saves the dedicated credentials and mandate and
+leaves a missing kill switch uninitialized. It refuses a preexisting writable
+switch unless `--activate` is explicit, so pending setup cannot inherit write
+permission. Setup rereads the ledger and switch under the shared operator lock
+and checks again after identity verification and before activation. A concurrent
+revocation stops setup and remains engaged. With `--activate`, a wholly absent
+switch may be initialized and enabled under the recorded mandate. An existing
+engaged or invalid switch is never silently reset. No setup invocation submits
+an order or starts the worker.
+
+If both artifacts were successfully saved and activation remains pending, run
+the same command with `--activate --resume-activation`. This explicitly reloads
+the matching files, verifies Demo identity again, and does not prompt for keys
+or overwrite either artifact. A partial write or an interruption that left the
+switch engaged remains blocked for review; preserve every artifact rather than
+reinitializing. After setup, the worker still needs current eligible market,
+account, cost and quota evidence before any send.
+
+Repository implementation and synthetic tests alone do not establish that
+credentials are configured, activation occurred, a worker is running, or a
+virtual fill happened. Those require separate inspected runtime and broker
+evidence.
+
+### Unattended cycle and scheduled host
+
+`scripts/run_autonomous_demo_pilot.py` requires an existing runtime, dedicated
+setup, a clean checkout at `--reviewed-commit FULL_SHA`, and the explicit usage
+authorization reference. It does not initialize missing state or reset switches.
+Its JSON-lines host accepts only `etoro_execute_read` and fresh Codex usage
+results. It never requests MCP prepare, placement or write tools. The direct
+client performs the single authorized Demo POST inside the worker.
+
+Run the worker from its reviewed checkout using the existing Python environment:
+
+```sh
+python scripts/run_autonomous_demo_pilot.py \
+  --runtime EXISTING_PRIVATE_RUNTIME --reviewed-commit REVIEWED_FULL_SHA \
+  --work-floor-percent 10 --usage-authorization 'CURRENT_HUMAN_USAGE_AUTHORIZATION'
+```
+
+The host must use an echo-disabled, noncanonical terminal for the JSON-lines
+session (`stty -echo -icanon` before starting Python), so large raw receipts are
+not echoed or truncated. For each `tool_request`, execute exactly its requested
+read or the actual Codex usage tool and return the entire original result as one
+JSON line. Do not synthesize timestamps, quotes, usage, responses or approval.
+Retain the bounded runner's terminal event; raw account data stays private.
+
+A scheduled task may start a fresh cycle while no submission has been claimed.
+Closed markets, stale evidence and insufficient usage never authorize a send.
+After any claim, the same entrypoint detects it and uses lookup only. Missing
+or conflicting state, an uncertain lookup, partial execution, fees/cash mismatch
+or a revoked switch remains held. A reconciled economic ledger with an unfinished
+operational command is repaired through lookup; a fully reconciled command exits
+without another host or broker call.
+
+After first-fill reconciliation, stop the schedule. A one-time scheduled check
+is not evidence of execution: record its actual invocation, terminal event and
+broker reconciliation separately. The computer and desktop app must remain
+running for local scheduled work. Schedule creation is a separate host action;
+the setup script itself only saves and activates the bounded mandate.
+
 ## Validation and rollback
 
-Run the four `tests/test_pilot_*` / `tests/test_demo_pilot_operator.py` suites and
-the complete repository pytest suite. Synthetic tests cover cap and tiny-cost
+Run the pilot, usage, mandate, setup and operator suites, plus the complete
+repository pytest suite. Synthetic tests cover cap and tiny-cost
 boundaries, loss persistence, wrong accounts, missing ledger, concurrent and
 duplicate claims, London midnight/DST, stale/future data, preview substitution,
 unknown usage, missing recovery handles, partial fills and exact reconciliation.
