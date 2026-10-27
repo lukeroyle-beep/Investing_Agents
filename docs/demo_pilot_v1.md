@@ -58,13 +58,26 @@ only while retained evidence proves that no attributed position has closed.
 
 ## Supported source and freshness contract
 
-The actual execution host supplies the supported eToro MCP tools for retained
-source observations. The manual MCP bridge has no credential loader, token
+The actual execution host supplies supported eToro MCP observations, or the
+standing worker uses its separately selected direct read transport. The manual
+MCP bridge has no credential loader, token
 extraction, HTTP fallback or retry loop. The separately authorized standing
 workflow injects dedicated credentials into the bounded official Demo API client;
 it does not extract or reuse MCP credentials. Both routes verify the same Demo
 CID and Demo read/write scopes, while portfolio position CIDs corroborate the
 pinned Demo identity.
+
+The standing worker's `--direct-reads` option performs the same bounded reads
+in process, avoiding a host/model round trip for every observation. It requires
+the existing explicitly selected usage waiver. A separate read-only allowlist
+permits the profile, instrument metadata, search, rates, Demo portfolio and Demo
+P&L GET routes, plus the read-semantic Demo eligibility and cost POST routes.
+It cannot create an order. The execution client's write allowlist is unchanged.
+Dedicated credentials remain in memory; no proxy, environment credentials,
+redirect or transport retry is used. Original response bytes are saved privately
+before parsing and linked by hash to the actual request path, body and clocks.
+Direct receipts identify themselves as `etoro_direct_read`; they are never
+represented as MCP responses. The same source and freshness checks apply.
 
 A capture reads `/api/v1/me`, then brackets `/api/v1/trading/info/demo/pnl`
 between two `/api/v1/trading/info/demo/portfolio` reads. All seven pending-order
@@ -178,6 +191,27 @@ are loaded, before the claim, and again immediately before transport. Without
 explicit waiver selection, the existing quota policy still applies; the manual
 MCP and strict execution paths do not accept the waiver.
 
+The default standing assessment still rejects an omitted
+`additionalBufferPercent` with `assessment_additional_cash_buffer_unknown`.
+Changing that rule requires a separately authorized, exclusive
+`pilot-buffer-amendment.json`, bound to the original mandate, account, ledger and
+inception. No runtime amendment is installed merely because the optional code
+path exists. Selection requires `--allow-unreported-buffer` and the artifact's
+exact `--buffer-authorization` reference. The operator validates it before the
+claim and the transport guard revalidates it immediately before sending; the
+approval retains its hash and source reference.
+
+Under that explicit amendment only, omission remains `not_reported` with an
+unknown percentage. It is never converted into zero or explicit broker null.
+The reserve calculation continues to cover principal, opening charges and spread;
+it does not assert continuous available-cash coverage while the broker temporarily
+reserves funds. Both the initial economic commitment and fully reconciled terminal
+cash must meet the existing cash floor. No further entry can occur while a claim
+is unresolved, every pending collection must be empty at reconciliation, and
+unexplained cash debits remain a hold. An explicitly reported nonzero buffer is
+still unsupported. Instrument 1142, amount, costs, capital, issuer, loss, freshness
+and one-attempt limits are unchanged.
+
 `standing-mandate.json` is exclusively created with the current human source
 reference and issue time. It binds the Demo account, exact scope and original
 pilot ledger path and inception hash. There is no invented calendar expiry:
@@ -261,6 +295,12 @@ authorization reference. It does not initialize missing state or reset switches.
 Its JSON-lines host accepts only `etoro_execute_read` and fresh Codex usage
 results. It never requests MCP prepare, placement or write tools. The direct
 client performs the single authorized Demo POST inside the worker.
+
+With `--direct-reads --ignore-usage-limits` and the existing waiver's exact
+authorization reference, no JSON-lines host bridge is needed: the worker acquires
+and validates all sources itself before the same single-send operation. This
+reduces orchestration delay but does not make stale broker data fresh or change
+the instrument, amount, financial limits, or one-attempt rule.
 
 Run the worker from its reviewed checkout using the existing Python environment:
 

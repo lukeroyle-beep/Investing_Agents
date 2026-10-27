@@ -14,7 +14,8 @@ from execution.domain import (Approval, Environment, OrderIntent, RiskCheck, Ris
 from execution.instruments import BrokerInstrumentMapping, Instrument
 from execution.pilot_mandate import (PilotMandateError, StandingPilotMandate, PilotUsageAmendment,
                                     PILOT_USAGE_AMENDMENT_FILENAME, PilotUsageWaiver,
-                                    PILOT_USAGE_WAIVER_FILENAME)
+                                    PILOT_USAGE_WAIVER_FILENAME, PilotBufferAmendment,
+                                    PILOT_BUFFER_AMENDMENT_FILENAME)
 from execution.usage_reserve import PilotUsageAdmission, UsageWindow
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.kill_switch import KillSwitch, KillSwitchStatus, RESET_ACKNOWLEDGEMENT
@@ -533,3 +534,99 @@ def test_waiver_requires_current_source_and_cannot_predate_mandate(f):
     with pytest.raises(PilotMandateError, match="cannot_precede"):
         waiver(f, issued_at=NOW-timedelta(seconds=1))
     assert not (f.path / PILOT_USAGE_WAIVER_FILENAME).exists()
+
+
+def buffer_amendment(f, **overrides):
+    values = dict(path=f.path / PILOT_BUFFER_AMENDMENT_FILENAME, mandate=f.mandate, ledger=f.ledger,
+        source_reference="Synthetic explicit human authorization for an unreported temporary buffer",
+        issued_at=NOW)
+    values.update(overrides)
+    return PilotBufferAmendment.create(**values)
+
+
+def test_buffer_amendment_is_exclusive_and_preserves_all_original_authority(f):
+    prior = (f.mandate.path, amendment(f).path, waiver(f).path)
+    before = {path: path.read_bytes() for path in prior}
+    inception = f.ledger.snapshot()["inception"]
+    changed = buffer_amendment(f)
+    original = changed.path.read_bytes()
+    assert changed.path.stat().st_mode & 0o777 == 0o600
+    assert changed.allow_unreported_buffer is True
+    assert changed.mandate_hash == f.mandate.mandate_hash
+    assert changed.ledger_inception_hash == payload_hash(inception)
+    assert PilotBufferAmendment.load(changed.path, mandate=f.mandate) == changed
+    changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW)
+    scope = json.loads(original)["amendment"]["scope"]
+    assert scope["instrument_id"] == 1142 and scope["amount"] == "10"
+    assert scope["unreported_buffer_value"] == "unknown"
+    assert scope["explicit_nonzero_buffer"] == "unsupported"
+    assert scope["continuous_inflight_available_cash_verified"] is False
+    with pytest.raises(PilotMandateError, match="never_overwrite"):
+        buffer_amendment(f)
+    assert changed.path.read_bytes() == original
+    assert {path: path.read_bytes() for path in prior} == before
+    assert f.ledger.snapshot()["inception"] == inception
+
+
+@pytest.mark.parametrize("field,value", [("instrument_id", 14323), ("amount", "11"),
+    ("unreported_buffer_value", "zero"), ("allow_unreported_buffer", 1),
+    ("preserve_other_financial_limits", False), ("preserve_single_submission_limit", False),
+    ("continuous_inflight_available_cash_verified", True)])
+def test_rehashed_buffer_amendment_cannot_expand_scope_or_normalize_unknown(f, field, value):
+    changed = buffer_amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"]["scope"][field] = value
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="scope_or_schema_invalid"):
+        PilotBufferAmendment.load(changed.path, mandate=f.mandate)
+
+
+@pytest.mark.parametrize("field,value", [("mandate_hash", "a"*64), ("account_id", "999"),
+    ("ledger_path", "/unrelated/ledger.sqlite3"), ("ledger_inception_hash", "b"*64)])
+def test_buffer_amendment_requires_exact_original_mandate_and_inception(f, field, value):
+    changed = buffer_amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"][field] = value
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="binding_mismatch"):
+        PilotBufferAmendment.load(changed.path, mandate=f.mandate)
+
+
+def test_buffer_amendment_rechecks_integrity_and_immutable_loaded_authority(f):
+    changed = buffer_amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"]["source_reference"] = "Changed after load"
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="integrity_failure"):
+        changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW)
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="changed_after_load"):
+        changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW)
+
+
+def test_buffer_amendment_validates_after_claim_but_never_resets_submission(f):
+    changed = buffer_amendment(f)
+    alternate = PilotLedger.create(f.path / "alternate.sqlite3", f.account, [], NOW)
+    with pytest.raises(PilotMandateError, match="original_ledger_inception"):
+        changed.validate(mandate=f.mandate, ledger=alternate, now=NOW)
+    with pytest.raises(PilotMandateError, match="not_yet_issued"):
+        changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW-timedelta(seconds=1))
+    f.ledger.reserve_and_claim("single-attempt", D("10"), D("0.01"), f.account, NOW, instrument_id=1142)
+    reopened = PilotLedger(f.ledger.path, f.account.account_id)
+    PilotBufferAmendment.load(changed.path, mandate=f.mandate).validate(
+        mandate=f.mandate, ledger=reopened, now=NOW)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        approve(f)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        buffer_amendment(f, path=f.path / "new-buffer-amendment.json")
+
+
+def test_buffer_amendment_requires_current_explicit_source_and_no_backdate(f):
+    with pytest.raises(PilotMandateError, match="human_source_reference"):
+        buffer_amendment(f, source_reference=" ")
+    with pytest.raises(PilotMandateError, match="cannot_precede"):
+        buffer_amendment(f, issued_at=NOW-timedelta(seconds=1))
+    assert not (f.path / PILOT_BUFFER_AMENDMENT_FILENAME).exists()

@@ -11,7 +11,7 @@ from execution.domain import CommandState, Environment, RiskCheck, RiskDecision,
 from execution.operator import DemoOperator, OperatorEvidenceError
 from execution.pilot_operator import DemoPilotOperator
 from execution.pilot_policy import POLICY, evaluate_pilot, preview_costs
-from execution.pilot_mandate import PilotUsageWaiver
+from execution.pilot_mandate import PilotUsageWaiver, PilotBufferAmendment
 from execution.usage_reserve import PilotUsageAdmission, MAX_USAGE_AGE_SECONDS
 from risk.submission_gate import SubmissionBlockedError
 
@@ -73,13 +73,19 @@ class AutonomousPilotOperator(DemoPilotOperator):
 
     def submit_under_mandate(self, command_id, *, adapter, mandate, account, quote,
                              assessment, market_state, kill_switch, now, usage,
-                             usage_amendment=None, usage_waiver=None):
+                             usage_amendment=None, usage_waiver=None, buffer_amendment=None):
         """Authorize from the human's standing mandate, never a fabricated click."""
         self._fixture_adapter(adapter)
         proof, command, intent, decision = self._bound(command_id)
         if command.state != CommandState.AWAITING_APPROVAL:
             raise SubmissionBlockedError("fresh_unclaimed_command_required")
         assessment.validate(now)
+        if assessment.evidence.get("allow_unreported_buffer"):
+            if type(buffer_amendment) is not PilotBufferAmendment:
+                raise SubmissionBlockedError("bound_buffer_rule_amendment_required")
+            buffer_amendment.validate(mandate=mandate, ledger=self.ledger, now=now)
+        elif buffer_amendment is not None:
+            raise SubmissionBlockedError("buffer_amendment_assessment_mode_mismatch")
         if (assessment.evidence_hash != proof["assessment_hash"]
                 or quote != assessment.evidence["quote"]
                 or account.source_hash != proof["account"]["source_hash"]
@@ -122,7 +128,9 @@ class AutonomousPilotOperator(DemoPilotOperator):
             limits=self.limits, now=now, usage=usage, usage_amendment=usage_amendment,
             usage_waiver=usage_waiver,
             order_payload=build_order_payload(mapping.broker_instrument_id, intent.sizing_value),
-            approval_limits={"assessment_hash":assessment.evidence_hash})
+            approval_limits={"assessment_hash":assessment.evidence_hash,
+                "buffer_amendment_hash":buffer_amendment.amendment_hash if buffer_amendment else "",
+                "buffer_amendment_source_reference":buffer_amendment.source_reference if buffer_amendment else ""})
         next_day = (now.astimezone(ZoneInfo("Europe/London"))+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
         deadlines = [next_day, intent.expires_at, approval.expires_at, account.deadline,
             assessment.deadline, quote.observed_at+timedelta(seconds=30),
@@ -151,6 +159,8 @@ class AutonomousPilotOperator(DemoPilotOperator):
         mandate.validate(ledger=self.ledger, kill_switch=kill_switch, now=now)
         if usage_waiver is not None:
             usage_waiver.validate(mandate=mandate, ledger=self.ledger, now=now)
+        if buffer_amendment is not None:
+            buffer_amendment.validate(mandate=mandate, ledger=self.ledger, now=now)
         self.ledger.reserve_and_claim(str(command_id), intent.sizing_value, reserve, account, now,
             intent_hash=intent.intent_hash, instrument_id=mapping.broker_instrument_id)
         pending = self.coordinator.store.authorize_submission(command, intent, decision, approval,

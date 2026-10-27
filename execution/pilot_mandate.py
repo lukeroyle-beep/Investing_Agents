@@ -32,6 +32,7 @@ MANDATE_SCHEMA = "standing-demo-pilot-mandate-v1"
 AUTHORIZATION_KIND = "standing_mandate"
 PILOT_USAGE_AMENDMENT_FILENAME = "pilot-usage-amendment.json"
 PILOT_USAGE_WAIVER_FILENAME = "pilot-usage-waiver.json"
+PILOT_BUFFER_AMENDMENT_FILENAME = "pilot-buffer-amendment.json"
 _SCOPE = {
     "policy": POLICY, "environment": "demo", "broker": "etoro", "transport": "official_demo_api",
     "instrument_id": 1142, "symbol": "SBUX", "asset_type": "equity", "currency": "USD",
@@ -523,4 +524,120 @@ class PilotUsageWaiver:
             raise PilotMandateError("usage_waiver_changed_after_load")
         if _timestamp(now) < self.issued_at:
             raise PilotMandateError("usage_waiver_not_yet_issued")
+        _amendment_binding(mandate, ledger)
+
+
+_BUFFER_AMENDMENT_SCHEMA = "standing-demo-pilot-buffer-amendment-v1"
+_BUFFER_AMENDMENT_SCOPE = {
+    "policy": POLICY, "workflow": "standing_demo_api", "change": "unreported_buffer_admission_only",
+    "instrument_id": 1142, "symbol": "SBUX", "amount": "10", "currency": "USD",
+    "side": "buy", "order_type": "market", "leverage": "1", "settlement_type": "real",
+    "allow_unreported_buffer": True, "unreported_buffer_value": "unknown",
+    "explicit_nonzero_buffer": "unsupported",
+    "cash_guard_basis": "economic_commitment_and_terminal_whole_account_cash_reconciliation",
+    "continuous_inflight_available_cash_verified": False,
+    "preserve_original_mandate": True, "preserve_existing_inception": True,
+    "preserve_other_financial_limits": True, "preserve_market_freshness": True,
+    "preserve_single_submission_limit": True, "recovery": "lookup_only_no_resubmission",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PilotBufferAmendment:
+    """Explicit human amendment for an unreported temporary buffer only.
+
+    This does not turn an unknown into zero, change the original order, reset
+    the inception or authorize a retry. Consumers must validate it separately
+    before selecting the assessment's unreported-buffer mode.
+    """
+
+    path: Path
+    amendment_hash: str
+    amendment_id: str
+    mandate_hash: str
+    account_id: str
+    ledger_path: Path
+    ledger_inception_hash: str
+    source_reference: str
+    issued_at: datetime
+
+    @property
+    def allow_unreported_buffer(self):
+        return True
+
+    @classmethod
+    def create(cls, path, *, mandate, ledger, source_reference, issued_at):
+        _amendment_binding(mandate, ledger, require_unclaimed=True)
+        moment = _timestamp(issued_at)
+        if not isinstance(source_reference, str) or not source_reference.strip():
+            raise PilotMandateError("buffer_amendment_current_human_source_reference_required")
+        if moment < mandate.issued_at:
+            raise PilotMandateError("buffer_amendment_cannot_precede_original_mandate")
+        payload = {"schema": _BUFFER_AMENDMENT_SCHEMA, "amendment_id": str(uuid4()),
+            "mandate_hash": mandate.mandate_hash, "account_id": mandate.account_id,
+            "ledger_path": str(mandate.ledger_path), "ledger_inception_hash": mandate.ledger_inception_hash,
+            "source_reference": source_reference, "issued_at": moment, "scope": _BUFFER_AMENDMENT_SCOPE}
+        record = {"amendment": payload, "sha256": payload_hash(payload)}
+        path = Path(path).absolute()
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except FileExistsError as exc:
+            raise PilotMandateError("buffer_amendment_already_exists_never_overwrite") from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(canonical_json(record) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return cls.load(path, mandate=mandate)
+
+    @classmethod
+    def load(cls, path, *, mandate):
+        _amendment_binding(mandate)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as handle:
+                raw = handle.read(65537)
+            if len(raw) > 65536:
+                raise PilotMandateError("buffer_amendment_file_size_invalid")
+            record = json.loads(raw, object_pairs_hook=_unique_pairs)
+            if not isinstance(record, dict) or set(record) != {"amendment", "sha256"}:
+                raise PilotMandateError("buffer_amendment_record_shape_invalid")
+            payload = record["amendment"]
+            if not isinstance(payload, dict) or payload_hash(payload) != record["sha256"]:
+                raise PilotMandateError("buffer_amendment_integrity_failure")
+            keys = {"schema", "amendment_id", "mandate_hash", "account_id", "ledger_path",
+                    "ledger_inception_hash", "source_reference", "issued_at", "scope"}
+            if (set(payload) != keys or payload["schema"] != _BUFFER_AMENDMENT_SCHEMA
+                    or canonical_json(payload["scope"]) != canonical_json(_BUFFER_AMENDMENT_SCOPE)):
+                raise PilotMandateError("buffer_amendment_scope_or_schema_invalid")
+            if (payload["mandate_hash"] != mandate.mandate_hash or payload["account_id"] != mandate.account_id
+                    or payload["ledger_path"] != str(mandate.ledger_path)
+                    or payload["ledger_inception_hash"] != mandate.ledger_inception_hash):
+                raise PilotMandateError("buffer_amendment_original_mandate_binding_mismatch")
+            if not isinstance(payload["source_reference"], str) or not payload["source_reference"].strip():
+                raise PilotMandateError("buffer_amendment_current_human_source_reference_required")
+            UUID(payload["amendment_id"])
+            moment = _timestamp(payload["issued_at"])
+            if moment < mandate.issued_at:
+                raise PilotMandateError("buffer_amendment_cannot_precede_original_mandate")
+            return cls(Path(path).absolute(), record["sha256"], payload["amendment_id"],
+                payload["mandate_hash"], payload["account_id"], Path(payload["ledger_path"]),
+                payload["ledger_inception_hash"], payload["source_reference"], moment)
+        except PilotMandateError:
+            raise
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise PilotMandateError("buffer_amendment_missing_or_invalid") from exc
+
+    def validate(self, *, mandate, ledger, now):
+        # Final transport checks happen after the durable claim. Validation
+        # must remain available then, without making that claim reusable.
+        loaded = self.load(self.path, mandate=mandate)
+        if loaded != self:
+            raise PilotMandateError("buffer_amendment_changed_after_load")
+        if _timestamp(now) < self.issued_at:
+            raise PilotMandateError("buffer_amendment_not_yet_issued")
         _amendment_binding(mandate, ledger)

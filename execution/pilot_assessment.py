@@ -3,6 +3,10 @@
 The official getCostDemo contract describes ``costs`` as the components that
 would apply to the proposed order; its enum is not a required six-row list.
 Retain the applicable rows without manufacturing omitted zero-valued charges.
+An explicitly selected unreported-buffer mode retains the missing value as
+unknown. The default still requires the buffer field. The alternate mode treats
+it as an unknown temporary broker reservation, never an opening charge or zero;
+the caller must separately verify the human's bound buffer-rule amendment.
 This assessment is neither human approval nor a connector preparation token.
 """
 from __future__ import annotations
@@ -98,7 +102,7 @@ def _datetime(seconds):
 
 def _receipt(receipt, path, now):
     if (not isinstance(receipt, dict)
-            or receipt.get("tool", "etoro_execute_read") != "etoro_execute_read"):
+            or receipt.get("tool", "etoro_execute_read") not in {"etoro_execute_read", "etoro_direct_read"}):
         raise PilotAssessmentError("assessment_supported_read_receipt_required")
     args = receipt.get("arguments")
     if not isinstance(args, dict) or set(args) != {"path", "body"} or args.get("path") != path:
@@ -109,6 +113,12 @@ def _receipt(receipt, path, now):
         raise PilotAssessmentError("assessment_request_duration_exceeded")
     if not end <= now or not 0 <= now - start <= MAX_AGE_SECONDS:
         raise PilotAssessmentError("assessment_receipt_stale_or_future")
+    if receipt.get("tool") == "etoro_direct_read":
+        from brokers.etoro.pilot_reads import read_receipt_envelope
+        _, response = read_receipt_envelope(receipt)
+        if not isinstance(response, dict):
+            raise PilotAssessmentError("assessment_response_object_required")
+        return body, response, start, end
     result = receipt.get("result")
     if (not isinstance(result, dict) or result.get("isError")
             or not isinstance(result.get("content"), list) or len(result["content"]) != 1
@@ -146,27 +156,31 @@ class PilotOrderAssessment:
             raise PilotAssessmentError("assessment_evidence_changed")
         rebuilt = assess_order(cost_receipt=self.evidence["cost_receipt"],
             eligibility_receipt=self.evidence["eligibility_receipt"], payload=self.evidence["payload"],
-            quote=self.evidence["quote"], now=now)
+            quote=self.evidence["quote"], now=now,
+            allow_unreported_buffer=self.evidence["allow_unreported_buffer"])
         if self != rebuilt:
             raise PilotAssessmentError("assessment_projection_changed")
 
 
-def assess_order(*, cost_receipt, eligibility_receipt, payload, quote, now):
+def assess_order(*, cost_receipt, eligibility_receipt, payload, quote, now, allow_unreported_buffer=False):
     """Assess only SBUX/1142, USD10, real long x1 market; perform no I/O.
 
-    Receipts retain original MCP JSON text, complete response flags and exact
+    Receipts retain original MCP or direct JSON text, complete response flags and exact
     request arguments. The caller separately binds the authenticated Demo
-    identity, whole-account policy, standing mandate and market-open evidence.
+    identity, whole-account policy, standing mandate, market-open evidence and
+    any human amendment authorizing the unreported-buffer mode.
     """
     try:
-        return _assess_order(cost_receipt, eligibility_receipt, payload, quote, now)
+        return _assess_order(cost_receipt, eligibility_receipt, payload, quote, now, allow_unreported_buffer)
     except PilotAssessmentError:
         raise
     except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
         raise PilotAssessmentError("assessment_malformed_or_unqualified_evidence") from exc
 
 
-def _assess_order(cost_receipt, eligibility_receipt, payload, quote, now):
+def _assess_order(cost_receipt, eligibility_receipt, payload, quote, now, allow_unreported_buffer):
+    if type(allow_unreported_buffer) is not bool:
+        raise PilotAssessmentError("assessment_explicit_buffer_mode_required")
     scoped = _payload(payload)
     moment = _aware_utc(now, "assessment_now")
     current = exact_datetime_epoch_seconds(moment)
@@ -192,11 +206,26 @@ def _assess_order(cost_receipt, eligibility_receipt, payload, quote, now):
             or raw_item.get("unitsQuantityType") not in {"whole", "fractional"}
             or raw_item.get("orderFillBehaviorType") not in {"bestEffort", "fillOrKill"}):
         raise PilotAssessmentError("assessment_real_long_one_eligibility_required")
-    if "additionalBufferPercent" not in raw_item:
+    # The optional broker field describes funds temporarily reserved until
+    # execution/cancellation. Its omission is not evidence of a zero buffer.
+    # Keep that uncertainty separate from principal and opening-cost reserves;
+    # no new entry is permitted while the claimed order remains unreconciled.
+    buffer_present = "additionalBufferPercent" in raw_item
+    buffer_value = raw_item.get("additionalBufferPercent")
+    if not buffer_present and not allow_unreported_buffer:
         raise PilotAssessmentError("assessment_additional_cash_buffer_unknown")
-    if (raw_item["additionalBufferPercent"] is not None
-            and _number(raw_item["additionalBufferPercent"], "additional_buffer") != 0):
-        raise PilotAssessmentError("assessment_additional_cash_buffer_unsupported")
+    if buffer_present and buffer_value is not None:
+        buffer_value = _number(buffer_value, "additional_buffer")
+        if buffer_value != 0:
+            raise PilotAssessmentError("assessment_additional_cash_buffer_unsupported")
+    buffer_evidence = {
+        "source_field": "additionalBufferPercent",
+        "status": "not_reported" if not buffer_present else "explicit_null" if buffer_value is None else "explicit_zero",
+        "reported_percent": buffer_value,
+        "economic_commitment_basis": "principal_plus_opening_costs_and_embedded_spread",
+        "terminal_cash_reconciliation_required": True,
+        "continuous_inflight_available_cash_verified": False,
+    }
     _number(raw_item.get("minPositionExposure"), "minimum_exposure")
     _number(raw_item.get("maxUnitsPerOrder"), "maximum_units")
     for config in raw_item["leverageConfigs"]:
@@ -243,7 +272,8 @@ def _assess_order(cost_receipt, eligibility_receipt, payload, quote, now):
         "quote": {"ask": quote.ask, "bid": quote.bid, "asOf": quote.observed_at}}}
     preview_costs(preview)
     deadline = _datetime(min(cost_start, eligibility_start, source_time, quote_time) + MAX_AGE_SECONDS)
-    evidence = {"schema": "demo-pilot-order-assessment-v1", "payload": deepcopy(payload),
+    evidence = {"schema": "demo-pilot-order-assessment-v1", "additional_buffer": buffer_evidence,
+        "allow_unreported_buffer": allow_unreported_buffer, "payload": deepcopy(payload),
         "payload_hash": payload_hash(payload), "cost_receipt": deepcopy(cost_receipt),
         "eligibility_receipt": deepcopy(eligibility_receipt), "quote": quote,
         "cost_coverage_contract": deepcopy(_CONTRACT), "cost_source_timestamp": cost["lastUpdated"],

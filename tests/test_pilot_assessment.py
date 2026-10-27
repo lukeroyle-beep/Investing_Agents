@@ -140,7 +140,7 @@ def test_incomplete_or_mismatched_cost_evidence_blocks(edit):
 
 
 @pytest.mark.parametrize("field,value", [("amount", "10"), ("amount", 10.0), ("amount", True),
-    ("instrumentId", 1004), ("instrumentId", D(1142)), ("leverage", True), ("leverage", 2),
+    ("instrumentId", 1004), ("instrumentId", 14323), ("instrumentId", D(1142)), ("leverage", True), ("leverage", 2),
     ("settlementType", "cfd"), ("orderCurrency", "GBP"), ("orderType", "mit"),
     ("transaction", "sellShort"), ("positionIds", [123])])
 def test_payload_cannot_expand_standing_scope(field, value):
@@ -225,7 +225,6 @@ def test_deadline_uses_oldest_request_or_source_clock_with_conservative_rounding
     lambda e: e["eligibilities"][0].update(allowedOrderQuantityType="unitsOnly"),
     lambda e: e["eligibilities"][0].update(tradeUnitType="contracts"),
     lambda e: e["eligibilities"][0].update(additionalBufferPercent=D("1e-60")),
-    lambda e: e["eligibilities"][0].pop("additionalBufferPercent"),
     lambda e: e["eligibilities"][0].update(minPositionExposure=D("10.0000000000000000000000000000001")),
     lambda e: e["eligibilities"][0]["leverageConfigs"][0].update(isPotential=True),
     lambda e: e["eligibilities"][0]["leverageConfigs"][0].update(settlementType="cfd"),
@@ -237,14 +236,19 @@ def test_real_asset_eligibility_and_exact_size_constraints(edit):
         assess_order(**args)
 
 
-@pytest.mark.parametrize("present,value,reason", [
-    (False, None, "assessment_additional_cash_buffer_unknown"),
-    (True, None, None),
-    (True, D(0), None),
-    (True, D("1e-60"), "assessment_additional_cash_buffer_unsupported"),
+@pytest.mark.parametrize("allow_unreported", [False, True])
+@pytest.mark.parametrize("present,value,status,reason", [
+    (False, None, "not_reported", None),
+    (True, None, "explicit_null", None),
+    (True, D(0), "explicit_zero", None),
+    (True, D("1e-60"), None, "assessment_additional_cash_buffer_unsupported"),
 ])
-def test_additional_buffer_diagnostic_preserves_presence_and_admission(present, value, reason):
+def test_additional_buffer_preserves_unknown_and_economic_commitment(allow_unreported, present, value, status, reason):
     args = inputs()
+    args["allow_unreported_buffer"] = allow_unreported
+    expected_costs = preview_costs(assess_order(**args).preview)
+    if not present and not allow_unreported:
+        reason = "assessment_additional_cash_buffer_unknown"
     def edit(response):
         item = response["eligibilities"][0]
         if present:
@@ -258,7 +262,45 @@ def test_additional_buffer_diagnostic_preserves_presence_and_admission(present, 
     else:
         result = assess_order(**args)
         assert result.evidence["eligibility_receipt"] == args["eligibility_receipt"]
+        assert result.evidence["allow_unreported_buffer"] is allow_unreported
+        buffer = result.evidence["additional_buffer"]
+        assert buffer["status"] == status
+        assert buffer["reported_percent"] == value
+        assert buffer["terminal_cash_reconciliation_required"] is True
+        assert buffer["continuous_inflight_available_cash_verified"] is False
+        assert preview_costs(result.preview) == expected_costs
         result.validate(NOW)
+
+
+def test_unknown_buffer_cannot_be_relabelled_as_reported_zero():
+    args = inputs()
+    args["allow_unreported_buffer"] = True
+    change_response(args, "eligibility", lambda e: e["eligibilities"][0].pop("additionalBufferPercent"))
+    result = assess_order(**args)
+    result.evidence["additional_buffer"].update(status="explicit_zero", reported_percent=D(0))
+    rehashed = replace(result, evidence_hash=payload_hash(result.evidence))
+    with pytest.raises(PilotAssessmentError, match="assessment_projection_changed"):
+        rehashed.validate(NOW)
+
+
+def test_default_still_rejects_missing_buffer_and_mode_survives_revalidation():
+    args = inputs()
+    change_response(args, "eligibility", lambda e: e["eligibilities"][0].pop("additionalBufferPercent"))
+    with pytest.raises(PilotAssessmentError, match="^assessment_additional_cash_buffer_unknown$"):
+        assess_order(**args)
+    result = assess_order(**args, allow_unreported_buffer=True)
+    assert result.evidence["allow_unreported_buffer"] is True
+    result.validate(NOW)
+    result.evidence["allow_unreported_buffer"] = False
+    rehashed = replace(result, evidence_hash=payload_hash(result.evidence))
+    with pytest.raises(PilotAssessmentError, match="assessment_additional_cash_buffer_unknown"):
+        rehashed.validate(NOW)
+
+
+@pytest.mark.parametrize("mode", [None, 0, 1, "true"])
+def test_unreported_buffer_mode_requires_an_exact_boolean(mode):
+    with pytest.raises(PilotAssessmentError, match="assessment_explicit_buffer_mode_required"):
+        assess_order(**inputs(), allow_unreported_buffer=mode)
 
 
 def test_explicit_real_selection_can_coexist_with_an_eligible_cfd_configuration():
@@ -303,3 +345,57 @@ def test_tiny_fees_survive_projection_and_cost_reserve():
     change_response(args, "cost", lambda c: c["costs"].append({"costType": "sdrt", "value": D("1e-60"), "currency": "USD"}))
     upfront, reserve = preview_costs(assess_order(**args).preview)
     assert upfront > D(".01") and reserve > D(".011")
+
+
+def direct_inputs(tmp_path, *, unreported_buffer=False):
+    from tests.test_pilot_reads import direct_receipt
+    args = inputs()
+    if unreported_buffer:
+        change_response(args, "eligibility", lambda e: e["eligibilities"][0].pop("additionalBufferPercent"))
+        args["allow_unreported_buffer"] = True
+    for kind in ("cost", "eligibility"):
+        original = args[kind + "_receipt"]
+        envelope = json.loads(original["result"]["content"][0]["text"])
+        args[kind + "_receipt"] = direct_receipt(tmp_path / kind,
+            original["arguments"]["path"], json.loads(envelope["body"], parse_float=D),
+            start=NOW, end=NOW, body=original["arguments"]["body"])
+    return args
+
+
+@pytest.mark.parametrize("unreported_buffer", [False, True])
+def test_original_direct_receipts_keep_provenance_and_bound_economics(tmp_path, unreported_buffer):
+    direct = direct_inputs(tmp_path, unreported_buffer=unreported_buffer)
+    result = assess_order(**direct)
+    expected = assess_order(**inputs())
+    assert result.preview == expected.preview and result.deadline == expected.deadline
+    assert result.evidence_hash != expected.evidence_hash
+    for kind in ("cost", "eligibility"):
+        retained = result.evidence[kind + "_receipt"]
+        assert retained == direct[kind + "_receipt"]
+        assert retained["tool"] == "etoro_direct_read"
+        assert retained["source_transport"] == "official_demo_api"
+        assert "content" not in retained["result"]
+    result.validate(NOW)
+    with pytest.raises(PilotAssessmentError, match="stale"):
+        result.validate(NOW + timedelta(seconds=30, microseconds=1))
+
+
+@pytest.mark.parametrize("kind", ["cost", "eligibility"])
+@pytest.mark.parametrize("failure", ["raw_hash", "source", "method", "query", "stale", "masquerade_as_mcp"])
+def test_direct_receipt_identity_integrity_and_freshness_remain_required(tmp_path, kind, failure):
+    args = direct_inputs(tmp_path)
+    item = args[kind + "_receipt"]
+    if failure == "raw_hash":
+        item["raw_response"]["body_sha256"] = "0" * 64
+    elif failure == "source":
+        item["source_transport"] = "unverified"
+    elif failure == "method":
+        item["method"] = "GET"
+    elif failure == "query":
+        item["arguments"]["query"] = {"account": "other"}
+    elif failure == "stale":
+        item["request_started_at"] = item["response_received_at"] = (NOW - timedelta(seconds=31)).isoformat()
+    else:
+        item["tool"] = "etoro_execute_read"
+    with pytest.raises(PilotAssessmentError):
+        assess_order(**args)

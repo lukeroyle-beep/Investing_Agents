@@ -23,18 +23,19 @@ from agents.fill_agent.pilot_ledger import PilotLedger
 from brokers.etoro.autonomous_api import DirectDemoAdapter, DirectDemoClient, DirectBindingStore, build_order_payload
 from brokers.etoro.connector import instant, response_object
 from brokers.etoro.pilot_account import build_pilot_account
+from brokers.etoro.pilot_reads import DirectPilotReads, read_receipt_envelope
 from execution.autonomous_pilot import AutonomousPilotOperator
 from execution.coordinator import ExecutionConfig, ExecutionCoordinator
 from execution.domain import CommandState, Environment, OrderIntent, payload_hash
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_assessment import assess_order
-from execution.pilot_mandate import StandingPilotMandate, PilotUsageAmendment, PilotUsageWaiver
+from execution.pilot_mandate import StandingPilotMandate, PilotUsageAmendment, PilotUsageWaiver, PilotBufferAmendment
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from risk.kill_switch import KillSwitch
-from risk.pretrade import RiskLimits
-from scripts.run_demo_pilot import Host, NOW, INSTRUMENT, SYMBOL, CLASSIFICATIONS, emit, pilot_usage
+from risk.pretrade import RiskLimits, QuoteEvidence
+from scripts.run_demo_pilot import Host, NOW, INSTRUMENT, SYMBOL, CLASSIFICATIONS, emit, pilot_usage, rate_time
 from scripts.setup_autonomous_demo_pilot import load_dedicated_credentials
 
 
@@ -43,6 +44,60 @@ class ReadOnlyHost(Host):
         if tool not in {"etoro_execute_read", "usage"}:
             raise ValueError("autonomous_host_read_only")
         return super().call(tool, arguments)
+
+
+class DirectPilotHost:
+    """Original SBUX reads performed in-process with private direct receipts."""
+
+    def __init__(self, root, *, credentials):
+        self.reader = DirectPilotReads(credentials=credentials,
+            receipt_dir=root / "direct-read-receipts", clock=NOW)
+
+    def read(self, path, **kwargs):
+        return self.reader.read(path, **kwargs)
+
+    def account(self, expected):
+        profile = self.read("/api/v1/me")
+        first = self.read("/api/v1/trading/info/demo/portfolio")
+        pnl = self.read("/api/v1/trading/info/demo/pnl")
+        last = self.read("/api/v1/trading/info/demo/portfolio")
+        return build_pilot_account(profile, first, pnl, last, expected, NOW())
+
+    def market(self, instrument):
+        if (instrument.canonical_symbol != "SBUX"
+                or instrument.internal_instrument_id != uuid5(NAMESPACE_URL, "etoro/demo-pilot-v1/instrument/1142")):
+            raise ValueError("original_standing_instrument_required")
+        receipt = self.read("/api/v1/market-data/search", query={
+            "fields":"instrumentId,internalSymbolFull,isCurrentlyTradable,isExchangeOpen,isActiveInPlatform,isBuyEnabled,isDelisted",
+            "internalSymbolFull":"SBUX", "pageSize":"100", "pageNumber":"1"})
+        _, raw = read_receipt_envelope(receipt)
+        start = instant(receipt["request_started_at"], "state_request_time")
+        end = instant(receipt["response_received_at"], "state_receipt_time")
+        if not 0 <= (end-start).total_seconds() <= 10 or end > NOW():
+            raise ValueError("market_state_request_duration_exceeded")
+        rows = raw.get("items", [])
+        if not isinstance(rows, list) or raw.get("totalItems") != len(rows):
+            raise ValueError("complete_market_search_required")
+        matches = [row for row in rows if row.get("instrumentId") == 1142 and row.get("internalSymbolFull") == "SBUX"]
+        if len(matches) != 1:
+            raise ValueError("exact_market_state_missing")
+        state = matches[0]
+        if (not all(state.get(key) is True for key in
+                ("isCurrentlyTradable", "isExchangeOpen", "isActiveInPlatform", "isBuyEnabled"))
+                or state.get("isDelisted") is not False):
+            raise ValueError("market_not_open_and_tradable")
+        rate_receipt = self.read("/api/v2/market-data/rates", query={"instrumentIds":"1142"})
+        _, rates = read_receipt_envelope(rate_receipt)
+        if len(rates.get("results", [])) != 1:
+            raise ValueError("exact_rate_required")
+        rate = rates["results"][0]
+        if rate.get("instrumentId") != 1142 or rate.get("quoteType") != "realtime":
+            raise ValueError("exact_realtime_rate_required")
+        quote = QuoteEvidence(payload_hash(rates), instrument.internal_instrument_id, rate_time(rate["date"]),
+            rate["bid"], rate["ask"], True)
+        return quote, {**state, "instrument_id":1142, "quote_type":"realtime", "quote_id":quote.quote_id,
+            "received_at":receipt["request_started_at"], "clock_basis":"bounded_market_request_start",
+            "rate_time_basis":"getRates.date_documented_UTC"}
 
 
 def verify_reviewed_checkout(commit):
@@ -101,6 +156,12 @@ def locked_cycle(args, root, ledger):
         usage_waiver.validate(mandate=mandate, ledger=ledger, now=NOW())
         if args.usage_authorization != usage_waiver.source_reference:
             raise ValueError("usage_waiver_authorization_mismatch")
+    buffer_amendment = None
+    if getattr(args, "allow_unreported_buffer", False):
+        buffer_amendment = PilotBufferAmendment.load(root / "pilot-buffer-amendment.json", mandate=mandate)
+        buffer_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
+        if getattr(args, "buffer_authorization", None) != buffer_amendment.source_reference:
+            raise ValueError("buffer_amendment_authorization_mismatch")
     amendment_path = root / "pilot-usage-amendment.json"
     usage_amendment = (PilotUsageAmendment.load(amendment_path, mandate=mandate)
                        if usage_waiver is None and amendment_path.exists() else None)
@@ -120,11 +181,16 @@ def locked_cycle(args, root, ledger):
         mandate.validate(ledger=ledger, kill_switch=switch, now=NOW())
         if usage_amendment is not None:
             usage_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
-    host = ReadOnlyHost(root)
+    direct_reads = getattr(args, "direct_reads", False)
+    if direct_reads and usage_waiver is None:
+        raise ValueError("direct_reads_require_existing_usage_waiver")
+    host = None if direct_reads else ReadOnlyHost(root)
     usage = None if usage_waiver is not None else pilot_usage(host, args)
     if usage is not None and usage.validate_for_work(NOW()):
         raise ValueError("usage_floor_or_unknown_stop")
     credentials = load_dedicated_credentials(root / "demo-api-credentials.json")
+    if direct_reads:
+        host = DirectPilotHost(root, credentials=credentials)
     client = DirectDemoClient(credentials=credentials, receipt_dir=root / "direct-api-receipts")
     def final_guard():
         verify_reviewed_checkout(args.reviewed_commit)
@@ -133,6 +199,8 @@ def locked_cycle(args, root, ledger):
             raise ValueError("standing_mandate_revoked_before_dispatch")
         if usage_waiver is not None:
             usage_waiver.validate(mandate=current, ledger=ledger, now=NOW())
+        if buffer_amendment is not None:
+            buffer_amendment.validate(mandate=current, ledger=ledger, now=NOW())
         if usage_amendment is not None:
             fresh_amendment = PilotUsageAmendment.load(amendment_path, mandate=current)
             if fresh_amendment.amendment_hash != usage_amendment.amendment_hash:
@@ -187,7 +255,7 @@ def locked_cycle(args, root, ledger):
         quote, market = host.market(instrument)
         usage = None if usage_waiver is not None else pilot_usage(host, args)
         assessment = assess_order(cost_receipt=costs, eligibility_receipt=eligibility,
-            payload=payload, quote=quote, now=NOW())
+            payload=payload, quote=quote, now=NOW(), allow_unreported_buffer=buffer_amendment is not None)
         intent = OrderIntent.create(strategy_id="demo-pilot-v1-standing", run_id=str(uuid4()),
             internal_instrument_id=instrument.internal_instrument_id, environment="demo", side="buy", order_type="market",
             sizing_method="fixed_notional", sizing_value="10", currency="USD", expires_at=NOW()+timedelta(minutes=3))
@@ -195,7 +263,7 @@ def locked_cycle(args, root, ledger):
         submitted = workflow.submit_under_mandate(command.command_id, adapter=adapter, mandate=mandate,
             account=pre, quote=quote, assessment=assessment, market_state=market,
             kill_switch=switch, now=NOW(), usage=usage, usage_amendment=usage_amendment,
-            usage_waiver=usage_waiver)
+            usage_waiver=usage_waiver, buffer_amendment=buffer_amendment)
         emit({"event":"submitted_once", "command_id":str(command.command_id), "state":str(submitted.state)})
         observed = adapter.reconcile_command(submitted)
         if not observed.reconciled or observed.lifecycle_state != "filled":
@@ -217,6 +285,12 @@ if __name__ == "__main__":
     parser.add_argument("--usage-authorization", required=True)
     parser.add_argument("--ignore-usage-limits", action="store_true",
         help="Use an existing immutable human-authorized pilot usage waiver.")
+    parser.add_argument("--direct-reads", action="store_true",
+        help="Use bounded official API reads for original SBUX/1142; requires the existing usage waiver.")
+    parser.add_argument("--allow-unreported-buffer", action="store_true",
+        help="Use an existing explicit amendment for an unreported temporary broker cash reservation.")
+    parser.add_argument("--buffer-authorization",
+        help="Exact human source reference from the existing buffer amendment; never a credential.")
     try:
         run(parser.parse_args())
     except Exception as exc:
