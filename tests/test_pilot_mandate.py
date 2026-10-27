@@ -13,7 +13,8 @@ from execution.domain import (Approval, Environment, OrderIntent, RiskCheck, Ris
     RiskOutcome, canonical_json, payload_hash)
 from execution.instruments import BrokerInstrumentMapping, Instrument
 from execution.pilot_mandate import (PilotMandateError, StandingPilotMandate, PilotUsageAmendment,
-                                    PILOT_USAGE_AMENDMENT_FILENAME)
+                                    PILOT_USAGE_AMENDMENT_FILENAME, PilotUsageWaiver,
+                                    PILOT_USAGE_WAIVER_FILENAME)
 from execution.usage_reserve import PilotUsageAdmission, UsageWindow
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.kill_switch import KillSwitch, KillSwitchStatus, RESET_ACKNOWLEDGEMENT
@@ -118,7 +119,8 @@ def test_dynamic_approval_identifies_standing_not_fake_per_order_human(f, monkey
 
 
 @pytest.mark.parametrize("field", ["authorization_kind", "mandate_hash", "risk_decision_id", "account_snapshot_id", "settlement_type",
-    "usage_work_floor_percent", "usage_recovery_reserve_percent", "usage_amendment_hash", "usage_amendment_source_reference"])
+    "usage_work_floor_percent", "usage_recovery_reserve_percent", "usage_amendment_hash", "usage_amendment_source_reference",
+    "usage_gate", "usage_waiver_hash", "usage_waiver_source_reference"])
 def test_callers_cannot_override_protected_standing_authorization(f, field):
     with pytest.raises(PilotMandateError, match="cannot_be_overridden"):
         approve(f, approval_limits={field: "forged"})
@@ -384,3 +386,150 @@ def test_missing_source_and_backdated_amendment_do_not_create_artifacts(f):
     with pytest.raises(PilotMandateError, match="cannot_precede"):
         amendment(f, issued_at=NOW-timedelta(seconds=1))
     assert not (f.path / PILOT_USAGE_AMENDMENT_FILENAME).exists()
+
+
+def waiver(f, **overrides):
+    values = dict(path=f.path / PILOT_USAGE_WAIVER_FILENAME, mandate=f.mandate, ledger=f.ledger,
+        source_reference="Synthetic current human instruction: forget usage limits", issued_at=NOW)
+    values.update(overrides)
+    return PilotUsageWaiver.create(**values)
+
+
+def test_usage_waiver_is_separate_exclusive_and_preserves_original_authority(f):
+    amended = amendment(f)
+    originals = (f.mandate.path.read_bytes(), amended.path.read_bytes(), f.ledger.snapshot())
+    waived = waiver(f)
+    assert PilotUsageWaiver.load(waived.path, mandate=f.mandate) == waived
+    assert waived.mandate_hash == f.mandate.mandate_hash
+    assert waived.account_id == f.account.account_id
+    assert waived.ledger_path == f.ledger.path.resolve()
+    assert waived.ledger_inception_hash == payload_hash(originals[2]["inception"])
+    assert waived.path.stat().st_mode & 0o777 == 0o600
+    before = waived.path.read_bytes()
+    with pytest.raises(PilotMandateError, match="never_overwrite"):
+        waiver(f)
+    assert waived.path.read_bytes() == before
+    assert (f.mandate.path.read_bytes(), amended.path.read_bytes(), f.ledger.snapshot()) == originals
+
+
+@pytest.mark.parametrize("observation", [None, usage(remaining="0"), usage(remaining=None),
+    usage(observed_at=NOW-timedelta(days=1))])
+def test_explicit_waiver_needs_no_quota_snapshot_and_keeps_other_expiry(f, observation):
+    waived = waiver(f)
+    result = approve(f, usage=observation, usage_waiver=waived)
+    fields = dict(result.limits)
+    assert fields["usage_gate"] == "waived"
+    assert fields["usage_work_floor_percent"] == fields["usage_recovery_reserve_percent"] == "waived"
+    assert fields["usage_waiver_hash"] == waived.waiver_hash
+    assert fields["usage_waiver_source_reference"] == waived.source_reference
+    assert fields["usage_source_sha256"] == fields["usage_observed_at"] == ""
+    assert fields["maximum_submissions"] == fields["maximum_confirmed_pilot_fills"] == "1"
+    assert result.expires_at == f.account.deadline
+    ApprovalAuthority.verify(approval=result, intent=f.intent, now=NOW)
+
+
+def test_waiver_takes_precedence_over_previous_usage_amendment_without_changing_it(f):
+    amended = amendment(f)
+    before = amended.path.read_bytes()
+    waived = waiver(f)
+    result = approve(f, usage=None, usage_amendment=amended, usage_waiver=waived)
+    assert dict(result.limits)["usage_amendment_hash"] == ""
+    assert dict(result.limits)["usage_waiver_hash"] == waived.waiver_hash
+    assert amended.path.read_bytes() == before
+
+
+def test_waiver_is_typed_and_never_implied_by_missing_usage(f):
+    with pytest.raises(PilotMandateError, match="fresh_authorized_usage"):
+        approve(f, usage=None)
+    with pytest.raises(PilotMandateError, match="typed_pilot_usage_waiver"):
+        approve(f, usage=None, usage_waiver=SimpleNamespace(validate=lambda **kwargs: None))
+    assert dict(approve(f).limits)["usage_gate"] == "enforced"
+
+
+@pytest.mark.parametrize("gate", ["scope", "risk", "account", "kill_switch"])
+def test_waiver_never_relaxes_non_usage_admission(f, gate):
+    waived = waiver(f)
+    changes = dict(usage=None, usage_waiver=waived)
+    if gate == "scope":
+        changes["intent"] = order(f.instrument, sizing_value="11")
+    elif gate == "risk":
+        failed = (RiskCheck("order_cap", False, "false", "true"), *f.decision.checks[1:])
+        changes["decision"] = replace(f.decision, checks=failed, outcome=RiskOutcome.REJECTED)
+    elif gate == "account":
+        changes["account"] = Account(account_id="999")
+    else:
+        f.switch.engage(operator_id="synthetic-human", reason="revoked", now=NOW)
+    with pytest.raises(PilotMandateError):
+        approve(f, **changes)
+    assert not f.ledger.snapshot()["submissions"]
+
+
+def test_waiver_does_not_extend_account_or_quote_freshness(f):
+    waived = waiver(f)
+    with pytest.raises(ValueError, match="stale"):
+        approve(f, usage=None, usage_waiver=waived, now=NOW+timedelta(seconds=31))
+    with pytest.raises(PilotMandateError, match="fresh_accepted_pilot_risk"):
+        approve(f, usage=None, usage_waiver=waived,
+                decision=replace(f.decision, quote_observed_at=NOW-timedelta(seconds=31)))
+
+
+def test_waiver_rereads_integrity_and_rejects_rehashed_loaded_replacement(f):
+    waived = waiver(f)
+    raw = json.loads(waived.path.read_text())
+    raw["waiver"]["source_reference"] = "Changed after load"
+    waived.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="integrity_failure"):
+        approve(f, usage=None, usage_waiver=waived)
+    raw["sha256"] = payload_hash(raw["waiver"])
+    waived.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="changed_after_load"):
+        approve(f, usage=None, usage_waiver=waived)
+
+
+@pytest.mark.parametrize("field,value", [("preserve_order_scope", False),
+    ("preserve_non_usage_risk_gates", False), ("preserve_single_submission_limit", False),
+    ("workflow", "all_execution")])
+def test_rehashed_waiver_cannot_relax_original_non_usage_scope(f, field, value):
+    waived = waiver(f)
+    raw = json.loads(waived.path.read_text())
+    raw["waiver"]["scope"][field] = value
+    raw["sha256"] = payload_hash(raw["waiver"])
+    waived.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="scope_or_schema_invalid"):
+        PilotUsageWaiver.load(waived.path, mandate=f.mandate)
+
+
+@pytest.mark.parametrize("field,value", [("mandate_hash", "a"*64), ("account_id", "999"),
+    ("ledger_path", "/unrelated/ledger.sqlite3"), ("ledger_inception_hash", "b"*64)])
+def test_waiver_exact_original_mandate_account_and_inception_binding(f, field, value):
+    waived = waiver(f)
+    raw = json.loads(waived.path.read_text())
+    raw["waiver"][field] = value
+    raw["sha256"] = payload_hash(raw["waiver"])
+    waived.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="binding_mismatch"):
+        PilotUsageWaiver.load(waived.path, mandate=f.mandate)
+
+
+def test_waiver_supports_lookup_recovery_but_never_second_attempt(f):
+    waived = waiver(f)
+    alternate = PilotLedger.create(f.path / "alternate.sqlite3", f.account, [], NOW)
+    with pytest.raises(PilotMandateError, match="original_ledger_inception"):
+        waived.validate(mandate=f.mandate, ledger=alternate, now=NOW)
+    with pytest.raises(PilotMandateError, match="not_yet_issued"):
+        waived.validate(mandate=f.mandate, ledger=f.ledger, now=NOW-timedelta(seconds=1))
+    f.ledger.reserve_and_claim("single-attempt", D("10"), D("0.01"), f.account, NOW, instrument_id=1142)
+    reopened = PilotLedger(f.ledger.path, f.account.account_id)
+    PilotUsageWaiver.load(waived.path, mandate=f.mandate).validate(mandate=f.mandate, ledger=reopened, now=NOW)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        approve(f, usage=None, usage_waiver=waived)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        waiver(f, path=f.path / "new-waiver.json")
+
+
+def test_waiver_requires_current_source_and_cannot_predate_mandate(f):
+    with pytest.raises(PilotMandateError, match="human_source_reference"):
+        waiver(f, source_reference=" ")
+    with pytest.raises(PilotMandateError, match="cannot_precede"):
+        waiver(f, issued_at=NOW-timedelta(seconds=1))
+    assert not (f.path / PILOT_USAGE_WAIVER_FILENAME).exists()

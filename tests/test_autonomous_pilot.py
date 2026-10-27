@@ -18,7 +18,7 @@ from execution.domain import CommandState, Environment, OrderIntent, payload_has
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_assessment import assess_order
-from execution.pilot_mandate import StandingPilotMandate, PilotMandateError, PilotUsageAmendment
+from execution.pilot_mandate import StandingPilotMandate, PilotMandateError, PilotUsageAmendment, PilotUsageWaiver
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from execution.usage_reserve import PilotUsageAdmission, UsageWindow
@@ -119,6 +119,11 @@ def reconcile(f):
         post_account=account(f.clock[0], post=True), now=f.clock[0])
 
 
+def waive_usage(f):
+    return PilotUsageWaiver.create(f.root / "pilot-usage-waiver.json", mandate=f.mandate,
+        ledger=f.ledger, source_reference="synthetic current human waiver of usage limits", issued_at=NOW)
+
+
 def test_first_fill_reconciles_once_then_restart_is_complete(f, monkeypatch):
     from risk.approval import ApprovalAuthority
     monkeypatch.setattr(ApprovalAuthority, "issue", lambda *a,**k:pytest.fail("No simulated human click"))
@@ -136,20 +141,24 @@ def test_first_fill_reconciles_once_then_restart_is_complete(f, monkeypatch):
     assert len(f.transport.posts) == 1
 
 
-def test_lost_response_recovers_same_actual_request_only(f):
+@pytest.mark.parametrize("waived", [False, True])
+def test_lost_response_recovers_same_actual_request_only(f, waived):
+    allowance = {"usage": None, "usage_waiver": waive_usage(f)} if waived else {}
     f.transport.post_result = TimeoutError("synthetic lost response")
-    assert submit(f).state == CommandState.UNKNOWN
+    assert submit(f, **allowance).state == CommandState.UNKNOWN
     assert f.ledger.snapshot()["unresolved"]
     assert not reconcile(f)["unresolved"]
     assert len(f.transport.posts) == 1
     assert any("referenceId="+str(f.command.logical_request_id) in x.url for x in f.transport.calls)
     with pytest.raises(RuntimeError):
-        submit(f)
+        submit(f, **allowance)
     assert len(f.transport.posts) == 1
 
 
 @pytest.mark.parametrize("failure", ["identity", "stale", "revoked"])
-def test_last_moment_guard_leaves_claim_without_any_post(f, failure):
+@pytest.mark.parametrize("waived", [False, True])
+def test_last_moment_guard_leaves_claim_without_any_post(f, failure, waived):
+    allowance = {"usage": None, "usage_waiver": waive_usage(f)} if waived else {}
     if failure == "identity":
         f.transport.profile["demoCid"] = 999
     elif failure == "stale":
@@ -157,7 +166,7 @@ def test_last_moment_guard_leaves_claim_without_any_post(f, failure):
     else:
         f.adapter.pre_send_guard = lambda: False
     with pytest.raises(ValueError):
-        submit(f)
+        submit(f, **allowance)
     assert f.op.coordinator.store.get_command(f.command.command_id).state == CommandState.UNKNOWN
     assert len(f.transport.posts) == 0 and f.ledger.snapshot()["unresolved"]
     with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
@@ -190,6 +199,30 @@ def test_five_percent_floor_requires_amendment_and_records_actual_allowance(f):
     assert dict(approval.limits)["usage_recovery_reserve_percent"] == "5"
     assert f.mandate.path.read_bytes() == original
     assert not reconcile(f)["unresolved"] and len(f.transport.posts) == 1
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("closed_market", "fresh_open_tradable_realtime_market_required"),
+    ("market_stale", "fresh_open_tradable_realtime_market_required"),
+    ("account_stale", "pilot_account_stale_or_future"),
+    ("assessment_stale", "assessment"),
+    ("changed_quote", "standing_dynamic_evidence_changed"),
+])
+def test_usage_waiver_keeps_dynamic_nonquota_gates_before_claim(f, failure, reason):
+    allowance = {"usage": None, "usage_waiver": waive_usage(f)}
+    if failure == "closed_market":
+        allowance["market_state"] = {}
+    elif failure == "market_stale":
+        allowance["now"] = NOW + timedelta(seconds=16)
+    elif failure == "account_stale":
+        allowance["now"] = NOW + timedelta(seconds=29)
+    elif failure == "assessment_stale":
+        allowance["now"] = NOW + timedelta(seconds=31)
+    else:
+        allowance["quote"] = replace(f.quote, ask=D(101))
+    with pytest.raises((RuntimeError, ValueError), match=reason):
+        submit(f, **allowance)
+    assert not f.ledger.snapshot()["submissions"] and not f.transport.posts
 
 
 @pytest.mark.parametrize("changes", [{"ask":D(101)}, {"observed_at":NOW-timedelta(seconds=1)}])

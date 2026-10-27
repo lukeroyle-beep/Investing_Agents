@@ -29,7 +29,7 @@ from execution.domain import CommandState, Environment, OrderIntent, payload_has
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_assessment import assess_order
-from execution.pilot_mandate import StandingPilotMandate, PilotUsageAmendment
+from execution.pilot_mandate import StandingPilotMandate, PilotUsageAmendment, PilotUsageWaiver
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from risk.kill_switch import KillSwitch
@@ -95,16 +95,22 @@ def locked_cycle(args, root, ledger):
         return
     expected = state["account_id"]
     mandate = StandingPilotMandate.load(root / "standing-mandate.json", expected_account_id=expected)
+    usage_waiver = None
+    if getattr(args, "ignore_usage_limits", False):
+        usage_waiver = PilotUsageWaiver.load(root / "pilot-usage-waiver.json", mandate=mandate)
+        usage_waiver.validate(mandate=mandate, ledger=ledger, now=NOW())
+        if args.usage_authorization != usage_waiver.source_reference:
+            raise ValueError("usage_waiver_authorization_mismatch")
     amendment_path = root / "pilot-usage-amendment.json"
     usage_amendment = (PilotUsageAmendment.load(amendment_path, mandate=mandate)
-                       if amendment_path.exists() else None)
+                       if usage_waiver is None and amendment_path.exists() else None)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
     claims = state["submissions"]
     if len(claims) > 1:
         raise ValueError("single_mandate_scope_exceeded_lookup_manually")
     # Validate the human's selected work allowance before any host call or
     # credential load, including read-only recovery after an existing claim.
-    if args.work_floor_percent < Decimal(10):
+    if usage_waiver is None and args.work_floor_percent < Decimal(10):
         if usage_amendment is None:
             raise ValueError("lower_usage_floor_requires_bound_amendment")
         usage_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
@@ -115,8 +121,8 @@ def locked_cycle(args, root, ledger):
         if usage_amendment is not None:
             usage_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
     host = ReadOnlyHost(root)
-    usage = pilot_usage(host, args)
-    if usage.validate_for_work(NOW()):
+    usage = None if usage_waiver is not None else pilot_usage(host, args)
+    if usage is not None and usage.validate_for_work(NOW()):
         raise ValueError("usage_floor_or_unknown_stop")
     credentials = load_dedicated_credentials(root / "demo-api-credentials.json")
     client = DirectDemoClient(credentials=credentials, receipt_dir=root / "direct-api-receipts")
@@ -125,6 +131,8 @@ def locked_cycle(args, root, ledger):
         current = StandingPilotMandate.load(mandate.path, expected_account_id=expected)
         if current.mandate_hash != mandate.mandate_hash or not switch.status().writes_allowed:
             raise ValueError("standing_mandate_revoked_before_dispatch")
+        if usage_waiver is not None:
+            usage_waiver.validate(mandate=current, ledger=ledger, now=NOW())
         if usage_amendment is not None:
             fresh_amendment = PilotUsageAmendment.load(amendment_path, mandate=current)
             if fresh_amendment.amendment_hash != usage_amendment.amendment_hash:
@@ -145,7 +153,7 @@ def locked_cycle(args, root, ledger):
             emit({"event":"lookup_hold", "command_id":claims[0]["command_id"],
                   "broker_state":observed.lifecycle_state, "new_submission":False})
             return
-    elif usage.validate_for_submission(NOW()):
+    elif usage is not None and usage.validate_for_submission(NOW()):
         raise ValueError("usage_recovery_reserve_stop_before_new_submission")
     metadata = host.read("/api/v2/market-data/instruments", query={
         "instrumentsIds":",".join(str(x[0]) for x in CLASSIFICATIONS)})
@@ -177,7 +185,7 @@ def locked_cycle(args, root, ledger):
         costs = host.read("/api/v2/trading/info/demo/costs", body=json.dumps({**payload, "amount":10}))
         pre = host.account(expected)
         quote, market = host.market(instrument)
-        usage = pilot_usage(host, args)
+        usage = None if usage_waiver is not None else pilot_usage(host, args)
         assessment = assess_order(cost_receipt=costs, eligibility_receipt=eligibility,
             payload=payload, quote=quote, now=NOW())
         intent = OrderIntent.create(strategy_id="demo-pilot-v1-standing", run_id=str(uuid4()),
@@ -186,7 +194,8 @@ def locked_cycle(args, root, ledger):
         command = workflow.prepare(intent=intent, account=pre, quote=quote, assessment=assessment, now=NOW())
         submitted = workflow.submit_under_mandate(command.command_id, adapter=adapter, mandate=mandate,
             account=pre, quote=quote, assessment=assessment, market_state=market,
-            kill_switch=switch, now=NOW(), usage=usage, usage_amendment=usage_amendment)
+            kill_switch=switch, now=NOW(), usage=usage, usage_amendment=usage_amendment,
+            usage_waiver=usage_waiver)
         emit({"event":"submitted_once", "command_id":str(command.command_id), "state":str(submitted.state)})
         observed = adapter.reconcile_command(submitted)
         if not observed.reconciled or observed.lifecycle_state != "filled":
@@ -206,6 +215,8 @@ if __name__ == "__main__":
     parser.add_argument("--reviewed-commit", required=True)
     parser.add_argument("--work-floor-percent", type=Decimal, choices=(Decimal(5), Decimal(10), Decimal(20)), default=Decimal(10))
     parser.add_argument("--usage-authorization", required=True)
+    parser.add_argument("--ignore-usage-limits", action="store_true",
+        help="Use an existing immutable human-authorized pilot usage waiver.")
     try:
         run(parser.parse_args())
     except Exception as exc:

@@ -227,3 +227,32 @@ def test_pilot_connector_uses_authorized_floor_at_send_boundary(tmp_path, monkey
             pilot.submit(fixture, remaining=remaining)
         assert fixture.host.calls["place"] == 0
         assert not fixture.op.ledger.snapshot()["unresolved"]
+
+
+@pytest.mark.parametrize("workflow", ["strict", "manual_pilot"])
+def test_standing_usage_waiver_cannot_replace_other_workflows_admission(tmp_path, monkeypatch, workflow):
+    from execution.pilot_mandate import PilotUsageWaiver
+    from risk.submission_gate import SubmissionBlockedError
+
+    # Even the standing workflow's exact token type is not a quota snapshot.
+    # These unrelated workflows must reject it without trying to consume it.
+    waived = PilotUsageWaiver(tmp_path / "waiver.json", "b"*64, "synthetic-waiver", "c"*64,
+        "123", tmp_path / "pilot.sqlite3", "d"*64, "Synthetic explicit quota waiver", NOW)
+    assert not isinstance(waived, UsageAdmission)
+    if workflow == "strict":
+        from tests import test_etoro_connector_operator as target
+        items = target.workflow(tmp_path)
+        target.approve(items)
+        monkeypatch.setattr(target, "UsageAdmission", lambda *args, **kwargs: waived)
+        with pytest.raises(SubmissionBlockedError, match="usage_floor"):
+            target.submit(items, usage_percent=D("50"))
+        assert items[5]["place"] == 0
+    else:
+        from tests import test_demo_pilot_operator as target
+        fixture = target.workflow(tmp_path)
+        target.approve(fixture)
+        monkeypatch.setattr(target, "UsageAdmission", lambda *args, **kwargs: waived)
+        with pytest.raises(SubmissionBlockedError, match="usage_floor"):
+            target.submit(fixture, remaining=D("50"))
+        assert fixture.host.calls["place"] == 0
+        assert not fixture.op.ledger.snapshot()["unresolved"]

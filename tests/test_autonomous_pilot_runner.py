@@ -11,11 +11,12 @@ import pytest
 from brokers.etoro import autonomous_api
 from brokers.etoro.autonomous_api import DirectDemoClient
 from execution.domain import CommandState, payload_hash
-from execution.pilot_mandate import PilotUsageAmendment
+from execution.pilot_mandate import PilotMandateError, PilotUsageAmendment
 from execution.usage_reserve import PilotUsageAdmission, UsageAdmission, UsageWindow
 from scripts import run_autonomous_demo_pilot as runner
 from tests.test_autonomous_api import KEYS, full_lookup
-from tests.test_autonomous_pilot import account, f, submit
+from tests.test_autonomous_pilot import account, f, submit, waive_usage
+from tests.test_demo_pilot_operator import account_at
 from tests.test_pilot_account_source import NOW, receipt
 
 
@@ -175,6 +176,13 @@ def amend_usage(fixture, args):
         source_reference=args.usage_authorization, issued_at=NOW)
 
 
+def waive_runner_usage(fixture, args):
+    waiver = waive_usage(fixture)
+    args.ignore_usage_limits = True
+    args.usage_authorization = waiver.source_reference
+    return waiver
+
+
 def test_amended_runner_submits_at_ten_remaining_and_keeps_original_inception(f, monkeypatch):
     args, calls, events = wire_runner(f, monkeypatch, remaining=D(10))
     amendment = amend_usage(f, args)
@@ -246,26 +254,27 @@ def test_amended_lost_response_recovery_uses_reserve_without_another_post(f, mon
 
 
 @pytest.mark.parametrize("change", ["deleted", "rehashed_replacement"])
-def test_amendment_is_rechecked_after_durable_post_receipt_before_transport(f, monkeypatch, change):
-    args, _, events = wire_runner(f, monkeypatch, remaining=D(10), lookup_pending=True)
-    amendment = amend_usage(f, args)
+@pytest.mark.parametrize("authority_kind", ["amendment", "waiver"])
+def test_usage_authority_is_rechecked_after_durable_post_receipt_before_transport(f, monkeypatch, change, authority_kind):
+    args, calls, events = wire_runner(f, monkeypatch, remaining=D(10), lookup_pending=True)
+    authority = (amend_usage(f, args) if authority_kind == "amendment" else waive_runner_usage(f, args))
     original_write = autonomous_api.private_json
     changed = []
 
-    def replace_amendment_after_receipt(path, value):
+    def replace_authority_after_receipt(path, value):
         result = original_write(path, value)
         if path.name.startswith("submit-") and path.name.endswith(".request.json"):
             changed.append(path)
             if change == "deleted":
-                amendment.path.unlink()
+                authority.path.unlink()
             else:
-                record = json.loads(amendment.path.read_text())
-                record["amendment"]["source_reference"] = "replacement after durable claim"
-                record["sha256"] = payload_hash(record["amendment"])
-                amendment.path.write_text(json.dumps(record))
+                record = json.loads(authority.path.read_text())
+                record[authority_kind]["source_reference"] = "replacement after durable claim"
+                record["sha256"] = payload_hash(record[authority_kind])
+                authority.path.write_text(json.dumps(record))
         return result
 
-    monkeypatch.setattr(autonomous_api, "private_json", replace_amendment_after_receipt)
+    monkeypatch.setattr(autonomous_api, "private_json", replace_authority_after_receipt)
     runner.locked_cycle(args, f.root, f.ledger)
     state = f.ledger.snapshot()
     assert len(changed) == 1 and changed[0].exists()
@@ -275,3 +284,104 @@ def test_amendment_is_rechecked_after_durable_post_receipt_before_transport(f, m
     failure = json.loads(changed[0].with_name(changed[0].name.replace(".request.json", ".failure.json")).read_text())
     assert failure["outcome"] == "pre_transport_guard_blocked"
     assert [event["event"] for event in events] == ["submitted_once", "lookup_hold"]
+    if authority_kind == "waiver":
+        assert "usage" not in calls
+
+
+@pytest.mark.parametrize("failure", ["missing", "mismatched_reference", "corrupt_scope"])
+def test_usage_waiver_requires_matching_valid_authority_before_host(f, monkeypatch, failure):
+    args, calls, _ = wire_runner(f, monkeypatch)
+    args.ignore_usage_limits = True
+    if failure != "missing":
+        waiver = waive_runner_usage(f, args)
+        if failure == "mismatched_reference":
+            args.usage_authorization = "unrelated authorization reference"
+        else:
+            record = json.loads(waiver.path.read_text())
+            record["waiver"]["scope"]["preserve_non_usage_risk_gates"] = False
+            record["sha256"] = payload_hash(record["waiver"])
+            waiver.path.write_text(json.dumps(record))
+    with pytest.raises((ValueError, PilotMandateError), match="usage_waiver"):
+        runner.locked_cycle(args, f.root, f.ledger)
+    assert calls == [] and f.transport.calls == []
+    assert not f.ledger.snapshot()["submissions"]
+
+
+def test_explicit_waiver_skips_all_quota_calls_and_stops_after_one_reconciled_fill(f, monkeypatch):
+    args, calls, events = wire_runner(f, monkeypatch, remaining=None)
+    amendment = amend_usage(f, args)
+    waiver = waive_runner_usage(f, args)
+    original_mandate = f.mandate.path.read_bytes()
+    original_amendment = amendment.path.read_bytes()
+    inception = f.ledger.snapshot()["inception"]
+    monkeypatch.setattr(runner.ReadOnlyHost, "usage", lambda self: pytest.fail("Waiver must not query quota"))
+    runner.locked_cycle(args, f.root, f.ledger)
+    state = f.ledger.snapshot()
+    command_id = state["submissions"][0]["command_id"]
+    approval = dict(f.op.coordinator.store.get_command_approval(command_id).limits)
+    assert approval["usage_gate"] == "waived" and approval["usage_waiver_hash"] == waiver.waiver_hash
+    assert approval["usage_waiver_source_reference"] == waiver.source_reference
+    assert approval["usage_work_floor_percent"] == approval["usage_recovery_reserve_percent"] == "waived"
+    assert approval["usage_source_sha256"] == approval["usage_amendment_hash"] == ""
+    assert len(f.transport.posts) == state["position_count"] == 1 and not state["unresolved"]
+    assert state["inception"] == inception and f.mandate.path.read_bytes() == original_mandate
+    assert amendment.path.read_bytes() == original_amendment and "usage" not in calls
+    assert [event["event"] for event in events] == ["submitted_once", "reconciled"]
+    before = list(calls)
+    runner.locked_cycle(args, f.root, f.ledger)
+    assert calls == before and events[-1]["event"] == "already_completed"
+    assert len(f.transport.posts) == 1
+
+
+def test_waiver_file_does_not_silently_change_default_quota_admission(f, monkeypatch):
+    args, calls, _ = wire_runner(f, monkeypatch, remaining=None)
+    waive_runner_usage(f, args)
+    del args.ignore_usage_limits
+    with pytest.raises(ValueError, match="usage_floor_or_unknown_stop"):
+        runner.locked_cycle(args, f.root, f.ledger)
+    assert calls == ["host", "usage"] and f.transport.calls == []
+    assert not f.ledger.snapshot()["submissions"]
+
+
+def test_waived_runner_preserves_financial_admission_before_claim(f, monkeypatch):
+    args, calls, _ = wire_runner(f, monkeypatch)
+    waive_runner_usage(f, args)
+    inception = f.ledger.snapshot()["inception"]
+    original_account = runner.ReadOnlyHost.account
+
+    def low_cash(self, expected):
+        original_account(self, expected)
+        return account_at(f.clock[0], extra_cash=D(-880))
+
+    monkeypatch.setattr(runner.ReadOnlyHost, "account", low_cash)
+    monkeypatch.setattr(runner.ReadOnlyHost, "usage", lambda self: pytest.fail("Waiver must not query quota"))
+    with pytest.raises(RuntimeError, match="pilot_admission_rejected"):
+        runner.locked_cycle(args, f.root, f.ledger)
+    assert "pre_account" in calls and "post_account" not in calls and "usage" not in calls
+    assert not f.transport.posts and not f.ledger.snapshot()["submissions"]
+    assert f.ledger.snapshot()["inception"] == inception
+
+
+def test_waived_lost_response_runner_recovery_queries_no_quota_and_never_resends(f, monkeypatch):
+    waiver = waive_usage(f)
+    f.transport.post_result = TimeoutError("synthetic response lost after send")
+    assert submit(f, usage=None, usage_waiver=waiver).state == CommandState.UNKNOWN
+    assert len(f.transport.posts) == 1 and f.ledger.snapshot()["unresolved"]
+    f.clock[0] = NOW + timedelta(seconds=8)
+    args, calls, events = wire_runner(f, monkeypatch, remaining=None)
+    args.ignore_usage_limits = True
+    args.usage_authorization = waiver.source_reference
+    monkeypatch.setattr(runner.ReadOnlyHost, "usage", lambda self: pytest.fail("Waiver must not query quota"))
+    runner.locked_cycle(args, f.root, f.ledger)
+    state = f.ledger.snapshot()
+    assert len(f.transport.posts) == 1 and len(state["submissions"]) == 1
+    assert state["submissions"][0]["command_id"] == str(f.command.command_id)
+    assert state["submissions"][0]["reconciled"] and not state["unresolved"]
+    assert f.op.coordinator.store.get_command(f.command.command_id).state == CommandState.RECONCILED
+    assert any(request.url.endswith("?referenceId=" + str(f.command.logical_request_id))
+               for request in f.transport.calls)
+    assert "usage" not in calls and calls.count("post_account") == 1
+    assert "market" not in calls and "pre_account" not in calls and "reviewed_checkout" not in calls
+    assert "/api/v2/trading/info/demo/costs" not in calls
+    assert "/api/v2/trading/info/demo/eligibility" not in calls
+    assert [event["event"] for event in events] == ["reconciled"]

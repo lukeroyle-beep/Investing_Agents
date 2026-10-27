@@ -11,6 +11,7 @@ from execution.domain import CommandState, Environment, RiskCheck, RiskDecision,
 from execution.operator import DemoOperator, OperatorEvidenceError
 from execution.pilot_operator import DemoPilotOperator
 from execution.pilot_policy import POLICY, evaluate_pilot, preview_costs
+from execution.pilot_mandate import PilotUsageWaiver
 from execution.usage_reserve import PilotUsageAdmission, MAX_USAGE_AGE_SECONDS
 from risk.submission_gate import SubmissionBlockedError
 
@@ -72,7 +73,7 @@ class AutonomousPilotOperator(DemoPilotOperator):
 
     def submit_under_mandate(self, command_id, *, adapter, mandate, account, quote,
                              assessment, market_state, kill_switch, now, usage,
-                             usage_amendment=None):
+                             usage_amendment=None, usage_waiver=None):
         """Authorize from the human's standing mandate, never a fabricated click."""
         self._fixture_adapter(adapter)
         proof, command, intent, decision = self._bound(command_id)
@@ -86,7 +87,11 @@ class AutonomousPilotOperator(DemoPilotOperator):
             raise SubmissionBlockedError("standing_dynamic_evidence_changed")
         if not self.coordinator.config.broker_writes_enabled:
             raise SubmissionBlockedError("pilot_writes_disabled")
-        if type(usage) is not PilotUsageAdmission or usage.validate_for_submission(now):
+        if usage_waiver is not None:
+            if type(usage_waiver) is not PilotUsageWaiver:
+                raise SubmissionBlockedError("typed_pilot_usage_waiver_required")
+            usage_waiver.validate(mandate=mandate, ledger=self.ledger, now=now)
+        elif type(usage) is not PilotUsageAdmission or usage.validate_for_submission(now):
             raise SubmissionBlockedError("fresh_usage_floor_and_recovery_reserve_required")
         if account.account_id != adapter.expected_account_id:
             raise SubmissionBlockedError("same_direct_demo_account_required")
@@ -115,13 +120,16 @@ class AutonomousPilotOperator(DemoPilotOperator):
         approval = mandate.issue_approval(intent=intent, decision=decision, account=account,
             instrument=instrument, mapping=mapping, ledger=self.ledger, kill_switch=kill_switch,
             limits=self.limits, now=now, usage=usage, usage_amendment=usage_amendment,
+            usage_waiver=usage_waiver,
             order_payload=build_order_payload(mapping.broker_instrument_id, intent.sizing_value),
             approval_limits={"assessment_hash":assessment.evidence_hash})
         next_day = (now.astimezone(ZoneInfo("Europe/London"))+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
-        deadline = min(next_day, intent.expires_at, approval.expires_at, account.deadline,
+        deadlines = [next_day, intent.expires_at, approval.expires_at, account.deadline,
             assessment.deadline, quote.observed_at+timedelta(seconds=30),
-            instant(market_state["received_at"], "market_time")+timedelta(seconds=15),
-            usage.observed_at+timedelta(seconds=MAX_USAGE_AGE_SECONDS))
+            instant(market_state["received_at"], "market_time")+timedelta(seconds=15)]
+        if usage_waiver is None:
+            deadlines.append(usage.observed_at+timedelta(seconds=MAX_USAGE_AGE_SECONDS))
+        deadline = min(deadlines)
         if deadline <= now:
             raise SubmissionBlockedError("pilot_evidence_expired")
         adapter.bind(command, intent=intent, instrument_id=mapping.broker_instrument_id,
@@ -141,6 +149,8 @@ class AutonomousPilotOperator(DemoPilotOperator):
         # Re-read the shared switch and immutable mandate immediately before
         # consuming the sole account/day slot. A crash can only leave a hold.
         mandate.validate(ledger=self.ledger, kill_switch=kill_switch, now=now)
+        if usage_waiver is not None:
+            usage_waiver.validate(mandate=mandate, ledger=self.ledger, now=now)
         self.ledger.reserve_and_claim(str(command_id), intent.sizing_value, reserve, account, now,
             intent_hash=intent.intent_hash, instrument_id=mapping.broker_instrument_id)
         pending = self.coordinator.store.authorize_submission(command, intent, decision, approval,

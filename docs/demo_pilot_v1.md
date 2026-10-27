@@ -166,6 +166,18 @@ The original 10% standing default and 20% strict default remain unchanged.
 The amendment's human authorization reference must match the fresh usage
 evidence, and its integrity is rechecked immediately before dispatch.
 
+Luke later explicitly removed usage limits for this Demo attempt. An exclusive
+`pilot-usage-waiver.json` binds that instruction to the same original mandate,
+account and ledger inception. With `--ignore-usage-limits` and the matching
+`--usage-authorization`, the standing worker makes no quota calls and imposes
+no quota floor, reserve or quota freshness deadline. The original mandate and
+earlier allowance amendment remain intact. This waiver does not change the
+order scope, account/market/cost freshness, financial risk checks, kill switch,
+one-attempt claim, or lookup-only recovery. It is validated before credentials
+are loaded, before the claim, and again immediately before transport. Without
+explicit waiver selection, the existing quota policy still applies; the manual
+MCP and strict execution paths do not accept the waiver.
+
 `standing-mandate.json` is exclusively created with the current human source
 reference and issue time. It binds the Demo account, exact scope and original
 pilot ledger path and inception hash. There is no invented calendar expiry:
