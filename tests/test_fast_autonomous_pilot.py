@@ -45,10 +45,17 @@ def wire_fast(fixture, monkeypatch, *, authorized=True):
                 payload = {"results":[{"instrumentId":1142,"symbol":"SBUX","type":"Stocks"},
                     {"instrumentId":1002,"symbol":"MSFT","type":"Stocks"}],"pagination":{"hasNext":False}}
             elif path == "/api/v1/market-data/search":
-                assert parse_qs(urlsplit(request.url).query)["internalSymbolFull"] == ["SBUX"]
+                query = parse_qs(urlsplit(request.url).query)
+                assert query["instrumentId"] == ["1142"] and "internalSymbolFull" not in query
                 payload = {"totalItems":1,"items":[{"instrumentId":1142,"internalSymbolFull":"SBUX",
                     "isCurrentlyTradable":True,"isExchangeOpen":self.open,"isActiveInPlatform":True,
                     "isBuyEnabled":True,"isDelisted":False}]}
+                # The provider always includes instrumentId. Selecting it in
+                # fields reproduces the observed duplicate-key response.
+                if "instrumentId" in query["fields"][0].split(","):
+                    body = _json_body(payload).replace(b'"instrumentId":1142',
+                        b'"instrumentId":1142,"instrumentId":1142')
+                    return RawCaptureResponse(200, body)
             elif path == "/api/v2/market-data/rates":
                 assert parse_qs(urlsplit(request.url).query) == {"instrumentIds":["1142"]}
                 when = fixture.clock[0]-timedelta(seconds=31) if self.stale_rate else fixture.clock[0]
@@ -90,6 +97,11 @@ def test_fast_direct_cycle_keeps_original_instrument_and_raw_sources(f, monkeypa
     assert all(source["tool"] == "etoro_direct_read"
         for source in state["submissions"][0]["pre_account"]["raw_sources"].values())
     assert all("execution" not in urlsplit(request.url).path for request in transport.calls)
+    for request in transport.calls:
+        if urlsplit(request.url).path == "/api/v1/market-data/search":
+            assert parse_qs(urlsplit(request.url).query) == {
+                "instrumentId":["1142"], "fields":["internalSymbolFull,isCurrentlyTradable,isExchangeOpen,isActiveInPlatform,isBuyEnabled,isDelisted"],
+                "pageNumber":["1"], "pageSize":["100"]}
     command = f.op.coordinator.store.get_command(state["submissions"][0]["command_id"])
     assert command.state == CommandState.RECONCILED
     counts = len(transport.calls), len(f.transport.posts)
@@ -128,6 +140,16 @@ def test_fast_host_refuses_session_instrument_before_any_read(f, monkeypatch):
     with pytest.raises(ValueError, match="original_standing_instrument_required"):
         host.market(replace(original, canonical_symbol="SBUX.RTH"))
     assert not transport.calls
+
+
+def test_provider_duplicate_id_is_rejected_without_relaxing_json_parser(f, monkeypatch):
+    from brokers.etoro.pilot_reads import PilotReadError
+    wire_fast(f, monkeypatch)
+    host = runner.DirectPilotHost(f.root, credentials=f.adapter.client._credentials)
+    with pytest.raises(PilotReadError, match="direct_read_original_json_object_required"):
+        host.read("/api/v1/market-data/search", query={"instrumentId":"1142",
+            "fields":"instrumentId,internalSymbolFull", "pageNumber":"1", "pageSize":"100"})
+    assert not f.transport.posts and not f.ledger.snapshot()["submissions"]
 
 
 def test_fast_lost_send_recovery_reuses_reference_without_another_post(f, monkeypatch):

@@ -68,8 +68,9 @@ class DirectPilotHost:
                 or instrument.internal_instrument_id != uuid5(NAMESPACE_URL, "etoro/demo-pilot-v1/instrument/1142")):
             raise ValueError("original_standing_instrument_required")
         receipt = self.read("/api/v1/market-data/search", query={
-            "fields":"instrumentId,internalSymbolFull,isCurrentlyTradable,isExchangeOpen,isActiveInPlatform,isBuyEnabled,isDelisted",
-            "internalSymbolFull":"SBUX", "pageSize":"100", "pageNumber":"1"})
+            "instrumentId":"1142",
+            "fields":"internalSymbolFull,isCurrentlyTradable,isExchangeOpen,isActiveInPlatform,isBuyEnabled,isDelisted",
+            "pageNumber":"1", "pageSize":"100"})
         _, raw = read_receipt_envelope(receipt)
         start = instant(receipt["request_started_at"], "state_request_time")
         end = instant(receipt["response_received_at"], "state_receipt_time")
