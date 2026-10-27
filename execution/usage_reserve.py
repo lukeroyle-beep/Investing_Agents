@@ -142,7 +142,7 @@ class PilotUsageAdmission(UsageAdmission):
     five-point recovery reserve on an opening submission.
     """
 
-    minimum_floor_percent: ClassVar[Decimal] = Decimal("10")
+    minimum_floor_percent: ClassVar[Decimal] = Decimal("5")
     authorization_reference: str = ""
 
     def __post_init__(self):

@@ -121,6 +121,16 @@ def test_explicit_pilot_floor_retains_five_percent_recovery_reserve(remaining, s
     assert (not value.validate_for_work(NOW)) is work
 
 
+@pytest.mark.parametrize("remaining,submit,work", [
+    ("10", True, True), ("9.999", False, True),
+    ("5.001", False, True), ("5", False, False), ("4.999", False, False)])
+def test_five_percent_floor_keeps_additional_recovery_reserve(remaining, submit, work):
+    value = pilot_admission(week=remaining, floor_percent=D(5))
+    assert value.required_submission_percent == D(10)
+    assert (not value.validate_for_submission(NOW)) is submit
+    assert (not value.validate_for_work(NOW)) is work
+
+
 @pytest.mark.parametrize("reference", ["", " ", None, 42])
 def test_lower_pilot_floor_requires_nonempty_authorization_reference(reference):
     with pytest.raises(UsageEvidenceError, match="authorization"):
@@ -128,7 +138,7 @@ def test_lower_pilot_floor_requires_nonempty_authorization_reference(reference):
 
 
 @pytest.mark.parametrize("changes", [
-    {"floor_percent": D("9.999")}, {"recovery_reserve_percent": D("4.999")},
+    {"floor_percent": D("4.999")}, {"recovery_reserve_percent": D("4.999")},
     {"floor_percent": D("99")}, {"floor_percent": 10.0},
 ])
 def test_authorized_pilot_cannot_lower_minimum_or_spend_recovery_reserve(changes):
@@ -177,7 +187,7 @@ def test_pilot_still_requires_every_available_window_and_primary_identity():
     assert "available_usage_window_coverage_mismatch" in omitted.validate_for_submission(NOW)
 
 
-@pytest.mark.parametrize("floor", [D("10"), D("20")])
+@pytest.mark.parametrize("floor", [D("5"), D("10"), D("20")])
 def test_strict_connector_rejects_scoped_pilot_type_before_any_send(tmp_path, monkeypatch, floor):
     from tests import test_etoro_connector_operator as strict
     from risk.submission_gate import SubmissionBlockedError

@@ -237,6 +237,30 @@ def test_real_asset_eligibility_and_exact_size_constraints(edit):
         assess_order(**args)
 
 
+@pytest.mark.parametrize("present,value,reason", [
+    (False, None, "assessment_additional_cash_buffer_unknown"),
+    (True, None, None),
+    (True, D(0), None),
+    (True, D("1e-60"), "assessment_additional_cash_buffer_unsupported"),
+])
+def test_additional_buffer_diagnostic_preserves_presence_and_admission(present, value, reason):
+    args = inputs()
+    def edit(response):
+        item = response["eligibilities"][0]
+        if present:
+            item["additionalBufferPercent"] = value
+        else:
+            item.pop("additionalBufferPercent")
+    change_response(args, "eligibility", edit)
+    if reason:
+        with pytest.raises(PilotAssessmentError, match="^" + reason + "$"):
+            assess_order(**args)
+    else:
+        result = assess_order(**args)
+        assert result.evidence["eligibility_receipt"] == args["eligibility_receipt"]
+        result.validate(NOW)
+
+
 def test_explicit_real_selection_can_coexist_with_an_eligible_cfd_configuration():
     args = inputs()
     change_response(args, "eligibility", lambda e: e["eligibilities"][0]["leverageConfigs"].append({

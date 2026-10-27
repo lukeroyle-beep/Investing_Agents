@@ -12,7 +12,9 @@ from agents.fill_agent.pilot_ledger import PilotLedger
 from execution.domain import (Approval, Environment, OrderIntent, RiskCheck, RiskDecision,
     RiskOutcome, canonical_json, payload_hash)
 from execution.instruments import BrokerInstrumentMapping, Instrument
-from execution.pilot_mandate import PilotMandateError, StandingPilotMandate
+from execution.pilot_mandate import (PilotMandateError, StandingPilotMandate, PilotUsageAmendment,
+                                    PILOT_USAGE_AMENDMENT_FILENAME)
+from execution.usage_reserve import PilotUsageAdmission, UsageWindow
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.kill_switch import KillSwitch, KillSwitchStatus, RESET_ACKNOWLEDGEMENT
 from risk.pretrade import RiskLimits
@@ -59,10 +61,19 @@ def f(tmp_path):
 def approve(f, **overrides):
     values = dict(intent=f.intent, decision=f.decision, account=f.account, instrument=f.instrument,
         mapping=f.mapping, ledger=f.ledger, kill_switch=f.switch, limits=f.limits, now=NOW,
+        usage=usage(),
         order_payload={"action":"open", "transaction":"buy", "instrumentId":1142,
             "settlementType":"real", "orderType":"mkt", "leverage":1, "amount":D(10), "orderCurrency":"usd"})
     values.update(overrides)
     return f.mandate.issue_approval(**values)
+
+
+def usage(*, floor="10", reserve="5", remaining="50", reference="Synthetic original floor authorization", observed_at=NOW):
+    return PilotUsageAdmission(observed_at=observed_at,
+        windows=(UsageWindow("primary", D(remaining) if remaining is not None else None, primary=True),),
+        available_window_ids=("primary",), source_reference="Synthetic usage receipt",
+        source_sha256="c" * 64, floor_percent=D(floor), recovery_reserve_percent=D(reserve),
+        authorization_reference=reference)
 
 
 def test_create_is_exclusive_and_preserves_existing_inception(f):
@@ -106,7 +117,8 @@ def test_dynamic_approval_identifies_standing_not_fake_per_order_human(f, monkey
         ApprovalAuthority.verify(approval=approval, intent=f.intent, now=approval.expires_at)
 
 
-@pytest.mark.parametrize("field", ["authorization_kind", "mandate_hash", "risk_decision_id", "account_snapshot_id", "settlement_type"])
+@pytest.mark.parametrize("field", ["authorization_kind", "mandate_hash", "risk_decision_id", "account_snapshot_id", "settlement_type",
+    "usage_work_floor_percent", "usage_recovery_reserve_percent", "usage_amendment_hash", "usage_amendment_source_reference"])
 def test_callers_cannot_override_protected_standing_authorization(f, field):
     with pytest.raises(PilotMandateError, match="cannot_be_overridden"):
         approve(f, approval_limits={field: "forged"})
@@ -217,7 +229,7 @@ def test_fresh_same_account_and_pilot_accepted_checks_are_required(f):
     failed = (RiskCheck("order_cap", False, "false", "true"), *f.decision.checks[1:])
     with pytest.raises(PilotMandateError, match="fresh_accepted_pilot_risk"):
         approve(f, decision=replace(f.decision, checks=failed, outcome=RiskOutcome.REJECTED))
-    with pytest.raises(ValueError, match="stale"):
+    with pytest.raises((ValueError, PilotMandateError), match="stale|fresh_authorized_usage"):
         approve(f, now=NOW + timedelta(seconds=61))
 
 
@@ -238,3 +250,137 @@ def test_standing_approval_requires_exact_official_demo_payload(f, change):
     payload.update(change)
     with pytest.raises(PilotMandateError, match="exact_official_demo_payload"):
         approve(f, order_payload=payload)
+
+
+def amendment(f, **overrides):
+    values = dict(path=f.path / PILOT_USAGE_AMENDMENT_FILENAME, mandate=f.mandate, ledger=f.ledger,
+        source_reference="Synthetic current human authorization to proceed to 5%", issued_at=NOW)
+    values.update(overrides)
+    return PilotUsageAmendment.create(**values)
+
+
+def test_usage_amendment_is_additive_exclusive_and_bound_to_original_inception(f):
+    mandate_bytes = f.mandate.path.read_bytes()
+    inception = f.ledger.snapshot()["inception"]
+    changed = amendment(f)
+    original = changed.path.read_bytes()
+    assert changed.floor_percent == changed.recovery_reserve_percent == D("5")
+    assert changed.mandate_hash == f.mandate.mandate_hash
+    assert changed.account_id == f.account.account_id
+    assert changed.ledger_path == f.ledger.path.resolve()
+    assert changed.ledger_inception_hash == payload_hash(inception)
+    assert changed.path.stat().st_mode & 0o777 == 0o600
+    assert PilotUsageAmendment.load(changed.path, mandate=f.mandate) == changed
+    changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW)
+    with pytest.raises(PilotMandateError, match="never_overwrite"):
+        amendment(f)
+    assert changed.path.read_bytes() == original
+    assert f.mandate.path.read_bytes() == mandate_bytes
+    assert f.ledger.snapshot()["inception"] == inception
+
+
+def test_amended_approval_requires_matching_human_reference_and_records_actual_usage(f):
+    changed = amendment(f)
+    observation = usage(floor="5", remaining="10", reference=changed.source_reference)
+    result = approve(f, usage=observation, usage_amendment=changed)
+    fields = dict(result.limits)
+    assert fields["usage_work_floor_percent"] == fields["usage_recovery_reserve_percent"] == "5"
+    assert fields["usage_amendment_hash"] == changed.amendment_hash
+    assert fields["usage_amendment_source_reference"] == changed.source_reference
+    assert fields["usage_floor_authorization_reference"] == changed.source_reference
+    assert fields["usage_source_sha256"] == observation.source_sha256
+    with pytest.raises(PilotMandateError, match="authorization_reference_mismatch"):
+        approve(f, usage=usage(floor="5", remaining="10"), usage_amendment=changed)
+    with pytest.raises(PilotMandateError, match="fresh_authorized_usage"):
+        approve(f, usage=usage(floor="5", remaining="9.999", reference=changed.source_reference),
+                usage_amendment=changed)
+
+
+def test_original_floor_is_unchanged_without_amendment_and_actual_stricter_floor_is_recorded(f):
+    result = approve(f)
+    assert dict(result.limits)["usage_work_floor_percent"] == "10"
+    assert dict(result.limits)["usage_amendment_hash"] == ""
+    assert dict(approve(f, usage=usage(floor="20", reserve="6")).limits)["usage_work_floor_percent"] == "20"
+    assert dict(approve(f, usage=usage(floor="20", reserve="6")).limits)["usage_recovery_reserve_percent"] == "6"
+    with pytest.raises(PilotMandateError, match="fresh_authorized_usage"):
+        approve(f, usage=usage(floor="5", remaining="50"))
+    with pytest.raises(PilotMandateError, match="fresh_authorized_usage"):
+        approve(f, usage=None)
+
+
+@pytest.mark.parametrize("changes", [{"remaining":None}, {"observed_at":NOW-timedelta(seconds=61)},
+    {"observed_at":NOW+timedelta(seconds=1)}])
+def test_amendment_never_relaxes_unknown_or_stale_usage_evidence(f, changes):
+    changed = amendment(f)
+    values = dict(floor="5", reference=changed.source_reference)
+    values.update(changes)
+    with pytest.raises(PilotMandateError, match="fresh_authorized_usage"):
+        approve(f, usage=usage(**values), usage_amendment=changed)
+
+
+def test_approval_expires_with_usage_evidence(f):
+    result = approve(f, usage=usage(observed_at=NOW-timedelta(seconds=45)))
+    assert result.expires_at == NOW+timedelta(seconds=15)
+
+
+def test_amendment_integrity_is_rechecked_and_rehash_cannot_replace_loaded_authority(f):
+    changed = amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"]["source_reference"] = "Changed after load"
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="integrity_failure"):
+        approve(f, usage_amendment=changed)
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="changed_after_load"):
+        approve(f, usage_amendment=changed)
+
+
+@pytest.mark.parametrize("field,value", [("work_floor_percent", "4"), ("recovery_reserve_percent", "4"),
+    ("original_work_floor_percent", "20"), ("preserve_original_mandate", False), ("maximum_submissions", 2)])
+def test_rehashed_amendment_cannot_change_other_scope_or_relax_fixed_floor(f, field, value):
+    changed = amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"]["scope"][field] = value
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="scope_or_schema_invalid"):
+        PilotUsageAmendment.load(changed.path, mandate=f.mandate)
+
+
+@pytest.mark.parametrize("field,value", [("mandate_hash", "d"*64), ("account_id", "999"),
+    ("ledger_path", "/unrelated/pilot.sqlite3"), ("ledger_inception_hash", "e"*64)])
+def test_amendment_exact_original_mandate_account_and_ledger_binding_required(f, field, value):
+    changed = amendment(f)
+    raw = json.loads(changed.path.read_text())
+    raw["amendment"][field] = value
+    raw["sha256"] = payload_hash(raw["amendment"])
+    changed.path.write_text(json.dumps(raw))
+    with pytest.raises(PilotMandateError, match="binding_mismatch"):
+        PilotUsageAmendment.load(changed.path, mandate=f.mandate)
+
+
+def test_amendment_requires_current_original_mandate_and_cannot_reset_attempt(f):
+    changed = amendment(f)
+    alternative = PilotLedger.create(f.path / "other.sqlite3", f.account, [], NOW)
+    with pytest.raises(PilotMandateError, match="original_ledger_inception"):
+        changed.validate(mandate=f.mandate, ledger=alternative, now=NOW)
+    with pytest.raises(PilotMandateError, match="not_yet_issued"):
+        changed.validate(mandate=f.mandate, ledger=f.ledger, now=NOW-timedelta(seconds=1))
+    f.ledger.reserve_and_claim("existing-attempt", D("10"), D("0.01"), f.account, NOW, instrument_id=1142)
+    # The same durable usage authority still covers lookup recovery, while the
+    # original standing mandate cannot authorize another opening submission.
+    resumed = PilotUsageAmendment.load(changed.path, mandate=f.mandate)
+    resumed.validate(mandate=f.mandate, ledger=PilotLedger(f.ledger.path, f.account.account_id), now=NOW)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        approve(f, usage=usage(floor="5", reference=changed.source_reference), usage_amendment=resumed)
+    with pytest.raises(PilotMandateError, match="one_attempt_exhausted"):
+        amendment(f, path=f.path / "second-amendment.json")
+
+
+def test_missing_source_and_backdated_amendment_do_not_create_artifacts(f):
+    with pytest.raises(PilotMandateError, match="human_source_reference"):
+        amendment(f, source_reference=" ")
+    with pytest.raises(PilotMandateError, match="cannot_precede"):
+        amendment(f, issued_at=NOW-timedelta(seconds=1))
+    assert not (f.path / PILOT_USAGE_AMENDMENT_FILENAME).exists()

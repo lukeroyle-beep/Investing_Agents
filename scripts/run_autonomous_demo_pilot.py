@@ -29,7 +29,7 @@ from execution.domain import CommandState, Environment, OrderIntent, payload_has
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_assessment import assess_order
-from execution.pilot_mandate import StandingPilotMandate
+from execution.pilot_mandate import StandingPilotMandate, PilotUsageAmendment
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from risk.kill_switch import KillSwitch
@@ -95,12 +95,25 @@ def locked_cycle(args, root, ledger):
         return
     expected = state["account_id"]
     mandate = StandingPilotMandate.load(root / "standing-mandate.json", expected_account_id=expected)
+    amendment_path = root / "pilot-usage-amendment.json"
+    usage_amendment = (PilotUsageAmendment.load(amendment_path, mandate=mandate)
+                       if amendment_path.exists() else None)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
     claims = state["submissions"]
     if len(claims) > 1:
         raise ValueError("single_mandate_scope_exceeded_lookup_manually")
+    # Validate the human's selected work allowance before any host call or
+    # credential load, including read-only recovery after an existing claim.
+    if args.work_floor_percent < Decimal(10):
+        if usage_amendment is None:
+            raise ValueError("lower_usage_floor_requires_bound_amendment")
+        usage_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
+        if args.usage_authorization != usage_amendment.source_reference:
+            raise ValueError("lower_usage_floor_authorization_mismatch")
     if not claims:
         mandate.validate(ledger=ledger, kill_switch=switch, now=NOW())
+        if usage_amendment is not None:
+            usage_amendment.validate(mandate=mandate, ledger=ledger, now=NOW())
     host = ReadOnlyHost(root)
     usage = pilot_usage(host, args)
     if usage.validate_for_work(NOW()):
@@ -112,6 +125,10 @@ def locked_cycle(args, root, ledger):
         current = StandingPilotMandate.load(mandate.path, expected_account_id=expected)
         if current.mandate_hash != mandate.mandate_hash or not switch.status().writes_allowed:
             raise ValueError("standing_mandate_revoked_before_dispatch")
+        if usage_amendment is not None:
+            fresh_amendment = PilotUsageAmendment.load(amendment_path, mandate=current)
+            if fresh_amendment.amendment_hash != usage_amendment.amendment_hash:
+                raise ValueError("usage_amendment_changed_before_dispatch")
     adapter = DirectDemoAdapter(expected_account_id=expected, client=client,
         bindings=DirectBindingStore(root / "direct-api.sqlite3"), clock=NOW,
         pre_send_guard=final_guard)
@@ -169,7 +186,7 @@ def locked_cycle(args, root, ledger):
         command = workflow.prepare(intent=intent, account=pre, quote=quote, assessment=assessment, now=NOW())
         submitted = workflow.submit_under_mandate(command.command_id, adapter=adapter, mandate=mandate,
             account=pre, quote=quote, assessment=assessment, market_state=market,
-            kill_switch=switch, now=NOW(), usage=usage)
+            kill_switch=switch, now=NOW(), usage=usage, usage_amendment=usage_amendment)
         emit({"event":"submitted_once", "command_id":str(command.command_id), "state":str(submitted.state)})
         observed = adapter.reconcile_command(submitted)
         if not observed.reconciled or observed.lifecycle_state != "filled":
@@ -187,7 +204,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--reviewed-commit", required=True)
-    parser.add_argument("--work-floor-percent", type=Decimal, choices=(Decimal(10), Decimal(20)), default=Decimal(10))
+    parser.add_argument("--work-floor-percent", type=Decimal, choices=(Decimal(5), Decimal(10), Decimal(20)), default=Decimal(10))
     parser.add_argument("--usage-authorization", required=True)
     try:
         run(parser.parse_args())

@@ -18,7 +18,7 @@ from execution.domain import CommandState, Environment, OrderIntent, payload_has
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_assessment import assess_order
-from execution.pilot_mandate import StandingPilotMandate, PilotMandateError
+from execution.pilot_mandate import StandingPilotMandate, PilotMandateError, PilotUsageAmendment
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from execution.usage_reserve import PilotUsageAdmission, UsageWindow
@@ -172,6 +172,24 @@ def test_closed_market_and_insufficient_usage_do_not_claim(f):
     with pytest.raises(RuntimeError, match="usage"):
         submit(f, usage=usage)
     assert not f.ledger.snapshot()["submissions"] and not f.transport.posts
+
+
+def test_five_percent_floor_requires_amendment_and_records_actual_allowance(f):
+    original = f.mandate.path.read_bytes()
+    usage = PilotUsageAdmission(NOW,(UsageWindow("weekly",D(10),True),),("weekly",),"synthetic","a"*64,
+        floor_percent=D(5), authorization_reference="synthetic human five percent")
+    with pytest.raises(PilotMandateError):
+        submit(f, usage=usage)
+    assert not f.ledger.snapshot()["submissions"] and not f.transport.posts
+    amendment = PilotUsageAmendment.create(f.root / "pilot-usage-amendment.json", mandate=f.mandate,
+        ledger=f.ledger, source_reference=usage.authorization_reference, issued_at=NOW)
+    submitted = submit(f, usage=usage, usage_amendment=amendment)
+    assert submitted.state == CommandState.ACKNOWLEDGED
+    approval = f.op.coordinator.store.get_command_approval(f.command.command_id)
+    assert dict(approval.limits)["usage_work_floor_percent"] == "5"
+    assert dict(approval.limits)["usage_recovery_reserve_percent"] == "5"
+    assert f.mandate.path.read_bytes() == original
+    assert not reconcile(f)["unresolved"] and len(f.transport.posts) == 1
 
 
 @pytest.mark.parametrize("changes", [{"ask":D(101)}, {"observed_at":NOW-timedelta(seconds=1)}])

@@ -71,7 +71,8 @@ class AutonomousPilotOperator(DemoPilotOperator):
         return command
 
     def submit_under_mandate(self, command_id, *, adapter, mandate, account, quote,
-                             assessment, market_state, kill_switch, now, usage):
+                             assessment, market_state, kill_switch, now, usage,
+                             usage_amendment=None):
         """Authorize from the human's standing mandate, never a fabricated click."""
         self._fixture_adapter(adapter)
         proof, command, intent, decision = self._bound(command_id)
@@ -113,7 +114,8 @@ class AutonomousPilotOperator(DemoPilotOperator):
             raise SubmissionBlockedError("fresh_open_tradable_realtime_market_required")
         approval = mandate.issue_approval(intent=intent, decision=decision, account=account,
             instrument=instrument, mapping=mapping, ledger=self.ledger, kill_switch=kill_switch,
-            limits=self.limits, now=now, order_payload=build_order_payload(mapping.broker_instrument_id, intent.sizing_value),
+            limits=self.limits, now=now, usage=usage, usage_amendment=usage_amendment,
+            order_payload=build_order_payload(mapping.broker_instrument_id, intent.sizing_value),
             approval_limits={"assessment_hash":assessment.evidence_hash})
         next_day = (now.astimezone(ZoneInfo("Europe/London"))+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
         deadline = min(next_day, intent.expires_at, approval.expires_at, account.deadline,

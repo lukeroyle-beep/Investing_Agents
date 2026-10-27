@@ -192,7 +192,9 @@ def _assess_order(cost_receipt, eligibility_receipt, payload, quote, now):
             or raw_item.get("unitsQuantityType") not in {"whole", "fractional"}
             or raw_item.get("orderFillBehaviorType") not in {"bestEffort", "fillOrKill"}):
         raise PilotAssessmentError("assessment_real_long_one_eligibility_required")
-    if "additionalBufferPercent" not in raw_item or (raw_item["additionalBufferPercent"] is not None
+    if "additionalBufferPercent" not in raw_item:
+        raise PilotAssessmentError("assessment_additional_cash_buffer_unknown")
+    if (raw_item["additionalBufferPercent"] is not None
             and _number(raw_item["additionalBufferPercent"], "additional_buffer") != 0):
         raise PilotAssessmentError("assessment_additional_cash_buffer_unsupported")
     _number(raw_item.get("minPositionExposure"), "minimum_exposure")

@@ -21,6 +21,7 @@ from brokers.etoro.pilot_account import PilotAccount
 from execution.domain import (Approval, Environment, OrderIntent, OrderSide, OrderType,
     RiskDecision, RiskOutcome, SizingMethod, _aware_utc, canonical_json, immutable_pairs, payload_hash)
 from execution.instruments import BrokerInstrumentMapping, Instrument
+from execution.usage_reserve import PilotUsageAdmission, MAX_USAGE_AGE_SECONDS
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.kill_switch import KillSwitch, KillSwitchStatus
 from risk.pretrade import RiskLimits
@@ -29,6 +30,7 @@ from risk.pretrade import RiskLimits
 POLICY = "demo-pilot-v1"
 MANDATE_SCHEMA = "standing-demo-pilot-mandate-v1"
 AUTHORIZATION_KIND = "standing_mandate"
+PILOT_USAGE_AMENDMENT_FILENAME = "pilot-usage-amendment.json"
 _SCOPE = {
     "policy": POLICY, "environment": "demo", "broker": "etoro", "transport": "official_demo_api",
     "instrument_id": 1142, "symbol": "SBUX", "asset_type": "equity", "currency": "USD",
@@ -192,10 +194,24 @@ class StandingPilotMandate:
         return status
 
     def issue_approval(self, *, intent, decision, account, instrument, mapping,
-                       order_payload, ledger, kill_switch, limits, now, approval_limits=None):
+                       order_payload, ledger, kill_switch, limits, now, usage,
+                       usage_amendment=None, approval_limits=None):
         """Issue a fresh dynamic approval under standing, not per-order, consent."""
         moment = _timestamp(now)
         status = self.validate(ledger=ledger, kill_switch=kill_switch, now=moment)
+        floor = Decimal("10")
+        if usage_amendment is not None:
+            if type(usage_amendment) is not PilotUsageAmendment:
+                raise PilotMandateError("typed_pilot_usage_amendment_required")
+            usage_amendment.validate(mandate=self, ledger=ledger, now=moment)
+            floor = usage_amendment.floor_percent
+        if (type(usage) is not PilotUsageAdmission or usage.floor_percent < floor
+                or usage.recovery_reserve_percent < Decimal("5")
+                or usage.validate_for_submission(moment)):
+            raise PilotMandateError("mandate_fresh_authorized_usage_floor_and_reserve_required")
+        if (usage.floor_percent < Decimal("10")
+                and usage.authorization_reference != usage_amendment.source_reference):
+            raise PilotMandateError("mandate_usage_amendment_authorization_reference_mismatch")
         if not isinstance(account, PilotAccount) or account.account_id != self.account_id:
             raise PilotMandateError("mandate_fresh_same_demo_account_required")
         account.validate_fresh(moment)
@@ -234,7 +250,8 @@ class StandingPilotMandate:
             raise PilotMandateError("mandate_fresh_accepted_pilot_risk_required")
         expires_at = min(intent.expires_at, account.deadline,
             decision.decided_at + timedelta(seconds=limits.approval_max_age_seconds),
-            decision.quote_observed_at + timedelta(seconds=min(30, limits.quote_max_age_seconds)))
+            decision.quote_observed_at + timedelta(seconds=min(30, limits.quote_max_age_seconds)),
+            usage.observed_at + timedelta(seconds=MAX_USAGE_AGE_SECONDS))
         if expires_at <= moment:
             raise PilotMandateError("mandate_dynamic_evidence_expired")
         bound = {"risk_decision_id": str(decision.decision_id), "account_snapshot_id": decision.account_snapshot_id,
@@ -244,8 +261,13 @@ class StandingPilotMandate:
             "order_payload_hash": payload_hash(order_payload),
             "policy": POLICY, "broker_instrument_id": "1142", "symbol": "SBUX", "amount_usd": "10",
             "settlement_type": "real", "maximum_submissions": "1", "maximum_confirmed_pilot_fills": "1",
-            "kill_switch_revision": str(status.revision), "usage_work_floor_percent": "10",
-            "usage_recovery_reserve_percent": "5"}
+            "kill_switch_revision": str(status.revision), "usage_work_floor_percent": str(usage.floor_percent),
+            "usage_recovery_reserve_percent": str(usage.recovery_reserve_percent),
+            "usage_floor_authorization_reference": usage.authorization_reference,
+            "usage_source_reference": usage.source_reference, "usage_source_sha256": usage.source_sha256,
+            "usage_observed_at": usage.observed_at.isoformat(),
+            "usage_amendment_hash": usage_amendment.amendment_hash if usage_amendment else "",
+            "usage_amendment_source_reference": usage_amendment.source_reference if usage_amendment else ""}
         if approval_limits:
             if set(approval_limits) & set(bound):
                 raise PilotMandateError("mandate_protected_approval_limits_cannot_be_overridden")
@@ -255,3 +277,129 @@ class StandingPilotMandate:
             limits=immutable_pairs(bound), issued_at=moment, expires_at=expires_at)
         ApprovalAuthority.verify(approval=approval, intent=intent, now=moment)
         return approval
+
+
+_USAGE_AMENDMENT_SCHEMA = "standing-demo-pilot-usage-amendment-v1"
+_USAGE_AMENDMENT_SCOPE = {
+    "policy": POLICY, "change": "usage_work_floor_only",
+    "original_work_floor_percent": "10", "work_floor_percent": "5",
+    "recovery_reserve_percent": "5", "preserve_original_mandate": True,
+    "preserve_existing_inception": True,
+}
+
+
+def _amendment_binding(mandate, ledger=None, *, require_unclaimed=False):
+    if type(mandate) is not StandingPilotMandate:
+        raise PilotMandateError("usage_amendment_original_standing_mandate_required")
+    if StandingPilotMandate.load(mandate.path, expected_account_id=mandate.account_id) != mandate:
+        raise PilotMandateError("usage_amendment_original_mandate_changed")
+    if ledger is not None:
+        if not isinstance(ledger, PilotLedger):
+            raise PilotMandateError("usage_amendment_existing_pilot_ledger_required")
+        state = (_existing_ledger(ledger, mandate.account_id) if require_unclaimed else ledger.snapshot())
+        if (state["account_id"] != mandate.account_id
+                or state["inception"].get("account_id") != mandate.account_id
+                or state["inception"].get("policy") != POLICY
+                or ledger.path.resolve() != mandate.ledger_path
+                or payload_hash(state["inception"]) != mandate.ledger_inception_hash):
+            raise PilotMandateError("usage_amendment_original_ledger_inception_required")
+
+
+@dataclass(frozen=True, slots=True)
+class PilotUsageAmendment:
+    """Additive human authorization of a five-point floor; never a reset."""
+
+    path: Path
+    amendment_hash: str
+    amendment_id: str
+    mandate_hash: str
+    account_id: str
+    ledger_path: Path
+    ledger_inception_hash: str
+    source_reference: str
+    issued_at: datetime
+
+    @property
+    def floor_percent(self):
+        return Decimal("5")
+
+    @property
+    def recovery_reserve_percent(self):
+        return Decimal("5")
+
+    @classmethod
+    def create(cls, path, *, mandate, ledger, source_reference, issued_at):
+        _amendment_binding(mandate, ledger, require_unclaimed=True)
+        moment = _timestamp(issued_at)
+        if not isinstance(source_reference, str) or not source_reference.strip():
+            raise PilotMandateError("usage_amendment_current_human_source_reference_required")
+        if moment < mandate.issued_at:
+            raise PilotMandateError("usage_amendment_cannot_precede_original_mandate")
+        payload = {"schema": _USAGE_AMENDMENT_SCHEMA, "amendment_id": str(uuid4()),
+            "mandate_hash": mandate.mandate_hash, "account_id": mandate.account_id,
+            "ledger_path": str(mandate.ledger_path), "ledger_inception_hash": mandate.ledger_inception_hash,
+            "source_reference": source_reference, "issued_at": moment, "scope": _USAGE_AMENDMENT_SCOPE}
+        record = {"amendment": payload, "sha256": payload_hash(payload)}
+        path = Path(path).absolute()
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        except FileExistsError as exc:
+            raise PilotMandateError("usage_amendment_already_exists_never_overwrite") from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(canonical_json(record) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return cls.load(path, mandate=mandate)
+
+    @classmethod
+    def load(cls, path, *, mandate):
+        _amendment_binding(mandate)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb") as handle:
+                raw = handle.read(65537)
+            if len(raw) > 65536:
+                raise PilotMandateError("usage_amendment_file_size_invalid")
+            record = json.loads(raw, object_pairs_hook=_unique_pairs)
+            if not isinstance(record, dict) or set(record) != {"amendment", "sha256"}:
+                raise PilotMandateError("usage_amendment_record_shape_invalid")
+            payload = record["amendment"]
+            if not isinstance(payload, dict) or payload_hash(payload) != record["sha256"]:
+                raise PilotMandateError("usage_amendment_integrity_failure")
+            keys = {"schema", "amendment_id", "mandate_hash", "account_id", "ledger_path",
+                    "ledger_inception_hash", "source_reference", "issued_at", "scope"}
+            if (set(payload) != keys or payload["schema"] != _USAGE_AMENDMENT_SCHEMA
+                    or payload["scope"] != _USAGE_AMENDMENT_SCOPE):
+                raise PilotMandateError("usage_amendment_scope_or_schema_invalid")
+            if (payload["mandate_hash"] != mandate.mandate_hash or payload["account_id"] != mandate.account_id
+                    or payload["ledger_path"] != str(mandate.ledger_path)
+                    or payload["ledger_inception_hash"] != mandate.ledger_inception_hash):
+                raise PilotMandateError("usage_amendment_original_mandate_binding_mismatch")
+            if not isinstance(payload["source_reference"], str) or not payload["source_reference"].strip():
+                raise PilotMandateError("usage_amendment_current_human_source_reference_required")
+            UUID(payload["amendment_id"])
+            moment = _timestamp(payload["issued_at"])
+            if moment < mandate.issued_at:
+                raise PilotMandateError("usage_amendment_cannot_precede_original_mandate")
+            return cls(Path(path).absolute(), record["sha256"], payload["amendment_id"],
+                payload["mandate_hash"], payload["account_id"], Path(payload["ledger_path"]),
+                payload["ledger_inception_hash"], payload["source_reference"], moment)
+        except PilotMandateError:
+            raise
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise PilotMandateError("usage_amendment_missing_or_invalid") from exc
+
+    def validate(self, *, mandate, ledger, now):
+        # Quota authorization continues through lookup recovery. Opening a new
+        # order separately requires StandingPilotMandate.validate's empty ledger.
+        loaded = self.load(self.path, mandate=mandate)
+        if loaded != self:
+            raise PilotMandateError("usage_amendment_changed_after_load")
+        if _timestamp(now) < self.issued_at:
+            raise PilotMandateError("usage_amendment_not_yet_issued")
+        _amendment_binding(mandate, ledger)

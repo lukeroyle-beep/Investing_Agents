@@ -156,6 +156,16 @@ controls above still apply. The work floor is 10% with five additional percentag
 points reserved for recovery, so an opening send requires at least 15% remaining
 in every available usage window.
 
+Luke subsequently authorized work down to 5% remaining on 27 October. That
+additional allowance is recorded in an exclusive `pilot-usage-amendment.json`
+bound to the original mandate, Demo account and ledger inception. It does not
+rewrite the standing mandate, reset any claim, change trade scope, or reduce
+the five-point recovery reserve. Selecting `--work-floor-percent 5` therefore
+requires at least 10% remaining for a new opening and stops work at 5%.
+The original 10% standing default and 20% strict default remain unchanged.
+The amendment's human authorization reference must match the fresh usage
+evidence, and its integrity is rechecked immediately before dispatch.
+
 `standing-mandate.json` is exclusively created with the current human source
 reference and issue time. It binds the Demo account, exact scope and original
 pilot ledger path and inception hash. There is no invented calendar expiry:
