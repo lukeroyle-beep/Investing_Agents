@@ -31,7 +31,7 @@ from execution.operator import OperatorEvidenceStore
 from execution.pilot_operator import DemoPilotOperator
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
-from execution.usage_reserve import UsageAdmission, UsageWindow
+from execution.usage_reserve import UsageAdmission, UsageWindow, PilotUsageAdmission
 from risk.kill_switch import KillSwitch, RESET_ACKNOWLEDGEMENT
 from risk.pretrade import RiskLimits, QuoteEvidence
 from risk.submission_gate import GovernanceWritePolicy
@@ -192,7 +192,23 @@ class Host:
             tuple(x.window_id for x in windows), str(self.directory), payload_hash(receipt))
 
 
+def pilot_usage(host, args):
+    """Bind an explicitly selected pilot floor to fresh, complete quota evidence."""
+    original = host.usage()
+    return PilotUsageAdmission(original.observed_at, original.windows,
+        original.available_window_ids, original.source_reference, original.source_sha256,
+        floor_percent=getattr(args, "work_floor_percent", D(20)),
+        recovery_reserve_percent=original.recovery_reserve_percent,
+        authorization_reference=getattr(args, "usage_authorization", "") or "")
+
+
 def run(args):
+    floor = getattr(args, "work_floor_percent", D(20))
+    authorization = getattr(args, "usage_authorization", None)
+    if not isinstance(floor, D) or floor not in (D(10), D(20)):
+        raise ValueError("explicit_supported_pilot_usage_floor_required")
+    if floor < D(20) and (not isinstance(authorization, str) or not authorization.strip()):
+        raise ValueError("explicit_pilot_usage_authorization_required")
     root = args.runtime.resolve()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     lock = (root / "operator.lock").open("a+")
@@ -207,7 +223,7 @@ def run(args):
     if pinned.get("realCid") == pinned.get("demoCid"):
         raise ValueError("distinct_demo_identity_required")
     host = Host(root)
-    usage = host.usage()
+    usage = pilot_usage(host, args)
     if usage.validate_for_work(NOW()):
         raise ValueError("usage_floor_or_unknown_stop")
     metadata = host.read("/api/v2/market-data/instruments", query={"instrumentsIds":",".join(str(x[0]) for x in CLASSIFICATIONS)})
@@ -293,14 +309,15 @@ def run(args):
         "confirmation_hash":binding["confirmation_hash"], "confirmation":binding["confirmation"],
         "warnings":binding["warnings"], "expires_at":binding["expires_at"], "pilot_admission":proof["pilot_admission"],
         "limits":{"order":100,"combined":500,"positions":5,"cash_fraction":"0.20","loss_stop":25,
-                  "daily_submissions":1,"usage_floor_percent":20,"recovery_reserve_percent":5}})
+                  "daily_submissions":1,"usage_floor_percent":usage.floor_percent,
+                  "recovery_reserve_percent":usage.recovery_reserve_percent}})
     # This is the only human gate. No default/elapsed-time approval exists.
     approval = json.loads(sys.stdin.readline())
     if approval != {"approve_confirmation_hash":binding["confirmation_hash"], "approver":"Luke"}:
         raise ValueError("exact_human_approval_required")
     workflow.approve(command.command_id, adapter=adapter, confirmation_hash=binding["confirmation_hash"],
         approver="Luke", human_confirmed=True, now=NOW())
-    usage = host.usage()
+    usage = pilot_usage(host, args)
     pre = host.account(expected)
     quote, state = host.market(instrument)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
@@ -323,6 +340,9 @@ if __name__ == "__main__":
     parser.add_argument("--identity-receipt", type=Path, required=True)
     parser.add_argument("--recover", help="Existing command ID; lookup only, never approval or submission")
     parser.add_argument("--initialize", action="store_true", help="Explicit first-ever inception in a new runtime; never resets prior state")
+    parser.add_argument("--work-floor-percent", type=D, choices=(D(10), D(20)), default=D(20),
+        help="Explicit pilot-only usage floor; the 5%% recovery reserve remains additional")
+    parser.add_argument("--usage-authorization", help="User authorization reference required for the 10%% pilot floor")
     try:
         run(parser.parse_args())
     except Exception as exc:

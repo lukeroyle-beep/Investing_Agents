@@ -1,8 +1,9 @@
 """Fresh account-wide quota admission; no quota reset or credit bypass.
 
-A broker send needs the user's 20% floor plus five percentage points reserved
-for lookup and reconciliation. These percentages are allowances, not a promise
-about the token cost of recovery. The caller must refresh from the usage tool.
+The strict default is a 20% floor plus five percentage points reserved for
+lookup and reconciliation. An explicitly authorized Demo pilot can retain a
+lower floor in its separate admission type. These percentages are allowances,
+not a promise about the token cost of recovery. Refresh from the usage tool.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import ClassVar
 
 
 MINIMUM_FLOOR_PERCENT = Decimal("20")
@@ -58,6 +60,8 @@ class UsageAdmission:
     secondary is a blocker. All available buckets participate in the minimum.
     """
 
+    minimum_floor_percent: ClassVar[Decimal] = MINIMUM_FLOOR_PERCENT
+
     observed_at: datetime
     windows: tuple[UsageWindow, ...]
     available_window_ids: tuple[str, ...]
@@ -83,7 +87,7 @@ class UsageAdmission:
             raise UsageEvidenceError("usage_source_provenance_required")
         _percent(self.floor_percent)
         _percent(self.recovery_reserve_percent)
-        if self.floor_percent < MINIMUM_FLOOR_PERCENT or self.recovery_reserve_percent < MINIMUM_RECOVERY_RESERVE_PERCENT:
+        if self.floor_percent < self.minimum_floor_percent or self.recovery_reserve_percent < MINIMUM_RECOVERY_RESERVE_PERCENT:
             raise UsageEvidenceError("usage_floor_or_recovery_reserve_cannot_be_relaxed")
         if self.floor_percent + self.recovery_reserve_percent > 100:
             raise UsageEvidenceError("usage_floor_plus_reserve_exceeds_allowance")
@@ -127,3 +131,23 @@ class UsageAdmission:
         if remaining is not None and remaining <= self.floor_percent:
             blockers.append("usage_remaining_floor_reached")
         return tuple(blockers)
+
+
+@dataclass(frozen=True, slots=True)
+class PilotUsageAdmission(UsageAdmission):
+    """Scoped Demo-pilot quota policy retaining explicit floor authorization.
+
+    The inherited default remains 20%. Lowering it is an explicit choice that
+    requires a durable approval reference; neither policy permits spending the
+    five-point recovery reserve on an opening submission.
+    """
+
+    minimum_floor_percent: ClassVar[Decimal] = Decimal("5")
+    authorization_reference: str = ""
+
+    def __post_init__(self):
+        UsageAdmission.__post_init__(self)
+        if (not isinstance(self.authorization_reference, str)
+                or (self.floor_percent < MINIMUM_FLOOR_PERCENT
+                    and not self.authorization_reference.strip())):
+            raise UsageEvidenceError("explicit_pilot_usage_floor_authorization_required")

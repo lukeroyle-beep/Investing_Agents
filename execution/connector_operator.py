@@ -106,7 +106,8 @@ class ConnectorDemoOperator(DemoOperator):
                 or not governance.demo_writes_allowed or not kill_switch.writes_allowed
                 or kill_switch.environment != Environment.DEMO):
             raise SubmissionBlockedError("connector_submission_governance_or_lifecycle_blocked")
-        if not isinstance(usage, UsageAdmission) or usage.validate_for_submission(moment):
+        # A scoped pilot allowance must never relax the strict connector policy.
+        if type(usage) is not UsageAdmission or usage.validate_for_submission(moment):
             raise SubmissionBlockedError("fresh_usage_floor_and_recovery_reserve_required")
         if (account.contract_version != "account-risk-v2" or account.account_id != adapter.expected_account_id
                 or account.account_id != proof["account"]["account_id"]):

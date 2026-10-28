@@ -58,6 +58,57 @@ def build(items=None, now=NOW):
     return build_pilot_account(*(items or sources()), expected_account_id="123", now=now)
 
 
+def direct_sources(tmp_path, items=None):
+    from tests.test_pilot_reads import direct_receipt
+    result = []
+    for item in items or sources():
+        envelope = json.loads(item["result"]["content"][0]["text"])
+        payload = json.loads(envelope["body"], parse_float=D)
+        result.append(direct_receipt(tmp_path, item["arguments"]["path"], payload,
+            start=datetime.fromisoformat(item["request_started_at"]),
+            end=datetime.fromisoformat(item["response_received_at"])))
+    return result
+
+
+def test_direct_account_receipts_preserve_source_transport_and_original_bounds(tmp_path):
+    items = direct_sources(tmp_path)
+    account = build(items)
+    assert account.cash == D(900) and account.equity == D(1002)
+    assert account.deadline == NOW+timedelta(seconds=24)
+    assert all(item["tool"] == "etoro_direct_read" and "content" not in item["result"] for item in items)
+    assert account.raw_sources["pnl"] == items[2]
+    assert account.raw_sources["profile"]["request_started_at"] == (NOW-timedelta(seconds=6)).isoformat()
+    account.validate_fresh(NOW+timedelta(seconds=24))
+    with pytest.raises(ValueError, match="stale_or_future"):
+        account.validate_fresh(NOW+timedelta(seconds=24, microseconds=1))
+
+
+@pytest.mark.parametrize("failure", ["wrong_cid", "missing_pending_collection", "changed_capture"])
+def test_direct_receipts_retain_identity_complete_coverage_and_stable_account_gates(tmp_path, failure):
+    items = sources()
+    if failure == "wrong_cid":
+        change(items, 0, lambda p:p.update(demoCid=999))
+    elif failure == "missing_pending_collection":
+        change(items, 1, lambda p:p["clientPortfolio"].pop(DEMO_PENDING_COLLECTIONS[0]))
+    else:
+        change(items, 3, lambda p:p["clientPortfolio"].update(credit="901"))
+    with pytest.raises(ValueError):
+        build(direct_sources(tmp_path, items))
+
+
+@pytest.mark.parametrize("failure", ["fake_mcp", "changed_body", "extra_query"])
+def test_direct_account_provenance_cannot_be_relabelled_or_substituted(tmp_path, failure):
+    items = direct_sources(tmp_path)
+    if failure == "fake_mcp":
+        items[0]["tool"] = "etoro_execute_read"
+    elif failure == "changed_body":
+        items[0]["result"]["body"] = '{"demoCid":123}'
+    else:
+        items[0]["arguments"]["query"] = {"account":"other"}
+    with pytest.raises(ValueError):
+        build(items)
+
+
 def test_pilot_source_preserves_raw_receipts_unknown_history_and_fee_components():
     items = sources()
     account = build(items)
