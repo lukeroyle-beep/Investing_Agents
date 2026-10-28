@@ -471,7 +471,8 @@ def test_replacing_valid_catalog_after_approval_requires_new_preparation(tmp_pat
 
 
 @pytest.mark.parametrize("runtime_mode", ["new", "resume", "corrupt_marker"])
-def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp_path, monkeypatch, runtime_mode):
+@pytest.mark.parametrize("work_floor", [D(10), D(20)])
+def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp_path, monkeypatch, runtime_mode, work_floor):
     """Exercise runner wiring with local-only host; invalid approval cannot send."""
     import io
     import json
@@ -492,7 +493,7 @@ def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp
             self.directory.mkdir()
         def usage(self):
             calls.append("usage")
-            return UsageAdmission(NOW, (UsageWindow("weekly", D(50), primary=True),),
+            return UsageAdmission(NOW, (UsageWindow("weekly", D(24) if work_floor == D(10) else D(50), primary=True),),
                 ("weekly",), "synthetic-tool-evidence", "a" * 64)
         def read(self, path, **kwargs):
             calls.append(path)
@@ -544,7 +545,8 @@ def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp
     expected_error = "pilot_inception_marker_mismatch" if runtime_mode == "corrupt_marker" else "exact_human_approval_required"
     with pytest.raises(ValueError, match=expected_error):
         bridge.run(SimpleNamespace(runtime=runtime, identity_receipt=identity, recover=None,
-            initialize=runtime_mode == "new"))
+            initialize=runtime_mode == "new", work_floor_percent=work_floor,
+            usage_authorization="synthetic-explicit-user-floor"))
     if runtime_mode == "corrupt_marker":
         assert not emitted and fake.calls["place"] == 0
         assert not PilotLedger(runtime / "pilot.sqlite3", expected_account_id="123").snapshot()["submissions"]
@@ -552,6 +554,8 @@ def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp
     assert len(emitted) == 1 and emitted[0]["status"] == "AWAITING EXACT-ORDER APPROVAL"
     assert emitted[0]["confirmation"]["amount"] == "10"
     assert emitted[0]["limits"]["order"] == 100
+    assert emitted[0]["limits"]["usage_floor_percent"] == work_floor
+    assert emitted[0]["limits"]["recovery_reserve_percent"] == D(5)
     snapshot = PilotLedger(runtime / "pilot.sqlite3", expected_account_id="123").snapshot()
     assert snapshot["position_count"] == 0 and not snapshot["submissions"]
     marker = json.loads((runtime / "pilot-inception.json").read_text())
@@ -560,6 +564,27 @@ def test_json_bridge_initializes_real_local_runtime_and_holds_exact_approval(tmp
     assert len(commands) == 1 and commands[0].state == CommandState.AWAITING_APPROVAL
     assert "etoro_place_trade" not in calls and fake.calls["place"] == 0
     assert not (runtime / "kill-switch.json").exists()
+
+
+@pytest.mark.parametrize("floor,reference", [(D(10), None), (D(10), " "), (D(9), "authorized"), (10.0, "authorized")])
+def test_bridge_rejects_unapproved_or_unsupported_floor_before_any_host_access(monkeypatch, floor, reference):
+    import scripts.run_demo_pilot as bridge
+    monkeypatch.setattr(bridge, "Host", lambda _: pytest.fail("invalid profile must not access host"))
+    with pytest.raises(ValueError, match="pilot_usage"):
+        bridge.run(SimpleNamespace(work_floor_percent=floor, usage_authorization=reference))
+
+
+def test_pilot_usage_profile_preserves_original_source_and_unknown_windows():
+    import scripts.run_demo_pilot as bridge
+    raw = UsageAdmission(NOW, (UsageWindow("weekly", D(24), True), UsageWindow("extra", None)),
+        ("weekly", "extra"), "synthetic-tool", "a" * 64)
+    selected = bridge.pilot_usage(SimpleNamespace(usage=lambda: raw),
+        SimpleNamespace(work_floor_percent=D(10), usage_authorization="synthetic-user-instruction"))
+    assert selected.observed_at == raw.observed_at and selected.source_sha256 == raw.source_sha256
+    assert selected.source_reference == raw.source_reference and selected.windows == raw.windows
+    assert selected.available_window_ids == raw.available_window_ids
+    assert selected.authorization_reference == "synthetic-user-instruction"
+    assert "usage_window_allowance_unknown" in selected.validate_for_submission(NOW)
 
 
 @pytest.mark.parametrize("existing", [None, "pilot-inception.json", "execution.sqlite3", "connector.sqlite3",

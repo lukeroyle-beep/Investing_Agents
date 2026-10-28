@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from collections import defaultdict
 from contextlib import closing
@@ -16,7 +17,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from brokers.base import BrokerExecution
+from brokers.base import BrokerExecution, BrokerReconciliationResult
 from brokers.etoro.account_evidence import _exact_sum, _difference
 from brokers.etoro.pilot_account import PilotAccount
 from execution.domain import Environment, _aware_utc, canonical_json, payload_hash
@@ -104,6 +105,29 @@ def _same_holdings(before, after, *, carrying=True):
                for k in fields)
 
 
+def _terminal_evidence(result, command_id, *, partial):
+    """Require the adapter's normalized authoritative terminal lookup proof."""
+    if type(result) is not BrokerReconciliationResult or str(result.command_id) != str(command_id):
+        raise PilotLedgerError("pilot_typed_terminal_lookup_required")
+    details = dict(result.details)
+    if (len(details) != len(result.details) or result.reconciled is not True
+            or not result.broker_order_id or not details.get("connector_broker_reference_id")
+            or details.get("remainder_terminal") != "true"
+            or re.fullmatch(r"[a-f0-9]{64}", details.get("lookup_sha256", "")) is None):
+        raise PilotLedgerError("pilot_authoritative_terminal_remainder_required")
+    if partial is True:
+        if result.lifecycle_state != "partially_filled_terminal" or details.get("status_id") not in {"9", "10"}:
+            raise PilotLedgerError("pilot_terminal_partial_lookup_required")
+    elif partial is None:
+        if result.lifecycle_state != "filled" or details.get("status_id") != "3":
+            raise PilotLedgerError("pilot_terminal_full_fill_lookup_required")
+    elif (result.lifecycle_state not in {"rejected", "cancelled"}
+            or details.get("status_id") not in {"4", "7", "8"} or result.executions
+            or result.broker_position_id is not None):
+        raise PilotLedgerError("pilot_terminal_no_fill_lookup_required")
+    return _clean(result)
+
+
 class PilotLedger:
     """Explicit initialization, immutable inception, append-only observations."""
 
@@ -182,16 +206,18 @@ class PilotLedger:
         if inception["policy"] != SCHEMA or inception["account_id"] != self.expected_account_id:
             raise PilotLedgerError("pilot_wrong_account_or_policy")
         submissions = {}
-        for command_id, day, encoded, digest in db.execute("SELECT command_id,london_day,payload,digest FROM submissions ORDER BY rowid"):
+        original_rows = list(db.execute("SELECT rowid,command_id,london_day,payload,digest FROM submissions ORDER BY rowid"))
+        for _, command_id, day, encoded, digest in original_rows:
             value = self._decode((encoded, digest))
             if value["command_id"] != command_id or value["london_day"] != day:
                 raise PilotLedgerError("pilot_submission_integrity_failure")
             submissions[command_id] = {**value, "reconciled": False}
         positions, executions, reconciliations, holds = {}, {}, {}, []
+        finite_migration, journaled, journal_receipts = None, set(), {}
         pilot_pnl, loss_stopped = ZERO, False
         for kind, command_id, encoded, digest in db.execute("SELECT kind,command_id,payload,digest FROM events ORDER BY sequence"):
             event = self._decode((encoded, digest))
-            if kind == "reconciled_open":
+            if kind in {"reconciled_open", "reconciled_no_fill"}:
                 if command_id not in submissions or command_id in reconciliations:
                     raise PilotLedgerError("pilot_reconciliation_integrity_failure")
                 submissions[command_id]["reconciled"] = True
@@ -211,17 +237,45 @@ class PilotLedger:
                 loss_stopped = True
             elif kind == "hold":
                 holds.append(event["reason"])
+            elif kind == "finite_migration":
+                if (finite_migration is not None or event.get("schema") != "finite-demo-ledger-v2"
+                        or event.get("inception_hash") != payload_hash(inception)
+                        or not event.get("source_reference")
+                        or re.fullmatch(r"[a-f0-9]{40}", event.get("reviewed_commit", "")) is None):
+                    raise PilotLedgerError("pilot_finite_migration_integrity_failure")
+                finite_migration = event
+            elif kind == "journal_complete":
+                if (command_id not in reconciliations or command_id in journaled
+                        or event.get("reconciliation_hash") != payload_hash(reconciliations[command_id])
+                        or not event.get("journal_reference")):
+                    raise PilotLedgerError("pilot_journal_completion_integrity_failure")
+                journaled.add(command_id)
+                journal_receipts[command_id] = event
             elif kind != "outcome":
                 raise PilotLedgerError("pilot_unknown_event")
+        if finite_migration is not None:
+            preserved = finite_migration.get("preserved_submissions")
+            if (type(preserved) is not int or preserved < 0 or preserved > len(original_rows)
+                    or payload_hash(original_rows[:preserved]) != finite_migration.get("preserved_submissions_hash")):
+                raise PilotLedgerError("pilot_original_submission_history_changed")
+        for command_id, submission in submissions.items():
+            if submission.get("mandate_policy") == "finite-demo-v2":
+                if finite_migration is None:
+                    raise PilotLedgerError("pilot_finite_claim_without_migration")
+                submission["journal_complete"] = command_id in journaled
         pending = tuple(s for s in submissions.values() if not s["reconciled"])
+        journal_pending = any(s.get("mandate_policy") == "finite-demo-v2" and not s.get("journal_complete")
+                              for s in submissions.values())
         capital = _exact_sum(_money(p["capital"], "capital", nonnegative=True) for p in positions.values())
         capital = _exact_sum((capital, *(_exact_sum((_money(s["amount"], "amount"), _money(s["expected_costs"], "expected_costs"))) for s in pending)))
         return {"account_id": inception["account_id"], "inception": inception,
                 "loss_stopped": loss_stopped, "pilot_pnl": pilot_pnl,
                 "committed_capital": capital, "position_count": len(positions) + len(pending),
-                "unresolved": bool(pending or holds), "holds": tuple(holds),
+                "unresolved": bool(pending or holds or journal_pending), "holds": tuple(holds),
                 "positions": tuple(positions.values()), "submissions": tuple(submissions.values()),
-                "_executions": executions, "_reconciliations": reconciliations}
+                "_executions": executions, "_reconciliations": reconciliations,
+                "_finite_migration": finite_migration, "_journaled": journaled,
+                "_journal_receipts": journal_receipts}
 
     @staticmethod
     def _public(state):
@@ -230,6 +284,152 @@ class PilotLedger:
     def snapshot(self):
         with closing(self._connect()) as db:
             return self._public(self._state(db))
+
+    def enable_finite_mandates(self, *, source_reference, reviewed_commit, now):
+        """Explicit, audited schema migration; never called by a trading worker.
+
+        Only the obsolete SQL daily uniqueness constraint is removed. Every
+        original claim byte/digest, event and inception survives in this file;
+        the legacy reserve method continues to enforce its one-per-day rule.
+        """
+        moment = _time(now)
+        if not isinstance(source_reference, str) or not source_reference.strip():
+            raise PilotLedgerError("pilot_finite_migration_authority_required")
+        if not isinstance(reviewed_commit, str) or re.fullmatch(r"[a-f0-9]{40}", reviewed_commit) is None:
+            raise PilotLedgerError("pilot_finite_migration_reviewed_commit_required")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db)
+            previous = state["_finite_migration"]
+            if previous is not None:
+                if previous["source_reference"] != source_reference or previous["reviewed_commit"] != reviewed_commit:
+                    raise PilotLedgerError("pilot_finite_migration_exists_never_replace")
+                return previous
+            if state["unresolved"] or state["loss_stopped"]:
+                raise PilotLedgerError("pilot_finite_migration_requires_reconciled_ledger")
+            if moment < _time(state["inception"]["inception"]):
+                raise PilotLedgerError("pilot_finite_migration_precedes_inception")
+            rows = list(db.execute("SELECT rowid,command_id,london_day,payload,digest FROM submissions ORDER BY rowid"))
+            inception = tuple(db.execute("SELECT * FROM inception"))
+            db.execute("ALTER TABLE submissions RENAME TO submissions_migration_original")
+            db.execute("CREATE TABLE submissions (command_id TEXT PRIMARY KEY, london_day TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL)")
+            db.execute("INSERT INTO submissions(rowid,command_id,london_day,payload,digest) SELECT rowid,command_id,london_day,payload,digest FROM submissions_migration_original ORDER BY rowid")
+            db.execute("DROP TABLE submissions_migration_original")
+            db.execute("CREATE TRIGGER submissions_no_update BEFORE UPDATE ON submissions BEGIN SELECT RAISE(ABORT,'immutable submission'); END")
+            db.execute("CREATE TRIGGER submissions_no_delete BEFORE DELETE ON submissions BEGIN SELECT RAISE(ABORT,'immutable submission'); END")
+            db.execute("CREATE INDEX submissions_london_day ON submissions(london_day)")
+            if (rows != list(db.execute("SELECT rowid,command_id,london_day,payload,digest FROM submissions ORDER BY rowid"))
+                    or inception != tuple(db.execute("SELECT * FROM inception"))):
+                raise PilotLedgerError("pilot_finite_migration_preservation_failed")
+            receipt = {"schema": "finite-demo-ledger-v2", "source_reference": source_reference,
+                       "reviewed_commit": reviewed_commit, "observed_at": moment,
+                       "inception_hash": payload_hash(state["inception"]),
+                       "preserved_submissions_hash": payload_hash(rows), "preserved_submissions": len(rows)}
+            self._append(db, "finite_migration", None, receipt)
+        return _clean(receipt)
+
+    def reconciliation_receipt(self, command_id):
+        """Read an economically committed receipt for the durable Journal Agent."""
+        command_id = str(command_id)
+        with closing(self._connect()) as db:
+            state = self._state(db)
+            receipt = state["_reconciliations"].get(command_id)
+            if receipt is None:
+                raise PilotLedgerError("pilot_economic_reconciliation_required")
+            claim = next(s for s in state["submissions"] if s["command_id"] == command_id)
+            # Derived flags must not make the immutable claim hash change when
+            # journal completion is committed later.
+            claim = {key: value for key, value in claim.items() if key not in {"reconciled", "journal_complete"}}
+            return {"claim": claim, "reconciliation": receipt,
+                    "inception_hash": payload_hash(state["inception"]),
+                    "reconciliation_hash": payload_hash(receipt)}
+
+    def mark_journal_complete(self, command_id, *, journal_reference, now):
+        command_id, moment = str(command_id), _time(now)
+        if not isinstance(journal_reference, str) or not journal_reference.strip():
+            raise PilotLedgerError("pilot_durable_journal_reference_required")
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db)
+            receipt = state["_reconciliations"].get(command_id)
+            if receipt is None:
+                raise PilotLedgerError("pilot_economic_reconciliation_required")
+            if moment < _time(receipt["observed_at"]):
+                raise PilotLedgerError("pilot_journal_precedes_reconciliation")
+            previous = state["_journal_receipts"].get(command_id)
+            if previous is not None and previous["journal_reference"] != journal_reference:
+                raise PilotLedgerError("pilot_journal_completion_reference_changed")
+            if command_id not in state["_journaled"]:
+                self._append(db, "journal_complete", command_id,
+                    {"observed_at": moment, "journal_reference": journal_reference,
+                     "reconciliation_hash": payload_hash(receipt)})
+        return self.snapshot()
+
+    def reserve_under_mandate(self, mandate, candidate, account, now):
+        """Atomically consume a finite attempt in the original shared ledger."""
+        from execution.finite_demo_mandate import FiniteDemoMandate
+        if type(mandate) is not FiniteDemoMandate:
+            raise PilotLedgerError("pilot_typed_finite_mandate_required")
+        moment = _time(now)
+        data = _account(account, self.expected_account_id, moment)
+        instrument = mandate.validate_candidate(candidate)
+        amount = _money(candidate.amount, "amount", nonnegative=True)
+        costs = _money(candidate.expected_costs, "expected_costs", nonnegative=True)
+        scope = mandate.scope
+        day = moment.astimezone(LONDON).date().isoformat()
+        error = None
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db)
+            mandate.validate_binding(ledger=self, state=state, now=moment)
+            if state["_finite_migration"] is None:
+                raise PilotLedgerError("pilot_explicit_finite_migration_required")
+            if any(s["command_id"] == candidate.command_id for s in state["submissions"]):
+                raise PilotLedgerError("pilot_duplicate_command_lookup_only")
+            if state["unresolved"]:
+                raise PilotLedgerError("pilot_unresolved_reconciliation_or_journal_lookup_only")
+            own = [s for s in state["submissions"] if s.get("mandate_hash") == mandate.mandate_hash]
+            if len(own) >= scope["max_submissions"]:
+                raise PilotLedgerError("pilot_finite_submission_budget_exhausted")
+            if sum(s["london_day"] == day for s in state["submissions"]) >= scope["max_per_day"]:
+                raise PilotLedgerError("pilot_finite_daily_submission_budget_exhausted")
+            attempted = _exact_sum(_exact_sum((_money(s["amount"], "amount"), _money(s["expected_costs"], "expected_costs"))) for s in own)
+            if _exact_sum((attempted, amount, costs)) > Decimal(scope["total_commitment"]):
+                raise PilotLedgerError("pilot_finite_attempt_commitment_exhausted")
+            try:
+                pnl = self._mark(db, state, data, moment)
+            except PilotLedgerError as exc:
+                self._append(db, "hold", None, {"reason": str(exc), "observed_at": moment})
+                error = exc
+            state = self._state(db)
+            if error is None and (state["loss_stopped"] or pnl <= -Decimal(scope["loss_stop"])):
+                if not state["loss_stopped"]:
+                    self._append(db, "loss_stop", None, {"observed_at": moment, "pilot_pnl": pnl,
+                        "reason": "finite_mandate_cumulative_loss_stop", "mandate_hash": mandate.mandate_hash})
+                error = PilotLedgerError("pilot_cumulative_loss_stop_latched")
+            if error is None:
+                if _exact_sum((state["committed_capital"], amount, costs)) > Decimal(scope["total_commitment"]):
+                    raise PilotLedgerError("pilot_finite_combined_capital_cap")
+                if state["position_count"] >= scope["max_positions"]:
+                    raise PilotLedgerError("pilot_finite_position_cap")
+                available = _difference(_money(data["cash"], "cash"), amount, costs)
+                cash_n, cash_d = available.as_integer_ratio()
+                eq_n, eq_d = _money(data["equity"], "equity").as_integer_ratio()
+                fraction_n, fraction_d = Decimal(scope["min_cash_fraction"]).as_integer_ratio()
+                if cash_n * eq_d * fraction_d < eq_n * cash_d * fraction_n:
+                    raise PilotLedgerError("pilot_finite_cash_reserve")
+                claim = {"command_id": candidate.command_id, "london_day": day, "send_started_at": moment,
+                    "amount": amount, "expected_costs": costs, "pre_account": data,
+                    "intent_hash": candidate.intent_hash, "instrument_id": candidate.instrument_id,
+                    "recovery": "lookup_only_no_resubmission", "mandate_policy": "finite-demo-v2",
+                    "mandate_id": mandate.mandate_id, "mandate_hash": mandate.mandate_hash,
+                    "mandate_scope": scope, "instrument": instrument,
+                    "order_type": candidate.order_type, "journal_required": True}
+                db.execute("INSERT INTO submissions VALUES (?,?,?,?)",
+                    (candidate.command_id, day, canonical_json(claim), payload_hash(claim)))
+        if error:
+            raise error
+        return next(s for s in self.snapshot()["submissions"] if s["command_id"] == candidate.command_id)
 
     def _mark(self, db, state, data, now):
         current = _positions(data)
@@ -256,9 +456,11 @@ class PilotLedger:
         self._append(db, "mark", None, {"observed_at": now, "account": data,
                      "pilot_pnl": pnl, "realised_pnl": ZERO,
                      "pnl_basis": "verified_opening_cash_flows_plus_position_asset_values"})
-        if pnl <= Decimal("-25") and not state["loss_stopped"]:
+        loss_limit = min((Decimal("25"), *(Decimal(s["mandate_scope"]["loss_stop"])
+            for s in state["submissions"] if s.get("mandate_policy") == "finite-demo-v2")))
+        if pnl <= -loss_limit and not state["loss_stopped"]:
             self._append(db, "loss_stop", None, {"observed_at": now, "pilot_pnl": pnl,
-                                               "reason": "cumulative_pilot_loss_at_least_25"})
+                "reason": "cumulative_pilot_loss_at_least_25" if loss_limit == 25 else "finite_mandate_cumulative_loss_stop"})
         return pnl
 
     def refresh_marks(self, account, now):
@@ -333,7 +535,8 @@ class PilotLedger:
             self._append(db, "outcome", command_id, {"response": response})
         return self.snapshot()
 
-    def reconcile_open(self, command_id, executions, pre_account, post_account, now):
+    def reconcile_open(self, command_id, executions, pre_account, post_account, now, *,
+                       terminal_partial=False, terminal_evidence=None):
         moment = _time(now)
         # The pre-submit capture is expected to age during execution/recovery;
         # its original clocks and bytes must match the durably claimed capture.
@@ -343,6 +546,13 @@ class PilotLedger:
         pre = _clean(pre_account)
         post = _account(post_account, self.expected_account_id, moment)
         command_id = str(command_id)
+        terminal = None
+        if type(terminal_partial) is not bool:
+            raise PilotLedgerError("pilot_explicit_partial_flag_required")
+        if terminal_partial:
+            terminal = _terminal_evidence(terminal_evidence, command_id, partial=True)
+        elif terminal_evidence is not None:
+            terminal = _terminal_evidence(terminal_evidence, command_id, partial=None)
         error = None
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -369,7 +579,9 @@ class PilotLedger:
                 raise PilotLedgerError("pilot_confirmed_opening_executions_required")
             previous = state["_reconciliations"].get(command_id)
             if previous:
-                if payload_hash(previous["executions"]) != payload_hash(values):
+                if (payload_hash(previous["executions"]) != payload_hash(values)
+                        or previous.get("terminal_partial", False) != terminal_partial
+                        or previous.get("terminal_evidence") != terminal):
                     raise PilotLedgerError("pilot_reconciled_execution_changed")
                 return self._public(state)
             before, after = _positions(pre), _positions(post)
@@ -396,13 +608,20 @@ class PilotLedger:
                 references.add(e["broker_reference_id"])
             if len(order_ids) != 1 or len(references) != 1:
                 raise PilotLedgerError("pilot_one_broker_order_required")
+            if terminal is not None and (claim.get("mandate_policy") != "finite-demo-v2"
+                    or terminal_evidence.broker_order_id not in order_ids
+                    or dict(terminal_evidence.details)["connector_broker_reference_id"] not in references
+                    or payload_hash(terminal["executions"]) != payload_hash(values)):
+                raise PilotLedgerError("pilot_terminal_partial_claim_binding_mismatch")
             if set(after) != set(before) | set(grouped) or set(before) & set(grouped):
                 raise PilotLedgerError("pilot_whole_account_position_set_mismatch")
             for key, p in before.items():
                 if not _same_holdings(p, after[key]):
                     raise PilotLedgerError("pilot_whole_account_existing_holding_changed")
             principal = _exact_sum(_money(e["executed_amount"], "executed_amount") for e in values)
-            if principal != _money(claim["amount"], "amount"):
+            if terminal_partial and not ZERO < principal < _money(claim["amount"], "amount"):
+                raise PilotLedgerError("pilot_terminal_partial_principal_outside_claim")
+            if not terminal_partial and principal != _money(claim["amount"], "amount"):
                 raise PilotLedgerError("pilot_terminal_full_requested_principal_required")
             costs = _exact_sum(_exact_sum((_money(e["fees"], "fees"), _money(e["taxes"], "taxes"))) for e in values)
             if _difference(_money(pre["cash"], "cash"), principal, costs, _money(post["cash"], "cash")) != ZERO:
@@ -425,9 +644,12 @@ class PilotLedger:
                 records.append({"position_id": key, "instrument_id": p["instrument_id"],
                                 "command_id": command_id, "capital": _exact_sum((invested, fees, taxes)),
                                 "opening_fees": fees, "opening_taxes": taxes, "position_at_open": p})
-            self._append(db, "reconciled_open", command_id, {"observed_at": moment,
+            receipt = {"observed_at": moment,
                          "pre_account": pre, "post_account": post,
-                         "executions": values, "positions": records})
+                         "executions": values, "positions": records}
+            if terminal is not None:
+                receipt.update(terminal_partial=terminal_partial, terminal_evidence=terminal)
+            self._append(db, "reconciled_open", command_id, receipt)
             state = self._state(db)
             breaches = []
             if _exact_sum((principal, costs)) > 100:
@@ -438,6 +660,19 @@ class PilotLedger:
                 breaches.append("pilot_actual_position_count_exceeded")
             if not _cash_reserve_met(_money(post["cash"], "cash"), _money(post["equity"], "equity")):
                 breaches.append("pilot_actual_cash_reserve_breached")
+            if claim.get("mandate_policy") == "finite-demo-v2":
+                scope = claim["mandate_scope"]
+                if _exact_sum((principal, costs)) > Decimal(scope["per_order_cap"]):
+                    breaches.append("pilot_finite_actual_order_cap_exceeded")
+                if state["committed_capital"] > Decimal(scope["total_commitment"]):
+                    breaches.append("pilot_finite_actual_capital_cap_exceeded")
+                if state["position_count"] > scope["max_positions"]:
+                    breaches.append("pilot_finite_actual_position_cap_exceeded")
+                cash_n, cash_d = _money(post["cash"], "cash").as_integer_ratio()
+                eq_n, eq_d = _money(post["equity"], "equity").as_integer_ratio()
+                fraction_n, fraction_d = Decimal(scope["min_cash_fraction"]).as_integer_ratio()
+                if cash_n * eq_d * fraction_d < eq_n * cash_d * fraction_n:
+                    breaches.append("pilot_finite_actual_cash_reserve_breached")
             for reason in breaches:
                 self._append(db, "hold", command_id, {"reason": reason, "observed_at": moment})
             self._mark(db, state, post, moment)
@@ -445,4 +680,46 @@ class PilotLedger:
                 error = PilotLedgerError(";".join(breaches))
         if error:
             raise error
+        return self.snapshot()
+
+    def reconcile_no_fill(self, command_id, pre_account, post_account, now, *, terminal_evidence):
+        """Release an unused reservation only after terminal and account proof.
+
+        This still consumes the attempt. It never permits another dispatch of
+        the command, changes an existing claim or bypasses journal completion.
+        """
+        moment, command_id = _time(now), str(command_id)
+        terminal = _terminal_evidence(terminal_evidence, command_id, partial=False)
+        if not isinstance(pre_account, PilotAccount):
+            raise PilotLedgerError("typed_pilot_account_required")
+        pre_account.validate_fresh(pre_account.capture_completed_at)
+        pre, post = _clean(pre_account), _account(post_account, self.expected_account_id, moment)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db)
+            claims = [s for s in state["submissions"] if s["command_id"] == command_id]
+            if len(claims) != 1 or claims[0].get("mandate_policy") != "finite-demo-v2":
+                raise PilotLedgerError("pilot_finite_submission_claim_required")
+            claim = claims[0]
+            if payload_hash(pre) != payload_hash(claim["pre_account"]):
+                raise PilotLedgerError("pilot_reconciliation_pre_capture_mismatch")
+            if _time(post["capture_started_at"]) < _time(claim["send_started_at"]):
+                raise PilotLedgerError("pilot_post_capture_precedes_submission")
+            previous = state["_reconciliations"].get(command_id)
+            if previous is not None:
+                if not previous.get("terminal_no_fill") or previous.get("terminal_evidence") != terminal:
+                    raise PilotLedgerError("pilot_reconciled_terminal_outcome_changed")
+                return self._public(state)
+            before, after = _positions(pre), _positions(post)
+            if set(before) != set(after) or any(not _same_holdings(p, after[key]) for key, p in before.items()):
+                raise PilotLedgerError("pilot_no_fill_existing_holdings_changed")
+            if _money(pre["cash"], "cash") != _money(post["cash"], "cash"):
+                raise PilotLedgerError("pilot_no_fill_cash_changed")
+            # PilotAccount re-parses complete raw broker sources, requiring all
+            # pending collections empty and an exact supported cash valuation.
+            receipt = {"observed_at": moment, "pre_account": pre, "post_account": post,
+                       "executions": (), "positions": (), "terminal_no_fill": True,
+                       "terminal_evidence": terminal}
+            self._append(db, "reconciled_no_fill", command_id, receipt)
+            self._mark(db, self._state(db), post, moment)
         return self.snapshot()

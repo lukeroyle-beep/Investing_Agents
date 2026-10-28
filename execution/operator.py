@@ -135,6 +135,8 @@ class _CapturedLookup:
 class DemoOperator:
     broker_name = "fake"
     source_kind = "fixture"
+    terminal_lookup_states = frozenset({"filled", "rejected", "cancelled"})
+    filled_lookup_states = frozenset({"filled", "partially_filled"})
     def __init__(self, *, coordinator: ExecutionCoordinator, limits: RiskLimits,
                  evidence_store: OperatorEvidenceStore, staged_fills_path: Path | str):
         self.coordinator, self.limits = coordinator, limits
@@ -345,14 +347,14 @@ class DemoOperator:
             seen.add(execution.broker_execution_id)
         if not set(records).issubset(seen):
             raise OperatorEvidenceError("lookup dropped previously confirmed executions")
-        terminal_states = {"filled", "rejected", "cancelled"}
+        terminal_states = self.terminal_lookup_states
         if (result.lifecycle_state not in terminal_states | {"acknowledged", "partially_filled", "unknown", "cancel_pending"}
                 or result.reconciled != (result.lifecycle_state in terminal_states)):
             raise OperatorEvidenceError("lookup terminal status is contradictory")
         for previous in self.evidence.read_observations(command.command_id):
             if "result" in previous and previous["result"]["reconciled"] and previous["result"]["lifecycle_state"] != result.lifecycle_state:
                 raise OperatorEvidenceError("terminal broker state changed")
-        if result.lifecycle_state in {"filled", "partially_filled"} and not result.executions:
+        if result.lifecycle_state in self.filled_lookup_states and not result.executions:
             raise OperatorEvidenceError("filled status lacks broker-confirmed executions")
         if exact_sum(Decimal(x["executed_amount"]) if x.get("executed_amount") is not None
                      else Decimal(x["units"]) * Decimal(x["price"]) for x in records.values()) > intent.sizing_value:

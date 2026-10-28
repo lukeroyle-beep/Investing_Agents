@@ -1,4 +1,4 @@
-"""Supported MCP portfolio evidence for the separate ``demo-pilot-v1`` policy.
+"""Supported MCP or direct API evidence for the ``demo-pilot-v1`` policy.
 
 Cash has no broker timestamp. Its original request/receipt interval bounds
 admission under this pilot contract only; it never becomes a broker observation
@@ -14,6 +14,7 @@ import json
 
 from brokers.etoro.account_evidence import _exact_sum
 from brokers.etoro.connector import instant, number, positive_id, response_object
+from brokers.etoro.pilot_reads import read_receipt_envelope
 from brokers.etoro.schemas import (
     DEMO_PENDING_COLLECTIONS, EtoroDetailedPortfolio, EtoroPnlPortfolio,
     _pnl_timestamp, exact_datetime_epoch_seconds,
@@ -132,13 +133,16 @@ class PilotAccount:
 
 
 def _receipt(receipt, path):
-    if (not isinstance(receipt, dict) or receipt.get("tool") != "etoro_execute_read"
+    if (not isinstance(receipt, dict) or receipt.get("tool") not in {"etoro_execute_read", "etoro_direct_read"}
             or receipt.get("arguments") != {"path": path}):
         raise ValueError("pilot_exact_supported_read_required")
     start = instant(receipt.get("request_started_at"), "request_started_at")
     end = instant(receipt.get("response_received_at"), "response_received_at")
     if not 0 <= (end - start).total_seconds() <= MAX_REQUEST_SECONDS:
         raise ValueError("pilot_request_duration_exceeded")
+    if receipt["tool"] == "etoro_direct_read":
+        _, raw = read_receipt_envelope(receipt)
+        return raw, start, end
     result = receipt.get("result")
     if (not isinstance(result, dict) or result.get("isError")
             or not isinstance(result.get("content"), list) or len(result["content"]) != 1
