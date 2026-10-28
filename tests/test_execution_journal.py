@@ -22,7 +22,9 @@ REFS = {"preparation": payload_hash({"synthetic_evidence": "prepared"})}
 
 
 @pytest.fixture
-def source(tmp_path):
+def source(tmp_path, request):
+    tmp_path = tmp_path / getattr(request, "param", "")
+    tmp_path.mkdir(parents=True, exist_ok=True)
     ledger = PilotLedger.create(tmp_path / "economic.sqlite3", Account(), [], NOW)
     store = ExecutionStore(tmp_path / "operational.sqlite3")
     intent = OrderIntent.create(strategy_id="test", run_id="synthetic", internal_instrument_id=uuid4(),
@@ -157,15 +159,24 @@ def test_sensitive_fields_rejected_recursively(payload):
         _clean(payload)
 
 
+@pytest.mark.parametrize("source", ["standard-runtime", "private/runtime"], indirect=True)
 def test_secret_bearing_source_fails_before_storage(source):
     ledger, _, journal, _, command = source
     claimed(source)
+    before_events = journal.events()
+    before_bytes = journal.path.read_bytes()
+    sentinel = "SYNTHETIC_JOURNAL_SECRET_DO_NOT_PERSIST_4e4ec3d6a8f84bb9"
+    assert len(before_events) == 2
+    assert json.dumps(str(journal.path.parent))[1:-1].encode() in before_bytes
     # The older economic cleaner preserves unknown field names; the journal
     # rejects instead of copying secret-bearing data into another repository.
-    ledger.record_outcome(str(command.command_id), {"password": "private"})
+    ledger.record_outcome(str(command.command_id), {"password": sentinel})
     with pytest.raises(ExecutionJournalError, match="sensitive"):
         journal.record_outcome(command.command_id)
-    assert b"private" not in journal.path.read_bytes()
+    assert journal.events() == before_events
+    assert len(journal.events()) == 2
+    assert journal.path.read_bytes() == before_bytes
+    assert sentinel.encode() not in journal.path.read_bytes()
 
 
 def test_concurrent_identical_intents_make_one_event(source):
