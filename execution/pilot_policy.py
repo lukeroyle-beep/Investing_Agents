@@ -158,7 +158,8 @@ def evaluate_pilot(*, account, ledger, catalog, instrument_id, amount, expected_
         "reconciled": not ledger["unresolved"],
     }
     day = now.astimezone(ZoneInfo("Europe/London")).date().isoformat()
-    checks["daily_submission"] = not any(x.get("london_day") == day for x in ledger["submissions"])
+    checks["daily_submission"] = not any(x.get("london_day") == day for x in
+        (*ledger["submissions"], *ledger.get("external_openings", ())))
     return {"policy": POLICY, "eligible": all(checks.values()), "checks": checks,
             "opening_capital_usd": commitment, "cash_after_commitment_usd": subtract(account.cash,commitment),
             "legacy_breaches": catalog.legacy_breaches(account), "catalog_hash": catalog.source_hash,
