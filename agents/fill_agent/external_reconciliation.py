@@ -340,10 +340,15 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
                 blockers.add("lookup_position_not_external_candidate")
                 continue
             opening, position = row.get("openingData", {}), current[key]
+            asset = lookup.get("asset", {})
             if (_id(opening.get("orderId")) != order or row.get("state") != "open"
                     or _number(row.get("remainingUnits")) != position.units
                     or _number(opening.get("units")) != position.units
-                    or lookup.get("asset", {}).get("instrumentId") != position.instrument_id
+                    or asset.get("instrumentId") != position.instrument_id
+                    or _number(asset.get("leverage")) != position.leverage
+                    or asset.get("settlementType") != {0: "cfd", 1: "real"}[position.settlement_type]
+                    or asset.get("side") != ("long" if position.is_buy else "short")
+                    or not position.is_buy
                     or not (exact_datetime_epoch_seconds(inception_at) <= _source_time(opening.get("executionTime"))
                             <= exact_datetime_epoch_seconds(min(capture, received)))):
                 blockers.add("external_opening_identity_units_or_time_mismatch")
@@ -359,6 +364,9 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
         blockers.add("missing_external_opening_lookup")
     if added:
         blockers.add("original_opening_cash_debit_proof_not_admitted")
+    carrying = [current[key].carrying_fees for key in added if current[key].carrying_fees != 0]
+    if carrying:
+        blockers.add("external_carrying_fee_cash_basis_unqualified")
     # Official eToro MCP history contract: account-currency amounts; netProfit
     # excludes fees. This is a known-event bridge, never completeness proof.
     proceeds = _exact_sum(_difference(_exact_sum((_number(r["investment"]), _number(r["netProfit"]))), _number(r["fees"]))
@@ -386,6 +394,10 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
         "cash_observed": account.cash, "cash_known_event_prediction": predicted, "cash_residual": residual,
         "prospective_external_capital": opening_debit,
         "prospective_external_pnl": _exact_sum(_difference(current[k].pnl, current[k].fees, current[k].taxes) for k in added),
+        "nonzero_external_carrying_fee_positions": len(carrying),
+        "reported_external_carrying_fees": _exact_sum(carrying),
+        "prospective_amounts_and_cash_bridge_exclude_unqualified_carrying_effects": True,
+        "external_lookup_match_scope": "account_order_position_instrument_direction_leverage_settlement_units_source_time",
         "legacy_closure_profit_credited_to_pilot": False, "new_submission_claims": 0,
         "required_journal_phase": "external_import_without_synthetic_dispatch",
         "blockers": sorted(blockers), "manifest_sha256": _hash(retained[manifest]),

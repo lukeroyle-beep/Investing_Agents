@@ -39,7 +39,7 @@ official history route has no total count; a short page remains a heuristic.
 
 External position candidates are matched to original order-ID lookup requests,
 account identity, terminal status/name, opening order/position identities, units,
-instrument, costs and exact source times. Seven-digit fractional source times
+instrument, direction, leverage, settlement, costs and exact source times. Seven-digit fractional source times
 are preserved. Events cannot postdate their own receipt or the account cutoff.
 An invested-amount conflict remains a blocker; margin is never substituted for
 principal. Historic opening-cash-debit proof is not yet admitted by this planner.
@@ -104,7 +104,12 @@ convention, so this dependency is stated rather than inferred from a symbol.
 
 Prospective external capital and P&L describe the current candidate positions;
 they have not been imported. Legacy closure profit is never credited to pilot
-performance. A future reviewed import must retain inception and consumed claims,
+performance. The bridge and prospective amounts exclude unqualified carrying-fee
+cash effects; any nonzero reported carrying cost or credit adds a dedicated hold
+and is exposed separately, rather than silently treated as zero or deducted
+without a supported cash convention. The report states the precise lookup match
+scope; principal conflicts and cash-debit proof remain separate checks.
+A future reviewed import must retain inception and consumed claims,
 append uniquely keyed external lifecycle events, count imported project capital
 and P&L toward limits, and journal them without fabricated commands or dispatches.
 

@@ -74,7 +74,7 @@ def evidence(tmp_path):
     history = [{'positionId':1,'instrumentId':9,'isBuy':True,'leverage':1,'units':'10',
                 'investment':'1000','netProfit':'25','fees':'1','closeTimestamp':(NOW+timedelta(seconds=1)).isoformat()}]
     lookup = {'accountId':123,'orderId':500,'action':'open','transaction':'buy','orderCurrency':'usd',
-        'asset':{'instrumentId':2},'status':{'id':3,'name':'Filled'},'positionExecutions':[
+        'asset':{'instrumentId':2,'leverage':1,'settlementType':'real','side':'long'},'status':{'id':3,'name':'Filled'},'positionExecutions':[
             {'positionId':101,'state':'open','investedAmountCurrency':'10','remainingUnits':'2','addedFunds':'0',
              'openingData':{'orderId':500,'units':'2','fees':'0','taxes':'0',
                             'executionTime':(NOW+timedelta(seconds=2)).isoformat()}}]}
@@ -237,6 +237,27 @@ def test_pending_lookup_cannot_become_terminal(evidence):
     result=inspect(evidence)
     assert 'external_opening_terminal_scope_unverified' in result['blockers']
     assert result['external_lookup_positions_matched']==0
+
+
+@pytest.mark.parametrize('field,value',[('leverage',2),('settlementType','cfd'),('side','short')])
+def test_lookup_asset_economics_must_match_account(evidence,field,value):
+    lookup=deepcopy(evidence[5]);lookup['asset'][field]=value;rewrite(evidence,'lookup',lookup)
+    result=inspect(evidence)
+    assert result['external_lookup_positions_matched']==0
+    assert 'external_opening_identity_units_or_time_mismatch' in result['blockers']
+
+
+@pytest.mark.parametrize('carrying',['1','-1'])
+def test_carrying_cost_or_credit_cannot_be_silently_excluded(evidence,carrying):
+    current=Account(now=NOW+timedelta(seconds=3),cash=D('11014'),positions=(
+        Position(position_id='101',instrument_id=2,units=D('2'),principal=D('10'),
+                 pnl=D('0.09'),exposure=D('10.09'),carrying_fees=D(carrying)),))
+    evidence[3]['account_receipts']=direct_account(evidence[1],current)
+    result=inspect(evidence)
+    assert 'external_carrying_fee_cash_basis_unqualified' in result['blockers']
+    assert result['nonzero_external_carrying_fee_positions']==1
+    assert result['reported_external_carrying_fees']==carrying
+    assert result['prospective_amounts_and_cash_bridge_exclude_unqualified_carrying_effects']
 
 
 def test_missing_timezone_rejected(evidence):
