@@ -70,7 +70,7 @@ def evidence(tmp_path):
     root = tmp_path/'proof';root.mkdir(mode=0o700)
     at = NOW+timedelta(seconds=3)
     current = Account(now=at,cash=D('11014'),positions=(Position(position_id='101',instrument_id=2,
-        units=D('2'),principal=D('10'),pnl=D('0.09'),exposure=D('10.09')),))
+        units=D('2'),principal=D('10'),pnl=D('0.31'),exposure=D('10.31')),))
     history = [{'positionId':1,'instrumentId':9,'isBuy':True,'leverage':1,'units':'10',
                 'investment':'1000','netProfit':'25','fees':'1','closeTimestamp':(NOW+timedelta(seconds=1)).isoformat()}]
     lookup = {'accountId':123,'orderId':500,'action':'open','transaction':'buy','orderCurrency':'usd',
@@ -113,7 +113,7 @@ def test_balancing_sources_still_cannot_authorize_import(evidence):
     assert result['known_baseline_closures_verified']==1
     assert result['external_lookup_positions_matched']==1
     assert result['prospective_external_capital']=='10'
-    assert result['prospective_external_pnl']=='0.09'
+    assert result['prospective_external_pnl']=='0.31'
     assert result['cash_event_coverage']=='unknown'
     assert not result['apply_supported'] and not result['activation_ready']
     assert result['migration_not_applied'] and result['new_submission_claims']==0
@@ -122,13 +122,13 @@ def test_balancing_sources_still_cannot_authorize_import(evidence):
     assert bytes_under(evidence[0])==before
 
 
-def test_current_shape_principal_conflict_and_cash_residual(evidence):
+def test_distinct_principal_conflict_and_cash_residual(evidence):
     history,lookup=deepcopy(evidence[4]),deepcopy(evidence[5])
-    history[0]['netProfit']='123.70'
+    history[0]['netProfit']='88.21'
     lookup['positionExecutions'][0]['investedAmountCurrency']='1'
     rewrite(evidence,'history',history);rewrite(evidence,'lookup',lookup)
     result=inspect(evidence)
-    assert result['cash_residual']=='-98.70'
+    assert result['cash_residual']=='-63.21'
     assert result['lookup_principal_conflicts']==1
     assert 'lookup_invested_amount_conflicts_with_account_principal' in result['blockers']
     assert 'unexplained_account_cash_difference' in result['blockers']
