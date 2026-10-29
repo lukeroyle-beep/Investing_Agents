@@ -134,6 +134,27 @@ def test_current_shape_principal_conflict_and_cash_residual(evidence):
     assert 'unexplained_account_cash_difference' in result['blockers']
 
 
+def test_settlement_mismatch_does_not_hide_independent_principal_conflict(evidence):
+    lookup=deepcopy(evidence[5])
+    lookup['asset']['settlementType']='REAL'
+    lookup['positionExecutions'][0]['investedAmountCurrency']='1'
+    rewrite(evidence,'lookup',lookup)
+    result=inspect(evidence)
+    assert result['external_lookup_positions_matched']==0
+    assert result['lookup_principal_conflicts']==1
+    assert 'lookup_settlement_contract_mismatch' in result['blockers']
+    assert 'lookup_invested_amount_conflicts_with_account_principal' in result['blockers']
+
+
+def test_duplicate_unmatched_lookup_positions_rejected(evidence):
+    lookup=deepcopy(evidence[5])
+    lookup['asset']['settlementType']='REAL'
+    lookup['positionExecutions'].append(deepcopy(lookup['positionExecutions'][0]))
+    rewrite(evidence,'lookup',lookup)
+    with pytest.raises(ExternalReconciliationError,match='duplicate_opening_position'):
+        inspect(evidence)
+
+
 def test_historical_validation_does_not_claim_current_freshness(evidence):
     result=inspect(evidence,NOW+timedelta(days=1))
     assert result['historical_account_validation']=='passed'

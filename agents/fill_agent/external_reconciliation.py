@@ -310,7 +310,7 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
     lookups = inputs["opening_lookups"]
     if not isinstance(lookups, list) or len(lookups) > 20:
         raise ExternalReconciliationError("external_bounded_opening_lookups_required")
-    observed, conflicts, order_ids = set(), 0, set()
+    observed, seen_positions, conflicts, order_ids = set(), set(), 0, set()
     for bundle in lookups:
         request, lookup, received = _response(evidence_root, bundle, retained, LOOKUP_PATH)
         query = request.get("query", {})
@@ -334,19 +334,28 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
             raise ExternalReconciliationError("external_lookup_positions_required")
         for row in positions:
             key = _id(row.get("positionId"))
-            if key in observed:
+            if key in seen_positions:
                 raise ExternalReconciliationError("external_duplicate_opening_position")
+            seen_positions.add(key)
             if key not in added:
                 blockers.add("lookup_position_not_external_candidate")
                 continue
             opening, position = row.get("openingData", {}), current[key]
             asset = lookup.get("asset", {})
+            # Independently report conflicting fields on the same candidate;
+            # another mismatch must not hide the source amount discrepancy.
+            if _number(row.get("investedAmountCurrency")) != position.principal:
+                conflicts += 1
+                blockers.add("lookup_invested_amount_conflicts_with_account_principal")
+            settlement_matches = asset.get("settlementType") == {0: "cfd", 1: "real"}[position.settlement_type]
+            if not settlement_matches:
+                blockers.add("lookup_settlement_contract_mismatch")
             if (_id(opening.get("orderId")) != order or row.get("state") != "open"
                     or _number(row.get("remainingUnits")) != position.units
                     or _number(opening.get("units")) != position.units
                     or asset.get("instrumentId") != position.instrument_id
                     or _number(asset.get("leverage")) != position.leverage
-                    or asset.get("settlementType") != {0: "cfd", 1: "real"}[position.settlement_type]
+                    or not settlement_matches
                     or asset.get("side") != ("long" if position.is_buy else "short")
                     or not position.is_buy
                     or not (exact_datetime_epoch_seconds(inception_at) <= _source_time(opening.get("executionTime"))
@@ -354,9 +363,6 @@ def inspect_external_reconciliation(*, runtime, manifest, now):
                 blockers.add("external_opening_identity_units_or_time_mismatch")
                 continue
             observed.add(key)
-            if _number(row.get("investedAmountCurrency")) != position.principal:
-                conflicts += 1
-                blockers.add("lookup_invested_amount_conflicts_with_account_principal")
             if (_number(row.get("addedFunds")) != 0 or _number(opening.get("fees")) != position.fees
                     or _number(opening.get("taxes")) != position.taxes):
                 blockers.add("external_opening_costs_or_added_funds_unreconciled")

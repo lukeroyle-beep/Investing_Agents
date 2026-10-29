@@ -42,7 +42,10 @@ account identity, terminal status/name, opening order/position identities, units
 instrument, direction, leverage, settlement, costs and exact source times. Seven-digit fractional source times
 are preserved. Events cannot postdate their own receipt or the account cutoff.
 An invested-amount conflict remains a blocker; margin is never substituted for
-principal. Historic opening-cash-debit proof is not yet admitted by this planner.
+principal. Settlement values are compared exactly with the published contract;
+case normalization is not inferred. Independent amount conflicts remain visible
+even when settlement prevents an identity match. Historic opening-cash-debit proof
+is not yet admitted by this planner.
 
 ## Invocation and manifest
 
