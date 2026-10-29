@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 import pandas as pd
 
 from agents.shared.event_log import append_artifact_written_event
+from agents.journal_agent.history_migration import journal_write_lock, validate_journal_history
 from shared.io_utils import write_csv
 from shared.paths import FINAL_SHORTLIST_PATH, data_path
 from shared.run_context import get_or_create_run_id
@@ -132,6 +133,13 @@ def main() -> None:
         print("No final shortlist found. Run the pipeline first.")
         return
 
+    with journal_write_lock(JOURNAL_FILE):
+        validate_journal_history(JOURNAL_FILE)
+        record_shortlist(shortlist_df, run_id)
+
+
+def record_shortlist(shortlist_df: pd.DataFrame, run_id: str) -> None:
+    """Called under the shared Journal/migration lock."""
     existing_journal_df = load_existing_journal()
     proposed_entries_df = build_journal_entries(shortlist_df, run_id=run_id)
     combined_df, new_entries_df = merge_journal_entries(
