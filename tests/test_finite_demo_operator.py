@@ -1,5 +1,6 @@
 """Real operator/adapter/journal integration using wholly synthetic broker I/O."""
 from copy import deepcopy
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal as D
 from types import SimpleNamespace
@@ -205,6 +206,27 @@ def test_two_distinct_instruments_one_mandate_no_per_order_confirmation(tmp_path
     with pytest.raises(Exception, match="fresh_unclaimed"):
         submit(first)
     assert len(f.transport.posts) == 2
+
+
+@pytest.mark.parametrize("floor,remaining,allowed", [
+    ("10", "90", False), ("19.999", "90", False),
+    ("20", "24.999", False), ("20", "25", True),
+])
+def test_finite_operator_never_inherits_reduced_pilot_usage_floor(tmp_path, floor, remaining, allowed):
+    from risk.submission_gate import SubmissionBlockedError
+    f = workflow(tmp_path)
+    prepared = prepare(f)
+    prepared.usage = replace(prepared.usage, floor_percent=D(floor),
+        authorization_reference="synthetic older one-order authorization",
+        windows=(UsageWindow("test", D(remaining), True),))
+    if allowed:
+        assert submit(prepared).state == CommandState.ACKNOWLEDGED
+        assert len(f.transport.posts) == 1
+    else:
+        with pytest.raises(SubmissionBlockedError, match="finite_fresh_usage_and_recovery_reserve_required"):
+            submit(prepared)
+        assert not f.transport.posts
+        assert not f.ledger.snapshot()["submissions"]
 
 
 @pytest.mark.parametrize("status,amount", [(9, "6"), (10, "6"), (4, "0"), (7, "0"), (8, "0")])

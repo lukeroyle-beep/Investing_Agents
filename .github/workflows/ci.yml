@@ -74,6 +74,9 @@ jobs:
       - name: Run unit tests
         run: uv run --frozen python -m pytest -q
 
+      - name: Check Codex usage host relay
+        run: node --test tests/test_codex_usage_bridge.cjs
+
       - name: Compile Python sources
         run: >-
           uv run --frozen python -m compileall -q

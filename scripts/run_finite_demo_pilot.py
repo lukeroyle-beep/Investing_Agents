@@ -36,7 +36,7 @@ from execution.usage_reserve import PilotUsageAdmission
 from risk.kill_switch import KillSwitch
 from risk.pretrade import RiskLimits
 from scripts.run_autonomous_demo_pilot import verify_reviewed_checkout
-from scripts.run_demo_pilot import Host
+from scripts.probe_codex_usage import UsageOnlyHost
 from scripts.setup_autonomous_demo_pilot import load_dedicated_credentials
 from scripts.setup_finite_demo_pilot import (
     JOURNAL_FILE, MANDATE_FILE, existing_runtime, load_catalog, operator_lock,
@@ -49,14 +49,6 @@ def now():
 
 def emit(value):
     print(canonical_json(value), flush=True)
-
-
-class UsageOnlyHost(Host):
-    """The JSON-lines host supplies quota evidence, never a broker operation."""
-    def call(self, tool, arguments):
-        if tool != "usage" or arguments != {}:
-            raise ValueError("finite_host_usage_only")
-        return super().call(tool, arguments)
 
 
 def usage_evidence(host, mandate):
