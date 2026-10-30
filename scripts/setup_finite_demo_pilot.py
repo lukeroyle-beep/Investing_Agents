@@ -86,6 +86,7 @@ def classifications(rows, scope, state):
         items[row["instrument_id"]] = dict(row)
     required = {int(row["instrument_id"]) for row in state["inception"]["account"]["positions"]}
     required.update(int(row["instrument_id"]) for row in state["submissions"])
+    required.update(int(row["instrument_id"]) for row in state["positions"])
     for spec in scope["instruments"]:
         required.add(spec["instrument_id"])
         expected = {key: spec[key] for key in keys - {"source_reference"}}

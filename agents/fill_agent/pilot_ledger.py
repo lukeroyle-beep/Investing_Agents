@@ -214,25 +214,69 @@ class PilotLedger:
             submissions[command_id] = {**value, "reconciled": False}
         positions, executions, reconciliations, holds = {}, {}, {}, []
         finite_migration, journaled, journal_receipts = None, set(), {}
+        external_imports, external_journaled, external_journal_receipts = {}, set(), {}
+        retired_baseline, external_cash_ids, external_order_ids = set(), set(), set()
+        account_checkpoint = inception["account"]
         pilot_pnl, loss_stopped = ZERO, False
         for kind, command_id, encoded, digest in db.execute("SELECT kind,command_id,payload,digest FROM events ORDER BY sequence"):
             event = self._decode((encoded, digest))
             if kind in {"reconciled_open", "reconciled_no_fill"}:
                 if command_id not in submissions or command_id in reconciliations:
                     raise PilotLedgerError("pilot_reconciliation_integrity_failure")
+                if (event.get("terminal_evidence") or {}).get("broker_order_id") in external_order_ids:
+                    raise PilotLedgerError("pilot_order_already_attributed_external")
                 submissions[command_id]["reconciled"] = True
                 reconciliations[command_id] = event
+                account_checkpoint = event["post_account"]
                 for p in event["positions"]:
                     if p["position_id"] in positions:
                         raise PilotLedgerError("pilot_duplicate_position_attribution")
                     positions[p["position_id"]] = p
                 for execution in event["executions"]:
                     key = execution["broker_execution_id"]
+                    if execution["broker_order_id"] in external_order_ids:
+                        raise PilotLedgerError("pilot_order_already_attributed_external")
                     if key in executions:
                         raise PilotLedgerError("pilot_duplicate_execution_attribution")
                     executions[key] = execution
             elif kind == "mark":
                 pilot_pnl = _money(event["pilot_pnl"], "pilot_pnl")
+                account_checkpoint = event["account"]
+            elif kind == "external_lifecycle":
+                from agents.fill_agent.external_lifecycle import validate_record, ExternalLifecycleError
+                try:
+                    if (command_id is not None or event.get("event_id") in external_imports
+                            or event.get("ledger_path") != str(self.path.resolve())):
+                        raise ExternalLifecycleError("external_event_identity_or_path_invalid")
+                    effects = validate_record(event, inception=inception, prior_account=account_checkpoint,
+                        retired=retired_baseline, attributed=positions)
+                    if (external_cash_ids & effects["cash_event_ids"]
+                            or external_order_ids & effects["order_ids"]
+                            or {e["broker_order_id"] for e in executions.values()} & effects["order_ids"]
+                            or {(r.get("terminal_evidence") or {}).get("broker_order_id")
+                                for r in reconciliations.values()} & effects["order_ids"]):
+                        raise ExternalLifecycleError("external_source_identity_already_consumed")
+                except (ExternalLifecycleError, ValueError, KeyError, TypeError) as exc:
+                    raise PilotLedgerError("pilot_external_lifecycle_integrity_failure") from exc
+                external_imports[event["event_id"]] = event
+                retired_baseline.update(effects["retired"])
+                external_cash_ids.update(effects["cash_event_ids"])
+                external_order_ids.update(effects["order_ids"])
+                positions.update({p["position_id"]: p for p in effects["positions"]})
+                account_checkpoint = effects["source_account"]
+                pilot_pnl = effects["pilot_pnl"]
+                external_loss_limit = min((Decimal("25"), *(Decimal(s["mandate_scope"]["loss_stop"])
+                    for s in submissions.values() if s.get("mandate_policy") == "finite-demo-v2")))
+                loss_stopped = loss_stopped or pilot_pnl <= -external_loss_limit
+            elif kind == "external_journal_complete":
+                identity = event.get("event_id")
+                if (command_id is not None or identity not in external_imports or identity in external_journaled
+                        or event.get("record_hash") != payload_hash(external_imports[identity])
+                        or re.fullmatch(r"[a-f0-9]{64}", event.get("journal_reference", "")) is None
+                        or not event.get("journal_path")):
+                    raise PilotLedgerError("pilot_external_journal_completion_integrity_failure")
+                external_journaled.add(identity)
+                external_journal_receipts[identity] = event
             elif kind == "loss_stop":
                 loss_stopped = True
             elif kind == "hold":
@@ -266,16 +310,33 @@ class PilotLedger:
         pending = tuple(s for s in submissions.values() if not s["reconciled"])
         journal_pending = any(s.get("mandate_policy") == "finite-demo-v2" and not s.get("journal_complete")
                               for s in submissions.values())
+        journal_pending = journal_pending or bool(set(external_imports) - external_journaled)
         capital = _exact_sum(_money(p["capital"], "capital", nonnegative=True) for p in positions.values())
         capital = _exact_sum((capital, *(_exact_sum((_money(s["amount"], "amount"), _money(s["expected_costs"], "expected_costs"))) for s in pending)))
+        if external_imports and (capital > 500 or len(positions) + len(pending) > 5):
+            holds.append("external_import_preserved_historical_risk_breach")
+        if external_journal_receipts:
+            from agents.journal_agent.execution_journal import ExecutionJournal, ExecutionJournalError
+            try:
+                ExecutionJournal.verify_external_receipts(ledger_path=self.path, inception=inception,
+                    imports=external_imports, receipts=external_journal_receipts)
+            except ExecutionJournalError as exc:
+                raise PilotLedgerError("pilot_external_completed_journal_unavailable") from exc
         return {"account_id": inception["account_id"], "inception": inception,
                 "loss_stopped": loss_stopped, "pilot_pnl": pilot_pnl,
                 "committed_capital": capital, "position_count": len(positions) + len(pending),
                 "unresolved": bool(pending or holds or journal_pending), "holds": tuple(holds),
                 "positions": tuple(positions.values()), "submissions": tuple(submissions.values()),
+                "external_openings": tuple({"order_id": p["order_id"],
+                    "london_day": _time(p["occurred_at_source"]).astimezone(LONDON).date().isoformat()}
+                    for p in positions.values() if p.get("origin") == "external"),
+                "external_imports": tuple({"event_id": identity, "record_hash": payload_hash(record),
+                    "journal_complete": identity in external_journaled} for identity, record in external_imports.items()),
                 "_executions": executions, "_reconciliations": reconciliations,
                 "_finite_migration": finite_migration, "_journaled": journaled,
-                "_journal_receipts": journal_receipts}
+                "_journal_receipts": journal_receipts, "_external_imports": external_imports,
+                "_external_journaled": external_journaled, "_external_journal_receipts": external_journal_receipts,
+                "_retired_baseline": retired_baseline, "_account_checkpoint": account_checkpoint}
 
     @staticmethod
     def _public(state):
@@ -284,6 +345,45 @@ class PilotLedger:
     def snapshot(self):
         with closing(self._connect()) as db:
             return self._public(self._state(db))
+
+    def external_lifecycle_receipt(self, event_id):
+        """Read a committed external event; never manufacture a broker command."""
+        with closing(self._connect()) as db:
+            state = self._state(db)
+            record = state["_external_imports"].get(event_id)
+            if record is None:
+                raise PilotLedgerError("pilot_external_commit_required")
+            return {"record": record, "record_hash": payload_hash(record),
+                "journal_receipt": state["_external_journal_receipts"].get(event_id)}
+
+    def _mark_external_journal_complete(self, event_id, *, journal, now):
+        """Only a typed journal with a validated terminal record releases this gate."""
+        from agents.journal_agent.execution_journal import ExecutionJournal
+        if type(journal) is not ExecutionJournal or journal.ledger.path.resolve() != self.path.resolve():
+            raise PilotLedgerError("pilot_external_same_typed_journal_required")
+        terminal = journal.external_terminal(event_id)
+        if terminal is None:
+            raise PilotLedgerError("pilot_external_journal_terminal_required")
+        moment = _time(now)
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            state = self._state(db)
+            record = state["_external_imports"].get(event_id)
+            if (record is None or terminal["payload"]["economic_record_hash"] != payload_hash(record)
+                    or moment < _time(record["post_account"]["capture_completed_at"])):
+                raise PilotLedgerError("pilot_external_journal_record_mismatch")
+            receipt = {"event_id": event_id, "record_hash": payload_hash(record),
+                "journal_reference": terminal["chain_hash"], "journal_path": str(journal.path.resolve())}
+            previous = state["_external_journal_receipts"].get(event_id)
+            if previous is not None and previous != receipt:
+                raise PilotLedgerError("pilot_external_journal_reference_changed")
+            if previous is None:
+                self._append(db, "external_journal_complete", None, receipt)
+            # Reverse-link/readback failure must roll back this receipt, not
+            # leave an immutable completed marker which poisons later replay.
+            self._state(db)
+        journal.ensure_ready()
+        return self.snapshot()
 
     def enable_finite_mandates(self, *, source_reference, reviewed_commit, now):
         """Explicit, audited schema migration; never called by a trading worker.
@@ -391,7 +491,7 @@ class PilotLedger:
             own = [s for s in state["submissions"] if s.get("mandate_hash") == mandate.mandate_hash]
             if len(own) >= scope["max_submissions"]:
                 raise PilotLedgerError("pilot_finite_submission_budget_exhausted")
-            if sum(s["london_day"] == day for s in state["submissions"]) >= scope["max_per_day"]:
+            if sum(s["london_day"] == day for s in (*state["submissions"], *state["external_openings"])) >= scope["max_per_day"]:
                 raise PilotLedgerError("pilot_finite_daily_submission_budget_exhausted")
             attempted = _exact_sum(_exact_sum((_money(s["amount"], "amount"), _money(s["expected_costs"], "expected_costs"))) for s in own)
             if _exact_sum((attempted, amount, costs)) > Decimal(scope["total_commitment"]):
@@ -432,8 +532,15 @@ class PilotLedger:
         return next(s for s in self.snapshot()["submissions"] if s["command_id"] == candidate.command_id)
 
     def _mark(self, db, state, data, now):
+        if (state["_external_imports"] and _time(data["capture_started_at"])
+                < _time(state["_account_checkpoint"]["capture_completed_at"])):
+            raise PilotLedgerError("pilot_account_source_precedes_external_checkpoint")
+        if (state["_external_imports"] and _money(data["cash"], "cash")
+                != _money(state["_account_checkpoint"]["cash"], "cash")):
+            raise PilotLedgerError("pilot_external_cash_movement_evidence_required")
         current = _positions(data)
-        baseline = _positions(state["inception"]["account"])
+        baseline = {key: value for key, value in _positions(state["inception"]["account"]).items()
+                    if key not in state["_retired_baseline"]}
         pilot = {p["position_id"]: p for p in state["positions"]}
         if set(current) != set(baseline) | set(pilot):
             raise PilotLedgerError("pilot_missing_or_unattributed_position_closed_evidence_required")
@@ -499,7 +606,7 @@ class PilotLedger:
                 raise PilotLedgerError("pilot_duplicate_command_lookup_only")
             if state["unresolved"]:
                 raise PilotLedgerError("pilot_unresolved_reconciliation_lookup_only")
-            if any(s["london_day"] == day for s in state["submissions"]):
+            if any(s["london_day"] == day for s in (*state["submissions"], *state["external_openings"])):
                 raise PilotLedgerError("pilot_one_opening_submission_per_london_day")
             try:
                 self._mark(db, state, data, moment)
@@ -570,6 +677,9 @@ class PilotLedger:
                 if not isinstance(execution, BrokerExecution):
                     raise PilotLedgerError("pilot_broker_execution_evidence_required")
                 raw = _clean(execution)
+                if any(p.get("origin") == "external" and p["order_id"] == raw["broker_order_id"]
+                       for p in state["positions"]):
+                    raise PilotLedgerError("pilot_order_already_attributed_external")
                 key = str(execution.broker_execution_id)
                 if key in unique and unique[key] != raw:
                     raise PilotLedgerError("pilot_conflicting_duplicate_execution")
@@ -700,6 +810,9 @@ class PilotLedger:
             claims = [s for s in state["submissions"] if s["command_id"] == command_id]
             if len(claims) != 1 or claims[0].get("mandate_policy") != "finite-demo-v2":
                 raise PilotLedgerError("pilot_finite_submission_claim_required")
+            if any(p.get("origin") == "external" and p["order_id"] == terminal["broker_order_id"]
+                   for p in state["positions"]):
+                raise PilotLedgerError("pilot_order_already_attributed_external")
             claim = claims[0]
             if payload_hash(pre) != payload_hash(claim["pre_account"]):
                 raise PilotLedgerError("pilot_reconciliation_pre_capture_mismatch")

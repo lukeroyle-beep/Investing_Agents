@@ -84,7 +84,8 @@ class FiniteDemoOperator(AutonomousPilotOperator):
             "loss_stop": not state["loss_stopped"] and state["pilot_pnl"] > -Decimal(scope["loss_stop"]),
             "reconciled": not state["unresolved"],
             "submission_budget": len(attempts) < scope["max_submissions"],
-            "daily_submission": sum(row["london_day"] == day for row in state["submissions"]) < scope["max_per_day"],
+            "daily_submission": sum(row["london_day"] == day for row in
+                (*state["submissions"], *state.get("external_openings", ()))) < scope["max_per_day"],
         }
         result = {"policy": POLICY, "eligible": all(checks.values()), "checks": checks,
             "catalog_hash": self.catalog.source_hash, "mandate_hash": mandate.mandate_hash,

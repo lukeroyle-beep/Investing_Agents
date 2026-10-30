@@ -27,7 +27,7 @@ from execution.store import ExecutionStore
 
 SCHEMA = "demo-execution-journal-v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_PHASES = {"intent", "dispatch", "outcome", "reconciliation"}
+_PHASES = {"intent", "dispatch", "outcome", "reconciliation", "external_import"}
 
 
 class ExecutionJournalError(ValueError):
@@ -178,7 +178,10 @@ class ExecutionJournal:
                         or chain != self._chain(seq, command, phase, identity, digest, previous)):
                     raise ExecutionJournalError("journal_chain_integrity_failure")
                 seen = phases.setdefault(command, set())
-                if ((phase != "intent" and "intent" not in seen)
+                if phase == "external_import":
+                    if seen or not command.startswith("external:") or identity != "external_import":
+                        raise ExecutionJournalError("journal_external_phase_integrity_failure")
+                elif (command.startswith("external:") or (phase != "intent" and "intent" not in seen)
                         or (phase in {"outcome", "reconciliation"} and "dispatch" not in seen)
                         or (phase == "reconciliation" and "outcome" not in seen)
                         or (phase != "outcome" and phase in seen)
@@ -204,6 +207,15 @@ class ExecutionJournal:
         with closing(self._connect()) as db:
             records = self._read(db)
         for record in records:
+            if record["phase"] == "external_import":
+                identity = record["command_id"].removeprefix("external:")
+                actual = self._external_payload(identity)
+                if record["payload"] != actual:
+                    raise ExecutionJournalError("journal_external_economic_source_changed")
+                completion = self.ledger.external_lifecycle_receipt(identity)["journal_receipt"]
+                if completion is not None and (completion["journal_reference"] != record["chain_hash"]
+                        or completion["journal_path"] != str(self.path.resolve())):
+                    raise ExecutionJournalError("journal_external_completion_hash_mismatch")
             if record["phase"] == "intent":
                 command, intent = self._command(record["command_id"])
                 data = record["payload"]
@@ -220,6 +232,50 @@ class ExecutionJournal:
                 if payload_hash(actual) != record["payload_hash"]:
                     raise ExecutionJournalError("journal_terminal_source_changed")
         return True
+
+    @classmethod
+    def verify_external_receipts(cls, *, ledger_path, inception, imports, receipts):
+        """Read-only reverse links; a valid older journal must not release a claim.
+
+        This deliberately avoids ledger/store constructors, so ledger replay can
+        call it without recursion, initialization, or a writable SQLite handle.
+        Pending imports have no receipt and remain recoverable.
+        """
+        grouped = {}
+        for identity, receipt in receipts.items():
+            grouped.setdefault(receipt["journal_path"], []).append((identity, receipt))
+        for filename, expected in grouped.items():
+            path = Path(filename)
+            if (not path.is_absolute() or path.resolve() != path or not path.is_file()
+                    or not path.is_relative_to(Path(ledger_path).resolve().parent)):
+                raise ExecutionJournalError("journal_external_original_path_required")
+            try:
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+                    row = db.execute("SELECT payload FROM binding WHERE singleton=1").fetchone()
+                    binding = json.loads(row[0]) if row else {}
+                    if (binding.get("schema") != SCHEMA or binding.get("environment") != "demo"
+                            or binding.get("ledger_path") != str(Path(ledger_path).resolve())
+                            or binding.get("runtime_root") != str(Path(ledger_path).resolve().parent)
+                            or binding.get("account_id") != inception["account_id"]
+                            or binding.get("inception_hash") != payload_hash(inception)):
+                        raise ExecutionJournalError("journal_external_original_binding_mismatch")
+                    reader = object.__new__(cls)
+                    reader.binding = binding
+                    records = reader._read(db)
+                terminals = {r["command_id"]: r for r in records if r["phase"] == "external_import"}
+                for identity, receipt in expected:
+                    record = terminals.get("external:" + identity)
+                    economic = imports[identity]
+                    payload = _clean({"origin": "external", "event_id": identity,
+                        "economic_record_hash": payload_hash(economic), "economic_record": economic,
+                        "qualification_credit": False})
+                    if (record is None or record["chain_hash"] != receipt["journal_reference"]
+                            or record["payload"] != payload):
+                        raise ExecutionJournalError("journal_external_completed_terminal_missing_or_changed")
+            except (sqlite3.DatabaseError, ValueError, TypeError, KeyError) as exc:
+                if isinstance(exc, ExecutionJournalError):
+                    raise
+                raise ExecutionJournalError("journal_external_receipt_unreadable") from exc
 
     def events(self, command_id=None):
         self.ensure_ready()
@@ -431,3 +487,19 @@ class ExecutionJournal:
         if command.state == CommandState.RECONCILED:
             return self.record_reconciliation(command_id)
         return None
+
+    def _external_payload(self, event_id):
+        receipt = self.ledger.external_lifecycle_receipt(event_id)
+        return _clean({"origin": "external", "event_id": event_id,
+            "economic_record_hash": receipt["record_hash"], "economic_record": receipt["record"],
+            "qualification_credit": False})
+
+    def external_terminal(self, event_id):
+        _digest(event_id, "external_event")
+        return next((r for r in self.events("external:" + event_id) if r["phase"] == "external_import"), None)
+
+    def record_external_import(self, event_id):
+        """Journal a committed external origin, without intent/dispatch fiction."""
+        _digest(event_id, "external_event")
+        self._append("external:" + event_id, "external_import", "external_import", self._external_payload(event_id))
+        return self.external_terminal(event_id)
