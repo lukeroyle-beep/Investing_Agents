@@ -22,7 +22,10 @@ from execution.domain import (Approval, CommandState, Environment, RiskCheck, Ri
 from execution.finite_demo_mandate import FiniteDemoMandate, FiniteOrderCandidate, POLICY
 from execution.operator import OperatorEvidenceError
 from execution.pilot_policy import multiply, preview_costs
-from execution.usage_reserve import PilotUsageAdmission, MAX_USAGE_AGE_SECONDS
+from execution.usage_reserve import (
+    PilotUsageAdmission, MAX_USAGE_AGE_SECONDS, MINIMUM_FLOOR_PERCENT,
+    MINIMUM_RECOVERY_RESERVE_PERCENT,
+)
 from risk.approval import ApprovalAuthority
 from risk.submission_gate import SubmissionBlockedError
 
@@ -156,8 +159,9 @@ class FiniteDemoOperator(AutonomousPilotOperator):
             raise SubmissionBlockedError("finite_exact_dynamic_evidence_changed")
         if not self.coordinator.config.broker_writes_enabled:
             raise SubmissionBlockedError("finite_writes_disabled")
-        if (type(usage) is not PilotUsageAdmission or usage.floor_percent < 10
-                or usage.recovery_reserve_percent < 5 or usage.validate_for_submission(now)):
+        if (type(usage) is not PilotUsageAdmission or usage.floor_percent < MINIMUM_FLOOR_PERCENT
+                or usage.recovery_reserve_percent < MINIMUM_RECOVERY_RESERVE_PERCENT
+                or usage.validate_for_submission(now)):
             raise SubmissionBlockedError("finite_fresh_usage_and_recovery_reserve_required")
         if account.account_id != adapter.expected_account_id:
             raise SubmissionBlockedError("finite_same_direct_demo_account_required")

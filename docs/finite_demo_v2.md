@@ -52,6 +52,37 @@ five percentage points reserved for recovery. It does not inherit the old one-or
 A missing usage host or unreported required broker buffer therefore causes a
 hold. There is no automatic scheduler or strategy-to-worker deployment here.
 
+### Genuine Codex usage host
+
+`scripts/codex_usage_bridge.js` exports `serveCodexUsageRequests(api, initialCell)`
+for the actual tool host. It accepts an already started process and never starts
+a worker or selects a runtime. Bind `api.readUsage` directly to the Codex app
+`get_usage_limits` tool and `api.write` to the same host's `write_stdin` tool.
+The relay serves only sequential `usage` requests with empty arguments, making
+one fresh tool call per request and passing its complete original result to the
+worker. A finite cycle requests it twice. Broker requests, missing processes,
+tool errors, uncertain response delivery and unexpected output stop the relay;
+there is no automatic retry or cached/default percentage. A held relay with a
+session ID requires inspection of that process, not a replacement worker.
+
+Preparation can exercise this exact protocol safely by starting only
+`python scripts/probe_codex_usage.py`, with a PTY if the host requires one for
+stdin. The probe has no runtime or broker arguments. It stores the complete
+private tool receipt in a fresh temporary probe directory with restrictive
+permissions, disables terminal echo during input, and emits only a sanitized
+summary, evidence hash and private receipt location. It never opens the original
+ledger, kill switch, mandate or credentials. Its receipt establishes the bridge
+read at that time, not quota authority for a later trade.
+
+For both probe and worker, the usage parser preserves every available bucket
+and window, fails closed for unknown allowance, and uses the request-start
+clock with a 60-second maximum age. A null secondary does not invent another
+window. The finite operator itself also enforces the strict 20% floor plus 5%
+reserve, so bypassing the CLI cannot reuse the older reduced pilot policy.
+The raw response includes private platform account data: do not print it or
+include private probe receipts in Git. Operational evidence must come from the
+genuine tool binding; synthetic test responses are never activation evidence.
+
 ## Clocks, terminal outcomes and journal
 
 Engineering and screening precede preparation. There is no expiring MCP preview
