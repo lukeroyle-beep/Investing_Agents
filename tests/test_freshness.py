@@ -54,6 +54,61 @@ def test_exchange_calendar_handles_weekend_holiday_early_close_and_dst() -> None
     assert calendar.session_close(date(2026, 3, 9)).astimezone(UTC).hour == 20
 
 
+def test_daily_session_keeps_label_date_and_new_york_date_across_utc_midnight() -> None:
+    """A UTC-midnight label stays on that session; a real instant uses New York.
+
+    Friday 2026-04-24 21:00 EDT is Saturday 01:00 UTC. The Friday label
+    ``2026-04-24T00:00:00+00:00`` is Thursday evening in New York and still
+    belongs to Friday.
+    """
+    calendar = ExchangeCalendar()
+    label_instant = datetime.fromisoformat("2026-04-24T00:00:00+00:00")
+    assert label_instant.astimezone(calendar.tz).date() == date(2026, 4, 23)
+
+    friday_night = datetime(2026, 4, 25, 1, 30, tzinfo=UTC)
+    assert calendar.latest_completed_session(friday_night) == date(2026, 4, 24)
+    assert friday_night.astimezone(calendar.tz).date() == date(2026, 4, 24)
+
+    label = _daily_assessment("2026-04-24T00:00:00+00:00", friday_night)
+    assert label.market_session == "2026-04-24"
+    assert label.freshness_outcome == OUTCOME_FRESH
+    assert label.mode == MODE_NORMAL
+
+    late_print = _daily_assessment("2026-04-25T01:00:00+00:00", friday_night)
+    assert late_print.market_session == "2026-04-24"
+    assert late_print.freshness_outcome == OUTCOME_FRESH
+
+    same_instant = _daily_assessment("2026-04-24T21:00:00-04:00", friday_night)
+    assert same_instant.market_session == "2026-04-24"
+    assert same_instant.freshness_outcome == OUTCOME_FRESH
+
+
+def test_daily_session_completion_follows_dst_transition() -> None:
+    before_spring_close = datetime(2026, 3, 9, 19, 59, tzinfo=UTC)
+    assert _daily_assessment("2026-03-06T00:00:00+00:00", before_spring_close).freshness_outcome == OUTCOME_FRESH
+    assert _daily_assessment("2026-03-09T00:00:00+00:00", before_spring_close).freshness_outcome == OUTCOME_FUTURE
+
+    after_spring_close = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)
+    spring_label = _daily_assessment("2026-03-09T00:00:00+00:00", after_spring_close)
+    spring_print = _daily_assessment("2026-03-10T01:00:00+00:00", after_spring_close)
+    assert spring_label.market_session == "2026-03-09"
+    assert spring_label.freshness_outcome == OUTCOME_FRESH
+    assert spring_print.market_session == "2026-03-09"
+    assert spring_print.freshness_outcome == OUTCOME_FRESH
+
+    before_fall_close = datetime(2026, 11, 2, 20, 30, tzinfo=UTC)
+    assert _daily_assessment("2026-10-30T00:00:00+00:00", before_fall_close).freshness_outcome == OUTCOME_FRESH
+    assert _daily_assessment("2026-11-02T00:00:00+00:00", before_fall_close).freshness_outcome == OUTCOME_FUTURE
+
+    after_fall_close = datetime(2026, 11, 3, 2, 30, tzinfo=UTC)
+    fall_label = _daily_assessment("2026-11-02T00:00:00+00:00", after_fall_close)
+    fall_print = _daily_assessment("2026-11-03T02:00:00+00:00", after_fall_close)
+    assert fall_label.market_session == "2026-11-02"
+    assert fall_label.freshness_outcome == OUTCOME_FRESH
+    assert fall_print.market_session == "2026-11-02"
+    assert fall_print.freshness_outcome == OUTCOME_FRESH
+
+
 def test_injected_calendar_supports_deterministic_holiday_and_early_close() -> None:
     calendar = ExchangeCalendar(
         additional_holidays={date(2026, 5, 4)},

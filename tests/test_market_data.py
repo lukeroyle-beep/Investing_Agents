@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -58,6 +59,62 @@ def test_yfinance_provider_wraps_download_with_metadata() -> None:
             },
         }
     ]
+
+
+def test_naive_daily_labels_keep_session_across_utc_midnight_and_dst() -> None:
+    def fetch(index, now: datetime):
+        frame = pd.DataFrame({"Close": [1.0]}, index=index)
+        provider = YFinanceMarketDataProvider(
+            download_func=lambda *_args, **_kwargs: frame,
+            now_func=lambda: now,
+        )
+        return provider.fetch_history("AAPL", interval="1d")
+
+    friday_night = datetime(2026, 4, 25, 1, 30, tzinfo=UTC)
+    naive = fetch(pd.to_datetime(["2026-04-24"]), friday_night)
+    assert naive.ok
+    assert naive.metadata.as_of == "2026-04-24T00:00:00+00:00"
+    assert (
+        datetime.fromisoformat(naive.metadata.as_of)
+        .astimezone(ZoneInfo("America/New_York"))
+        .date()
+        .isoformat()
+        == "2026-04-23"
+    )
+    assert naive.metadata.market_session == "2026-04-24"
+    assert naive.metadata.freshness_outcome == "fresh"
+
+    late_print = fetch(
+        pd.DatetimeIndex([pd.Timestamp("2026-04-24 21:00", tz="America/New_York")]),
+        friday_night,
+    )
+    assert late_print.ok
+    assert late_print.metadata.as_of == "2026-04-25T01:00:00+00:00"
+    assert late_print.metadata.market_session == "2026-04-24"
+    assert late_print.metadata.freshness_outcome == "fresh"
+
+    spring = fetch(pd.to_datetime(["2026-03-09"]), datetime(2026, 3, 10, 1, 30, tzinfo=UTC))
+    assert spring.metadata.market_session == "2026-03-09"
+    assert spring.metadata.freshness_outcome == "fresh"
+    spring_open = fetch(
+        pd.DatetimeIndex([pd.Timestamp("2026-03-09", tz="America/New_York")]),
+        datetime(2026, 3, 9, 20, 30, tzinfo=UTC),
+    )
+    assert spring_open.metadata.as_of == "2026-03-09T04:00:00+00:00"
+    assert spring_open.metadata.market_session == "2026-03-09"
+    assert spring_open.metadata.freshness_outcome == "fresh"
+
+    fall = fetch(pd.to_datetime(["2026-11-02"]), datetime(2026, 11, 3, 2, 30, tzinfo=UTC))
+    assert fall.metadata.as_of == "2026-11-02T00:00:00+00:00"
+    assert fall.metadata.market_session == "2026-11-02"
+    assert fall.metadata.freshness_outcome == "fresh"
+    fall_open = fetch(
+        pd.DatetimeIndex([pd.Timestamp("2026-11-02", tz="America/New_York")]),
+        datetime(2026, 11, 2, 21, 30, tzinfo=UTC),
+    )
+    assert fall_open.metadata.as_of == "2026-11-02T05:00:00+00:00"
+    assert fall_open.metadata.market_session == "2026-11-02"
+    assert fall_open.metadata.freshness_outcome == "fresh"
 
 
 def test_yfinance_provider_reports_error_and_retry_count() -> None:
