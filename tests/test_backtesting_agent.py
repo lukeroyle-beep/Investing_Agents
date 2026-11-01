@@ -340,3 +340,58 @@ def test_benchmark_return_includes_dividends_after_the_entry_session():
 
     assert agent.partition_benchmark_return(history, start, end, costs) == pytest.approx(4.0)
     assert agent.calculate_benchmark_return(history) == pytest.approx(4.0)
+
+
+def test_benchmark_cash_dividend_matches_strategy_total_return():
+    """A fully invested hold and the benchmark must share one cash total return.
+
+    Dividend-adjusted prices are a different, reinvested return. Dropping the
+    benchmark dividend, or marking the benchmark off those adjusted prices,
+    would no longer match the strategy.
+    """
+    from strategy.backtest_portfolio import replay_portfolio
+    from strategy.domain import CostModel
+
+    dates = pd.bdate_range("2024-01-02", periods=3)
+    history = pd.DataFrame(
+        {
+            "Date": dates,
+            "Open": [100.0, 100.0, 110.0],
+            "High": [101.0, 101.0, 111.0],
+            "Low": [99.0, 99.0, 109.0],
+            "Close": [100.0, 100.0, 110.0],
+            "Dividends": [0.0, 5.0, 0.0],
+        }
+    )
+    # Yahoo-style adjustment scales every earlier bar by 1 - dividend/close.
+    adjusted = history.copy()
+    factor = 1.0 - 5.0 / 100.0
+    for column in ("Open", "High", "Low", "Close"):
+        adjusted.loc[adjusted.index[:1], column] *= factor
+    adjusted["Dividends"] = 0.0
+
+    costs = CostModel(spread_bps=0, slippage_bps=0, fee_bps=0, tax_bps=0)
+    cash_benchmark = agent.partition_benchmark_return(history, dates[0], dates[-1], costs)
+    price_only = agent.partition_benchmark_return(
+        history.drop(columns=["Dividends"]), dates[0], dates[-1], costs,
+    )
+    adjusted_benchmark = agent.partition_benchmark_return(adjusted, dates[0], dates[-1], costs)
+    trade = pd.DataFrame([{
+        "ticker": "SPY",
+        "side": "long",
+        "entry_date": dates[0].date().isoformat(),
+        "exit_date": dates[-1].date().isoformat(),
+        "entry_execution_price": 100.0,
+        "exit_execution_price": 110.0,
+        "shares": 1000.0,
+        "transaction_cost": 0.0,
+    }])
+    strategy = replay_portfolio(trade, {"SPY": history}, 100_000, dates)
+
+    assert price_only == pytest.approx(10.0)
+    assert cash_benchmark == pytest.approx(15.0)
+    assert strategy.equity_curve.iloc[-1]["cumulative_return_pct"] == pytest.approx(cash_benchmark)
+    assert strategy.accepted_trades.iloc[0]["net_pnl"] == pytest.approx(15_000)
+    # 110 / (100 * 0.95) - 1, the reinvested adjusted-price return.
+    assert adjusted_benchmark == pytest.approx((110.0 / 95.0 - 1.0) * 100.0)
+    assert adjusted_benchmark != pytest.approx(cash_benchmark)

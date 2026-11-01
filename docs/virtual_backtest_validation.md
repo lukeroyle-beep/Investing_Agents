@@ -108,7 +108,8 @@ Reference fingerprints with the checked-in configuration:
   checking the opening gap, an ambiguous stop-and-target session resolves to
   the stop. A gap through the stop or the profit target fills at that open.
   Signals use split-adjusted prices. Dividends are cash on the ex-date for
-  positions already held, not a rewrite of earlier bars.
+  positions already held, and the buy-and-hold benchmark adds that same cash.
+  Neither side uses a reinvested dividend-adjusted price.
 - Same-session entries are processed before exits, so unavailable closing
   proceeds cannot fund opening purchases. Simultaneous candidates are ordered
   by ticker, which can affect selection when cash is constrained.

@@ -540,6 +540,9 @@ def partition_benchmark_return(history, start, end, costs):
     tax = float(costs.tax_bps) / 10000
     entry = float(frame.iloc[0]["Open"]) * (1 + friction) * (1 + fee + tax)
     exit_value = float(frame.iloc[-1]["Close"]) * (1 - friction) * (1 - fee)
+    # Same cash dividend a held strategy position receives. Do not switch this
+    # to dividend-adjusted prices: those restate a reinvested total return and
+    # would no longer match the strategy's unreinvested cash.
     dividend = _held_dividends_per_share(frame)
     if dividend:
         exit_value += dividend
