@@ -531,8 +531,16 @@ class PilotLedger:
             raise error
         return next(s for s in self.snapshot()["submissions"] if s["command_id"] == candidate.command_id)
 
-    def _mark(self, db, state, data, now):
-        if (state["_external_imports"] and _time(data["capture_started_at"])
+    def _mark(self, db, state, data, now, *, reconciled_command_id=None):
+        # Reconciliation already validated this exact post-account against the
+        # claim. Replay advances the checkpoint before marking its new holdings;
+        # a nonzero capture must not then be compared against its own end time.
+        if reconciled_command_id is not None:
+            accepted = state["_reconciliations"].get(reconciled_command_id)
+            if (accepted is None or accepted["post_account"] != data
+                    or state["_account_checkpoint"] != data):
+                raise PilotLedgerError("pilot_reconciled_mark_capture_mismatch")
+        if (reconciled_command_id is None and state["_external_imports"] and _time(data["capture_started_at"])
                 < _time(state["_account_checkpoint"]["capture_completed_at"])):
             raise PilotLedgerError("pilot_account_source_precedes_external_checkpoint")
         if (state["_external_imports"] and _money(data["cash"], "cash")
@@ -785,7 +793,7 @@ class PilotLedger:
                     breaches.append("pilot_finite_actual_cash_reserve_breached")
             for reason in breaches:
                 self._append(db, "hold", command_id, {"reason": reason, "observed_at": moment})
-            self._mark(db, state, post, moment)
+            self._mark(db, state, post, moment, reconciled_command_id=command_id)
             if breaches:
                 error = PilotLedgerError(";".join(breaches))
         if error:
@@ -834,5 +842,5 @@ class PilotLedger:
                        "executions": (), "positions": (), "terminal_no_fill": True,
                        "terminal_evidence": terminal}
             self._append(db, "reconciled_no_fill", command_id, receipt)
-            self._mark(db, self._state(db), post, moment)
+            self._mark(db, self._state(db), post, moment, reconciled_command_id=command_id)
         return self.snapshot()

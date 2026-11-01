@@ -1,9 +1,14 @@
 """Synthetic source-byte admission tests; never use private broker receipts."""
 from copy import deepcopy
+from contextlib import closing
 from datetime import timedelta
 from decimal import Decimal, localcontext
 import hashlib
 import json
+import shutil
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -343,3 +348,132 @@ def test_cli_successful_inspection_is_still_blocked(evidence,capsys):
     result=json.loads(capsys.readouterr().out)
     assert result['status']=='EXTERNAL_RECONCILIATION_BLOCKED'
     assert result['apply_supported'] is False
+
+
+def interrupted_economic_transaction(runtime):
+    """Crash a real DELETE-journal writer after dirty pages spill to the main DB."""
+    path = runtime / 'pilot.sqlite3'
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('PRAGMA page_size=32768')
+        db.execute('VACUUM')
+        # Preallocate unchanged-size pages so cache spill does not rely on an
+        # incomplete B-tree extension (which quick_check would already reject).
+        db.execute('CREATE TABLE synthetic_spill (id INTEGER PRIMARY KEY, padding TEXT)')
+        db.executemany('INSERT INTO synthetic_spill VALUES (?, ?)',
+                       [(i, 'a' * 24000) for i in range(64)])
+    moment = NOW + timedelta(seconds=1)
+    account = Account(now=moment, positions=(Position(pnl=D('25'), exposure=D('1025')),))
+    event = {'observed_at': moment.isoformat(), 'account': json.loads(canonical_json(account)),
+             'pilot_pnl': '0', 'realised_pnl': '0',
+             'pnl_basis': 'verified_opening_cash_flows_plus_position_asset_values'}
+    # os._exit deliberately bypasses connection cleanup and transaction rollback.
+    # All source changes below are confined to this synthetic pytest workspace.
+    script = """
+import os, sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+assert db.execute('PRAGMA journal_mode=DELETE').fetchone() == ('delete',)
+db.execute('PRAGMA synchronous=FULL')
+db.execute('PRAGMA cache_size=1')
+db.execute('PRAGMA cache_spill=1')
+db.execute('BEGIN IMMEDIATE')
+db.execute("INSERT INTO events(kind,command_id,payload,digest) VALUES ('mark',NULL,?,?)",
+           (sys.argv[2], sys.argv[3]))
+for i in range(64):
+    db.execute('UPDATE synthetic_spill SET padding=? WHERE id=?', ('b' * 24000, i))
+os._exit(0)
+"""
+    subprocess.run([sys.executable, '-c', script, str(path), canonical_json(event), payload_hash(event)],
+                   check=True, timeout=30)
+    journal = Path(str(path) + '-journal')
+    assert journal.stat().st_size > 512
+    assert journal.read_bytes()[:8] == bytes.fromhex('d9d505f920a163d7')
+    with closing(sqlite3.connect(':memory:')) as db:
+        db.deserialize(path.read_bytes())
+        assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+        payload, digest = db.execute('SELECT payload,digest FROM events').fetchone()
+        assert json.loads(payload) == event and payload_hash(json.loads(payload)) == digest
+        assert event['account']['equity'] == '11025'  # uncommitted economic mark
+    return path, journal
+
+
+def test_interrupted_economics_rejected_without_recovery_or_durable_report(evidence, capsys):
+    runtime = evidence[0]
+    path, journal = interrupted_economic_transaction(runtime)
+    before = bytes_under(runtime.parent)
+    # A disposable copy proves that the digested main-file event is uncommitted;
+    # neither the inspector nor this check asks SQLite to open the original DB.
+    recovery = runtime.parent / 'recovery-copy'
+    recovery.mkdir()
+    copy_path = recovery / path.name
+    shutil.copyfile(path, copy_path)
+    shutil.copyfile(journal, Path(str(copy_path) + '-journal'))
+    with closing(sqlite3.connect(copy_path)) as db:
+        assert db.execute('PRAGMA quick_check').fetchone() == ('ok',)
+        assert db.execute('SELECT COUNT(*) FROM events').fetchone() == (0,)
+    # Only the disposable recovery proof is omitted from source preservation.
+    before = {k: v for k, v in before.items() if not k.startswith('recovery-copy/')}
+    with pytest.raises(ExternalReconciliationError, match='rollback_journal_requires_stopped_snapshot'):
+        inspect(evidence)
+    assert main(['--runtime', str(runtime), '--manifest', str(evidence[2])]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result == {'status': 'EXTERNAL_RECONCILIATION_INVALID_EVIDENCE',
+                      'apply_supported': False, 'activation_ready': False, 'migration_not_applied': True}
+    after = {k: v for k, v in bytes_under(runtime.parent).items() if not k.startswith('recovery-copy/')}
+    assert after == before
+
+
+@pytest.mark.parametrize('store', ['pilot.sqlite3', 'execution.sqlite3', 'operator.sqlite3'])
+@pytest.mark.parametrize('journal', [b'\x00', bytes(27), b'not a rollback journal' * 32,
+    bytes(8) + b'initialized but not yet synchronized' + bytes(512),
+    bytes.fromhex('d9d505f920a163d7') + bytes(1024)],
+    ids=['short-zero', 'short-header', 'malformed', 'unsynchronized', 'nonzero-header'])
+def test_hot_or_ambiguous_journal_rejected_before_sqlite(evidence, monkeypatch, store, journal):
+    from agents.fill_agent import external_reconciliation as module
+    save(evidence[0] / (store + '-journal'), journal, raw=True)
+    before = bytes_under(evidence[0].parent)
+    opened = []
+    def forbidden_connect(*args, **kwargs):
+        opened.append(args)
+        raise AssertionError('SQLite must not deserialize rejected source bytes')
+    monkeypatch.setattr(module.sqlite3, 'connect', forbidden_connect)
+    with pytest.raises(ExternalReconciliationError, match='rollback_journal_requires_stopped_snapshot'):
+        inspect(evidence)
+    assert not opened
+    assert bytes_under(evidence[0].parent) == before
+
+
+@pytest.mark.parametrize('mode', ['DELETE', 'TRUNCATE', 'PERSIST'])
+def test_clean_and_cold_sqlite_journals_are_preserved(evidence, mode):
+    path = evidence[0] / 'pilot.sqlite3'
+    with closing(sqlite3.connect(path)) as db, db:
+        assert db.execute('PRAGMA journal_mode=' + mode).fetchone() == (mode.lower(),)
+        # Make SQLite produce its actual committed cold-journal representation.
+        db.execute('CREATE TABLE synthetic_cold_journal (value TEXT)')
+        db.execute("INSERT INTO synthetic_cold_journal VALUES ('committed')")
+    journal = Path(str(path) + '-journal')
+    if mode == 'DELETE':
+        assert not journal.exists()
+    elif mode == 'TRUNCATE':
+        assert journal.read_bytes() == b''
+    else:
+        assert len(journal.read_bytes()) > 512
+        assert journal.read_bytes()[:28] == bytes(28)
+    before = bytes_under(evidence[0].parent)
+    result = inspect(evidence)
+    assert result['original_store_bytes_unchanged']
+    assert result['existing_event_count'] == 0
+    assert bytes_under(evidence[0].parent) == before
+
+
+@pytest.mark.parametrize('store', ['pilot.sqlite3', 'execution.sqlite3', 'operator.sqlite3'])
+def test_nonempty_wal_rejected_before_sqlite_without_source_changes(evidence, monkeypatch, store):
+    from agents.fill_agent import external_reconciliation as module
+    save(evidence[0] / (store + '-wal'), b'nonempty WAL', raw=True)
+    save(evidence[0] / (store + '-shm'), b'original shared memory', raw=True)
+    before = bytes_under(evidence[0].parent)
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError('SQLite must not deserialize rejected source bytes')
+    monkeypatch.setattr(module.sqlite3, 'connect', forbidden_connect)
+    with pytest.raises(ExternalReconciliationError, match='wal_requires_stopped_snapshot'):
+        inspect(evidence)
+    assert bytes_under(evidence[0].parent) == before

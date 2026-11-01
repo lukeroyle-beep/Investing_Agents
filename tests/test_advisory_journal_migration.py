@@ -93,7 +93,9 @@ def test_unkeyed_observations_never_deduplicated_or_given_synthetic_identity(tmp
 
 
 @pytest.mark.parametrize("changes", [{"notes": "changed"}, {"risk_notes": "changed"},
-    {"outcome": "NA"}, {"custom": "different"}, {"ticker": " test "}])
+    {"outcome": "NA"}, {"custom": "different"}, {"ticker": " test "},
+    {"run_id": " RUN_ONE "}, {"review_status": "reviewed"}, {"user_action": "manual"},
+    {"adjusted_setup_score": "82.50"}])
 def test_conflicting_keyed_source_or_manual_content_is_not_discarded(tmp_path, changes):
     path = tmp_path / "trade_journal.csv"
     first = row(custom="original")
@@ -220,3 +222,114 @@ def test_live_journal_refuses_partial_history_before_write(source, monkeypatch):
     with pytest.raises(migration.JournalMigrationError, match="incomplete"):
         journal.main()
     assert source.read_bytes() == before
+
+
+FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "advisory_history_v1.json").read_text())
+
+
+def legacy_archive(source, *, completed):
+    """Install frozen pre-repair bytes, rebinding only the temporary source path."""
+    plan = json.loads(FIXTURE["plan.json"].encode())
+    plan["source_path"] = str(source)
+    archive = migration._history(source) / plan["source_sha256"]
+    archive.parent.mkdir(mode=0o700)
+    archive.mkdir(mode=0o700)
+    prepared = {"schema": migration.SCHEMA, "source_path": str(source),
+        "source_sha256": plan["source_sha256"], "plan_sha256": migration._hash(migration._json(plan)),
+        "reviewed_commit": COMMIT, "review_reference": "synthetic reviewed migration"}
+    for name in ("original.csv", "operational.csv"):
+        (archive / name).write_bytes(FIXTURE[name].encode())
+    (archive / "plan.json").write_bytes(migration._json(plan))
+    (archive / "prepared.json").write_bytes(migration._json(prepared))
+    if completed:
+        (archive / "completed.json").write_bytes(migration._json({"schema": migration.SCHEMA,
+            "prepared_sha256": migration._hash(migration._json(prepared)),
+            "operational_sha256": plan["operational_sha256"], "status": "applied"}))
+    return plan, archive
+
+
+def test_batch_plan_exactly_matches_pre_repair_bytes_and_hashes():
+    expected = FIXTURE["plan.json"].encode()
+    source = Path(json.loads(expected)["source_path"])
+    plan, operational = migration._plan(source, FIXTURE["original.csv"].encode())
+    assert migration._json(plan) == expected
+    assert operational == FIXTURE["operational.csv"].encode()
+    assert migration._hash(expected) == "e349899bc10b315ba360a15597703476daf56bef753cef3be095252df05f7bf6"
+
+
+def test_pre_repair_completed_archive_validates_without_changing_any_bytes(tmp_path):
+    source = tmp_path / "trade_journal.csv"
+    source.write_bytes(FIXTURE["operational.csv"].encode())
+    plan, _ = legacy_archive(source, completed=True)
+    # Existing replay deliberately preserves advice written since migration.
+    source.write_bytes(source.read_bytes() + b"new advice not owned by migration\n")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    migration.validate_journal_history(source)
+    assert apply(source, migration._summary(plan))["status"] == "ALREADY_APPLIED"
+    assert {p: p.read_bytes() for p in before} == before
+
+
+@pytest.mark.parametrize("source_stage", ["original.csv", "operational.csv"])
+def test_pre_repair_prepared_archive_recovers_same_plan(tmp_path, source_stage):
+    source = tmp_path / "trade_journal.csv"
+    source.write_bytes(FIXTURE[source_stage].encode())
+    plan, archive = legacy_archive(source, completed=False)
+    retained = {p: p.read_bytes() for p in archive.iterdir()}
+    assert apply(source, migration._summary(plan))["status"] == "APPLIED_HISTORY_PRESERVED"
+    assert source.read_bytes() == FIXTURE["operational.csv"].encode()
+    assert {p: p.read_bytes() for p in retained} == retained
+    migration.validate_journal_history(source)
+
+
+@pytest.mark.parametrize("keyed_count", [2, 32, 1000])
+def test_keyed_normalization_call_count_is_constant(tmp_path, monkeypatch, keyed_count):
+    source = tmp_path / "trade_journal.csv"
+    write(source, [row(run_id=f"RUN_{i}") for i in range(keyed_count)]
+        + [row(run_id="", review_status="unvalidated history"), row(ticker=" ")])
+    calls = []
+    validate = migration.validate_trade_journal
+    def counted(frame):
+        calls.append(len(frame))
+        return validate(frame)
+    monkeypatch.setattr(migration, "validate_trade_journal", counted)
+    migration.inspect_migration(source)
+    # One batch for keyed identities; one retained operational validation.
+    assert calls == [keyed_count, keyed_count]
+
+
+def test_recurring_archive_validation_normalizes_one_batch(tmp_path, monkeypatch):
+    source = tmp_path / "trade_journal.csv"
+    source.write_bytes(FIXTURE["operational.csv"].encode())
+    legacy_archive(source, completed=True)
+    calls = []
+    validate = migration.validate_trade_journal
+    def counted(frame):
+        calls.append(len(frame))
+        return validate(frame)
+    monkeypatch.setattr(migration, "validate_trade_journal", counted)
+    for _ in range(3):
+        calls.clear()
+        migration.validate_journal_history(source)
+        assert calls == [4, 2]
+
+
+def test_entirely_unkeyed_history_never_enters_schema_validation(tmp_path, monkeypatch):
+    source = tmp_path / "trade_journal.csv"
+    write(source, [row(run_id=" ", review_status="old invalid value"),
+        row(ticker="", journaled_at="unknown")])
+    def unexpected(frame):
+        raise AssertionError("unkeyed history must remain untouched")
+    monkeypatch.setattr(migration, "validate_trade_journal", unexpected)
+    plan = migration.inspect_migration(source)
+    assert plan["unresolved_unkeyed_rows"] == 2
+    assert plan["operational_rows"] == 0
+
+
+def test_batch_normalization_still_rejects_invalid_keyed_rows(tmp_path):
+    source = tmp_path / "trade_journal.csv"
+    write(source, [row(run_id="GOOD"), row(run_id="BAD", review_status="invalid")])
+    before = source.read_bytes()
+    with pytest.raises(ValueError, match="invalid values"):
+        migration.inspect_migration(source)
+    assert source.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [source]
