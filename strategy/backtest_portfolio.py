@@ -3,8 +3,9 @@
 Candidates contain an entry and an eventual exit; their future returns never
 participate in allocation. Entries are processed before all same-session exits,
 so proceeds from a later intraday exit cannot fund an opening trade. All marks
-must be supplied explicitly for every held session. No broker or runtime state
-is read or written here.
+must be supplied explicitly for every held session. A Dividends column is cash
+per share, credited on that session only to positions already held overnight.
+No broker or runtime state is read or written here.
 """
 
 from __future__ import annotations
@@ -66,6 +67,21 @@ def _sessions(values: Iterable[object]) -> pd.DatetimeIndex:
     if result.empty or result.has_duplicates or not result.is_monotonic_increasing:
         raise PortfolioReplayError("sessions must be nonempty, unique and increasing")
     return result
+
+
+def _dividend_marks(history: pd.DataFrame, ticker: str) -> dict[pd.Timestamp, float]:
+    """Cash per share by session. Missing column means no dividend was supplied."""
+    if "Dividends" not in history.columns:
+        return {}
+    marks: dict[pd.Timestamp, float] = {}
+    for record in history[["Date", "Dividends"]].to_dict("records"):
+        session = _date(record["Date"], f"{ticker} dividend date")
+        amount = _number(record["Dividends"], f"{ticker} dividend")
+        if session in marks:
+            raise PortfolioReplayError(f"{ticker}: duplicate dividend session {session.date()}")
+        if amount > 0:
+            marks[session] = amount
+    return marks
 
 
 def _close_marks(history: pd.DataFrame, ticker: str) -> dict[pd.Timestamp, float]:
@@ -146,8 +162,12 @@ def replay_portfolio(
     ``transaction_cost`` is split in proportion to the execution notionals.
     Input ``net_pnl`` and ``notional`` are recomputed from executions rather
     than trusted. Candidates exceeding available cash are rejected unchanged
-    in size. The function requires completed candidate lifecycles and returns
-    a flat, reconciled final research portfolio.
+    in size. When a history supplies ``Dividends``, that cash is added on the
+    ex-date to positions held from the previous session, including positions
+    that exit on the ex-date, and included in those trades' net profit.
+    A position opened on the ex-date does not receive that dividend. The
+    function requires completed candidate lifecycles and returns a flat,
+    reconciled final research portfolio.
     """
     capital = _number(initial_capital, "initial_capital", positive=True)
     dates = _sessions(sessions)
@@ -166,10 +186,15 @@ def replay_portfolio(
                 raise PortfolioReplayError("duplicate or empty trade_id")
             explicit_ids.add(identifier)
     candidates.sort(key=lambda trade: (trade["entry_date"], trade["ticker"]))
+    held_tickers = sorted({trade["ticker"] for trade in candidates})
     marks = {
         ticker: _close_marks(history_by_ticker[ticker], ticker)
-        for ticker in sorted({trade["ticker"] for trade in candidates})
+        for ticker in held_tickers
         if ticker in history_by_ticker
+    }
+    dividends = {
+        ticker: _dividend_marks(history_by_ticker[ticker], ticker)
+        for ticker in marks
     }
     entries: dict[str, list[dict]] = {}
     for trade in candidates:
@@ -187,6 +212,7 @@ def replay_portfolio(
     for session in dates:
         label = session.date().isoformat()
         turnover = entry_fees = exit_fees = 0.0
+        held_overnight = list(active.values())
         for trade in entries.get(label, []):
             ticker = trade["ticker"]
             required_cash = trade["notional"] + trade["entry_fee"]
@@ -199,18 +225,38 @@ def replay_portfolio(
             cash -= required_cash
             turnover += trade["notional"]
             entry_fees += trade["entry_fee"]
-            active[ticker] = trade
-            accepted.append({**trade, "weighted_return_pct": trade["net_pnl"] / capital * 100.0})
+            # price_net_pnl stays the execution result. Dividend cash is added
+            # on the ex-date and must not be added again when the position exits.
+            record = {
+                **trade,
+                "weighted_return_pct": trade["net_pnl"] / capital * 100.0,
+                "price_net_pnl": trade["net_pnl"],
+                "dividend_cash": 0.0,
+            }
+            active[ticker] = record
+            accepted.append(record)
 
         for ticker, trade in list(active.items()):
             if trade["exit_date"] != label:
                 continue
             exit_value = trade["shares"] * trade["exit_execution_price"]
             cash += exit_value - trade["exit_fee"]
-            realised += trade["net_pnl"]
+            realised += trade["price_net_pnl"]
             turnover += exit_value
             exit_fees += trade["exit_fee"]
             del active[ticker]
+
+        for trade in held_overnight:
+            per_share = dividends.get(trade["ticker"], {}).get(session, 0.0)
+            if per_share == 0.0:
+                continue
+            amount = trade["shares"] * per_share
+            cash += amount
+            realised += amount
+            trade["dividend_cash"] += amount
+            trade["net_pnl"] = trade["price_net_pnl"] + trade["dividend_cash"]
+            trade["trade_return_pct"] = trade["net_pnl"] / trade["notional"] * 100.0
+            trade["weighted_return_pct"] = trade["net_pnl"] / capital * 100.0
 
         exposure = unrealised = 0.0
         for ticker, trade in active.items():

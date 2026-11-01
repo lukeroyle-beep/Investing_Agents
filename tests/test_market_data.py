@@ -172,6 +172,35 @@ def test_yfinance_provider_uses_deterministic_rate_limit_and_backoff_hooks() -> 
     assert result.metadata.retry_count == 1
 
 
+def test_actions_request_is_forwarded_and_not_served_from_price_only_cache() -> None:
+    frame = pd.DataFrame(
+        {"Close": [100.0], "Dividends": [0.25]},
+        index=pd.to_datetime(["2026-04-24"]),
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_download(*_args, **kwargs):
+        calls.append(kwargs)
+        return frame
+
+    cache = InMemoryMarketDataCache()
+    provider = YFinanceMarketDataProvider(
+        download_func=fake_download,
+        now_func=fixed_now,
+        cache=cache,
+        max_staleness_days=1,
+    )
+
+    provider.fetch_history("AAPL", actions=True)
+    provider.fetch_history("AAPL", actions=True)
+    provider.fetch_history("AAPL")
+
+    assert calls[0]["actions"] is True
+    assert calls[0]["auto_adjust"] is True
+    assert len(calls) == 2
+    assert "actions" not in calls[1]
+
+
 def test_yfinance_provider_reads_and_writes_in_memory_cache() -> None:
     frame = pd.DataFrame(
         {"Close": [100.0]}, index=pd.to_datetime(["2026-04-24"])

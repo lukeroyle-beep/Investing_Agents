@@ -21,6 +21,76 @@ def _prices(values, sessions=SESSIONS):
     return pd.DataFrame({"Date": sessions, "Close": values})
 
 
+def test_overnight_holder_is_paid_the_ex_date_dividend_in_cash():
+    sessions = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"])
+    history = pd.DataFrame({
+        "Date": sessions,
+        "Close": [100.0, 99.0, 110.0, 110.0],
+        "Dividends": [5.0, 1.0, 0.0, 2.0],
+    })
+    result = replay_portfolio(
+        pd.DataFrame([_trade(entry="2024-01-02", exit_="2024-01-04", shares=5)]),
+        {"AAA": history},
+        1000,
+        sessions,
+    )
+
+    # Entry-day 5.0 and post-exit 2.0 are not ours. The 1.0 on the hold is.
+    assert result.accepted_trades.iloc[0]["net_pnl"] == 55
+    assert result.equity_curve["cash"].tolist() == [500, 505, 1055, 1055]
+    assert result.equity_curve["realised_pnl"].tolist() == [0, 5, 55, 55]
+    assert result.equity_curve.iloc[-1]["cash"] == pytest.approx(
+        1000 + result.accepted_trades["net_pnl"].sum()
+    )
+
+
+def test_dividend_on_the_entry_session_is_not_received():
+    sessions = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    history = pd.DataFrame({
+        "Date": sessions,
+        "Close": [100.0, 100.0],
+        "Dividends": [4.0, 0.0],
+    })
+    result = replay_portfolio(
+        pd.DataFrame([_trade(entry="2024-01-02", exit_="2024-01-03", shares=5, exit_execution_price=100)]),
+        {"AAA": history},
+        1000,
+        sessions,
+    )
+
+    assert result.accepted_trades.iloc[0]["net_pnl"] == 0
+    assert result.equity_curve["cash"].tolist() == [500, 1000]
+
+
+def test_dividend_on_the_exit_session_is_paid_to_overnight_holders():
+    sessions = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    history = pd.DataFrame({
+        "Date": sessions,
+        "Close": [100.0, 100.0],
+        "Dividends": [0.0, 4.0],
+    })
+    result = replay_portfolio(
+        pd.DataFrame([_trade(entry="2024-01-02", exit_="2024-01-03", shares=5, exit_execution_price=100)]),
+        {"AAA": history},
+        1000,
+        sessions,
+    )
+
+    assert result.accepted_trades.iloc[0]["net_pnl"] == 20
+    assert result.equity_curve["cash"].tolist() == [500, 1020]
+    assert result.equity_curve.iloc[-1]["cash"] == pytest.approx(
+        1000 + result.accepted_trades["net_pnl"].sum()
+    )
+
+
+def test_negative_dividend_is_rejected():
+    sessions = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+    history = _prices([100, 100, 110])
+    history["Dividends"] = [0.0, -1.0, 0.0]
+    with pytest.raises(PortfolioReplayError, match="dividend"):
+        replay_portfolio(pd.DataFrame([_trade()]), {"AAA": history}, 1000, sessions)
+
+
 def test_open_loss_is_marked_before_recovery_and_exit_is_flat():
     result = replay_portfolio(
         pd.DataFrame([_trade(net_pnl=999999)]),
