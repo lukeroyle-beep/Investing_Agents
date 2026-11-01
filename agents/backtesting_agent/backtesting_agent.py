@@ -153,8 +153,20 @@ def _normalise_history_df(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
     if "Volume" not in df.columns:
         df["Volume"] = 0
+    # Dividends stay cash. They are not folded into Close: a later dividend
+    # would otherwise rewrite earlier bars and can move a moving-average cross.
+    if "Dividends" not in df.columns:
+        df["Dividends"] = 0.0
+    dividends = pd.to_numeric(df["Dividends"], errors="coerce")
+    if (
+        dividends.isna().any()
+        or (dividends < 0).any()
+        or not all(isfinite(float(value)) for value in dividends)
+    ):
+        raise StrategyValidationError("dividends must be finite and non-negative")
 
-    df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    df = df[["Date", "Open", "High", "Low", "Close", "Volume", "Dividends"]].copy()
+    df["Dividends"] = dividends.to_numpy()
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date")
     if df["Date"].duplicated().any():
@@ -171,11 +183,16 @@ def download_price_history(
     market_data_provider: MarketDataProvider | None = None,
     health_results: list[MarketDataResult] | None = None,
 ) -> pd.DataFrame:
+    # auto_adjust rewrites earlier OHLC for dividends that had not yet been
+    # paid. Yahoo's Close with auto_adjust off is already split-adjusted, and
+    # actions keeps the cash dividend beside those prices. Do not copy Adj
+    # Close onto Close, and do not apply Stock Splits a second time.
     market_data = fetch_price_history(
         ticker,
         start=start_date,
         end=end_date or None,
-        auto_adjust=True,
+        auto_adjust=False,
+        actions=True,
         provider=market_data_provider,
     )
     if health_results is not None:
@@ -352,8 +369,9 @@ def simulate_long_trades_for_ticker(
             day_close = safe_float(day["Close"], 0.0)
             day_open = float(day["Open"])
 
-            # An overnight gap cannot fill at a stop price the market skipped.
-            # On ambiguous daily bars the stop wins over the profit target.
+            # An overnight gap cannot fill at a stop or target the market
+            # skipped. Both fill at the open. On ambiguous daily bars the stop
+            # wins over the profit target.
             if day_open <= stop_price:
                 exit_date = pd.to_datetime(day["Date"])
                 exit_price = day_open
@@ -362,8 +380,8 @@ def simulate_long_trades_for_ticker(
 
             if day_open >= take_profit_price:
                 exit_date = pd.to_datetime(day["Date"])
-                exit_price = take_profit_price
-                exit_reason = "take_profit"
+                exit_price = day_open
+                exit_reason = "take_profit_gap"
                 break
 
             if day_low <= stop_price:
@@ -522,6 +540,9 @@ def partition_benchmark_return(history, start, end, costs):
     tax = float(costs.tax_bps) / 10000
     entry = float(frame.iloc[0]["Open"]) * (1 + friction) * (1 + fee + tax)
     exit_value = float(frame.iloc[-1]["Close"]) * (1 - friction) * (1 - fee)
+    dividend = _held_dividends_per_share(frame)
+    if dividend:
+        exit_value += dividend
     if not isfinite(entry) or not isfinite(exit_value) or min(entry, exit_value) <= 0:
         raise StrategyValidationError("invalid benchmark prices or costs")
     return (exit_value / entry - 1) * 100
@@ -579,6 +600,24 @@ def evaluate_walk_forward(histories, benchmark_history, config):
     return splits, evidence
 
 
+def _held_dividends_per_share(history_df: pd.DataFrame) -> float:
+    """Cash dividends after the entry session, per share.
+
+    Buying on a session does not receive that session's dividend. A position
+    still held at the next session's open does, including when it exits then.
+    """
+    if "Dividends" not in history_df.columns or len(history_df) < 2:
+        return 0.0
+    values = pd.to_numeric(history_df["Dividends"].iloc[1:], errors="coerce")
+    if (
+        values.isna().any()
+        or (values < 0).any()
+        or not all(isfinite(float(value)) for value in values)
+    ):
+        raise StrategyValidationError("dividends must be finite and non-negative")
+    return float(values.sum())
+
+
 def calculate_benchmark_return(history_df: pd.DataFrame) -> float:
     if history_df.empty or len(history_df) < 2:
         return 0.0
@@ -586,7 +625,10 @@ def calculate_benchmark_return(history_df: pd.DataFrame) -> float:
     last_close = safe_float(history_df.iloc[-1]["Close"], 0.0)
     if first_close <= 0:
         return 0.0
-    return (last_close / first_close - 1.0) * 100.0
+    dividend = _held_dividends_per_share(history_df)
+    if not dividend:
+        return (last_close / first_close - 1.0) * 100.0
+    return ((last_close + dividend) / first_close - 1.0) * 100.0
 
 
 def build_benchmark_comparison(

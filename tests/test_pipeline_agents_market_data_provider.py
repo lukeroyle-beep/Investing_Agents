@@ -111,12 +111,16 @@ def test_backtesting_agent_fetches_history_via_market_data_provider_with_dates()
             "ticker": "TEST",
             "period": "6mo",
             "interval": "1d",
-            "auto_adjust": True,
+            "auto_adjust": False,
+            "actions": True,
             "start": "2026-01-01",
             "end": "2026-04-01",
         }
     ]
-    assert list(result.columns) == ["Date", "Open", "High", "Low", "Close", "Volume", "ticker"]
+    assert list(result.columns) == [
+        "Date", "Open", "High", "Low", "Close", "Volume", "Dividends", "ticker",
+    ]
+    assert result["Dividends"].eq(0).all()
     assert result["ticker"].unique().tolist() == ["TEST"]
 
 

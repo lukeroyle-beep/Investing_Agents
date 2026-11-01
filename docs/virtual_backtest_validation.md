@@ -21,9 +21,10 @@ a successful backtest enables demo or real trading.
   profit or loss separately. Drawdown includes losses before a position closes.
 - Unfunded or overlapping positions are rejected and saved as explicit
   evidence. A rejected candidate does not suppress later candidate signals.
-- Entries use the next session's open after a signal. A stop crossed by an
-  opening gap fills at that open, not at an unavailable stop price. Spread,
-  slippage, fees and configured tax affect execution accounting.
+- Entries use the next session's open after a signal. A stop or profit target
+  crossed by an opening gap fills at that open, not at an unavailable stop or
+  target price. Spread, slippage, fees and configured tax affect execution
+  accounting.
 - Walk-forward evaluation independently replays validation and test windows,
   uses matching benchmark periods, and replays stressed costs. It no longer
   copies full-history returns or invents zero drawdown for separate windows.
@@ -105,7 +106,9 @@ Reference fingerprints with the checked-in configuration:
   fixed percentage of initial capital, not an adaptive allocation model.
 - Daily open/high/low/close prices do not reveal the intraday path. After
   checking the opening gap, an ambiguous stop-and-target session resolves to
-  the stop. A favourable target gap receives only the target price.
+  the stop. A gap through the stop or the profit target fills at that open.
+  Signals use split-adjusted prices. Dividends are cash on the ex-date for
+  positions already held, not a rewrite of earlier bars.
 - Same-session entries are processed before exits, so unavailable closing
   proceeds cannot fund opening purchases. Simultaneous candidates are ordered
   by ticker, which can affect selection when cash is constrained.

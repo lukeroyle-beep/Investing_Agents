@@ -257,6 +257,7 @@ class MarketDataProvider(Protocol):
         period: str = "6mo",
         interval: str = "1d",
         auto_adjust: bool = True,
+        actions: bool = False,
         start: str | None = None,
         end: str | None = None,
     ) -> MarketDataResult:
@@ -358,15 +359,21 @@ class YFinanceMarketDataProvider:
         period: str = "6mo",
         interval: str = "1d",
         auto_adjust: bool = True,
+        actions: bool = False,
         start: str | None = None,
         end: str | None = None,
     ) -> MarketDataResult:
         retry_count = 0
         fetched_at = self._now_func().astimezone(UTC).isoformat()
         data_kind = "daily_research_price" if interval.endswith("d") else "research_intraday"
+        # Keep dividend rows out of a price-only cache entry. The cache key is
+        # otherwise only ticker, period, interval and auto_adjust.
+        cache_period = self._cache_period(period, start=start, end=end)
+        if actions:
+            cache_period = f"{cache_period}|actions"
         cached_data = self._get_cached(
             ticker,
-            period=self._cache_period(period, start=start, end=end),
+            period=cache_period,
             interval=interval,
             auto_adjust=auto_adjust,
         )
@@ -393,6 +400,8 @@ class YFinanceMarketDataProvider:
                     "auto_adjust": auto_adjust,
                     "progress": False,
                 }
+                if actions:
+                    download_kwargs["actions"] = True
                 if start or end:
                     if start:
                         download_kwargs["start"] = start
@@ -414,7 +423,7 @@ class YFinanceMarketDataProvider:
                     self._cache.set(
                         ticker,
                         data,
-                        period=self._cache_period(period, start=start, end=end),
+                        period=cache_period,
                         interval=interval,
                         auto_adjust=auto_adjust,
                         source=self._source,
@@ -532,6 +541,7 @@ def fetch_price_history(
     period: str = "6mo",
     interval: str = "1d",
     auto_adjust: bool = True,
+    actions: bool = False,
     provider: MarketDataProvider | None = None,
     start: str | None = None,
     end: str | None = None,
@@ -542,6 +552,8 @@ def fetch_price_history(
         "interval": interval,
         "auto_adjust": auto_adjust,
     }
+    if actions:
+        kwargs["actions"] = True
     if start is not None:
         kwargs["start"] = start
     if end is not None:
