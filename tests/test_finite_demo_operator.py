@@ -71,7 +71,7 @@ class MultiTransport(SyntheticTransport):
         return super().send(request)
 
 
-def workflow(tmp_path, *, max_submissions=3, max_per_day=3):
+def workflow(tmp_path, *, max_submissions=3, max_per_day=3, acknowledge_unreported_buffer=None):
     store = ExecutionStore(tmp_path / "execution.sqlite3")
     registry = InstrumentRegistry(store)
     specs, instruments = [], []
@@ -98,6 +98,8 @@ def workflow(tmp_path, *, max_submissions=3, max_per_day=3):
         "authorized_amounts": {str(spec["instrument_id"]): "10" for spec in specs},
         "per_order_cap": "20", "total_commitment": "100", "max_positions": 5,
         "min_cash_fraction": ".20", "loss_stop": "25", "order_types": ["market"]}
+    if acknowledge_unreported_buffer is not None:
+        scope["acknowledge_unreported_buffer"] = acknowledge_unreported_buffer
     mandate = FiniteDemoMandate.create(tmp_path / "finite.json", account_id="123",
         source_reference="synthetic-finite-human-authority", issued_at=NOW, expires_at=NOW+timedelta(hours=1),
         ledger=ledger, reviewed_commit=COMMIT, scope=scope)
@@ -120,7 +122,7 @@ def workflow(tmp_path, *, max_submissions=3, max_per_day=3):
     return SimpleNamespace(**locals())
 
 
-def prepare(f, index=0, fills=()):
+def prepare(f, index=0, fills=(), *, missing_buffer=False, buffer_mode=None):
     spec, instrument = f.specs[index], f.instruments[index]
     now = f.clock[0]
     market = MarketTransport(f.clock, [
@@ -138,6 +140,10 @@ def prepare(f, index=0, fills=()):
         args[name]["request_started_at"] = now.isoformat()
         args[name]["response_received_at"] = now.isoformat()
     change_response(args, "cost", lambda data: data.update(lastUpdated=now.isoformat()))
+    if missing_buffer:
+        change_response(args, "eligibility", lambda data: data["eligibilities"][0].pop("additionalBufferPercent"))
+    args["allow_unreported_buffer"] = (f.mandate.acknowledge_unreported_buffer
+                                       if buffer_mode is None else buffer_mode)
     args.update(quote=quote, now=f.clock[0])
     assessment = assess_batch_order(**args)
     account = account_with_fills(f.clock[0], fills)
@@ -207,6 +213,42 @@ def test_two_distinct_instruments_one_mandate_no_per_order_confirmation(tmp_path
     with pytest.raises(Exception, match="fresh_unclaimed"):
         submit(first)
     assert len(f.transport.posts) == 2
+
+
+def test_missing_buffer_requires_this_mandate_acknowledgement(tmp_path):
+    f = workflow(tmp_path)
+    with pytest.raises(Exception, match="authorized_buffer_mode"):
+        prepare(f, missing_buffer=True, buffer_mode=True)
+    assert not f.transport.posts and not f.ledger.snapshot()["submissions"]
+
+
+def test_acknowledged_buffer_stays_unknown_and_does_not_bypass_cost_limits(tmp_path):
+    f = workflow(tmp_path, acknowledge_unreported_buffer=True)
+    p = prepare(f, missing_buffer=True)
+    assert p.assessment.evidence["additional_buffer"]["status"] == "not_reported"
+    assert p.assessment.evidence["additional_buffer"]["reported_percent"] is None
+    assert p.assessment.evidence["additional_buffer"]["continuous_inflight_available_cash_verified"] is False
+    assert submit(p).state == CommandState.ACKNOWLEDGED
+    state, fills, _ = finish(p)
+    assert state["committed_capital"] == D("10.01") and not state["unresolved"]
+    with pytest.raises(Exception, match="instrument_attempt"):
+        prepare(f, fills=fills, missing_buffer=True)
+    assert len(f.transport.posts) == 1
+
+
+def test_buffer_acknowledgement_never_relaxes_cap_freshness_or_usage(tmp_path):
+    f = workflow(tmp_path, acknowledge_unreported_buffer=True)
+    p = prepare(f, missing_buffer=True)
+    candidate = FiniteOrderCandidate("test", p.spec["instrument_id"], D(10), D("10.0001"), p.intent.intent_hash)
+    with pytest.raises(Exception, match="order_cap"):
+        f.op._admission(mandate=f.mandate, candidate=candidate, account=p.account, now=f.clock[0])
+    with pytest.raises(Exception, match="account_evidence_older_than_15_seconds"):
+        f.op._admission(mandate=f.mandate, candidate=replace(candidate, expected_costs=D(0)),
+                        account=p.account, now=f.clock[0]+timedelta(seconds=12))
+    p.usage = replace(p.usage, windows=(UsageWindow("test", D("24.999"), True),))
+    with pytest.raises(Exception, match="fresh_usage_and_recovery_reserve"):
+        submit(p)
+    assert not f.transport.posts and not f.ledger.snapshot()["submissions"]
 
 
 @pytest.mark.parametrize("floor,remaining,allowed", [

@@ -216,6 +216,7 @@ class PilotLedger:
         finite_migration, journaled, journal_receipts = None, set(), {}
         external_imports, external_journaled, external_journal_receipts = {}, set(), {}
         retired_baseline, external_cash_ids, external_order_ids = set(), set(), set()
+        external_period_sources = set()
         account_checkpoint = inception["account"]
         pilot_pnl, loss_stopped = ZERO, False
         for kind, command_id, encoded, digest in db.execute("SELECT kind,command_id,payload,digest FROM events ORDER BY sequence"):
@@ -251,6 +252,7 @@ class PilotLedger:
                     effects = validate_record(event, inception=inception, prior_account=account_checkpoint,
                         retired=retired_baseline, attributed=positions)
                     if (external_cash_ids & effects["cash_event_ids"]
+                            or effects.get("period_source_hash") in external_period_sources
                             or external_order_ids & effects["order_ids"]
                             or {e["broker_order_id"] for e in executions.values()} & effects["order_ids"]
                             or {(r.get("terminal_evidence") or {}).get("broker_order_id")
@@ -262,6 +264,8 @@ class PilotLedger:
                 retired_baseline.update(effects["retired"])
                 external_cash_ids.update(effects["cash_event_ids"])
                 external_order_ids.update(effects["order_ids"])
+                if effects.get("period_source_hash") is not None:
+                    external_period_sources.add(effects["period_source_hash"])
                 positions.update({p["position_id"]: p for p in effects["positions"]})
                 account_checkpoint = effects["source_account"]
                 pilot_pnl = effects["pilot_pnl"]
@@ -491,6 +495,8 @@ class PilotLedger:
             own = [s for s in state["submissions"] if s.get("mandate_hash") == mandate.mandate_hash]
             if len(own) >= scope["max_submissions"]:
                 raise PilotLedgerError("pilot_finite_submission_budget_exhausted")
+            if mandate.instrument_attempted(candidate.instrument_id, state):
+                raise PilotLedgerError("pilot_finite_instrument_attempt_already_consumed")
             if sum(s["london_day"] == day for s in (*state["submissions"], *state["external_openings"])) >= scope["max_per_day"]:
                 raise PilotLedgerError("pilot_finite_daily_submission_budget_exhausted")
             attempted = _exact_sum(_exact_sum((_money(s["amount"], "amount"), _money(s["expected_costs"], "expected_costs"))) for s in own)

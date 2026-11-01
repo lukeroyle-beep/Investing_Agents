@@ -182,3 +182,29 @@ def test_missing_buffer_remains_unknown_and_requires_explicit_mode():
     result = assess_batch_order(**args, allow_unreported_buffer=True)
     assert result.evidence["additional_buffer"]["status"] == "not_reported"
     result.validate(NOW)
+
+
+@pytest.mark.parametrize("currency", ["GBP", "EUR"])
+@pytest.mark.parametrize("kind", ["overnightFee", "overWeekendFee"])
+def test_exact_zero_foreign_recurring_cost_preserves_currency_without_fx(currency, kind):
+    args = batch_inputs()
+    change_response(args, "cost", lambda data: data["costs"].append(
+        {"costType": kind, "currency": currency, "value": D(0)}))
+    result = assess_batch_order(**args)
+    assert {"type": kind, "currency": currency, "value": D(0)} in result.preview["confirmation"]["costs"]
+    assert preview_costs(result.preview) == (D(".01"), D(".011"))
+    result.validate(NOW)
+
+
+@pytest.mark.parametrize("kind,currency,value", [
+    ("overnightFee", "GBP", "0.00000000000000000001"),
+    ("overWeekendFee", "EUR", "-0.00000000000000000001"),
+    ("overnightFee", "XYZ", "0"), ("overnightFee", "gbp", "0"),
+    ("marketSpread", "EUR", "0"), ("sdrt", "GBP", "0"),
+])
+def test_zero_foreign_rule_never_admits_unknown_or_nonzero_cost(kind, currency, value):
+    args = batch_inputs()
+    change_response(args, "cost", lambda data: data.update(costs=[
+        {"costType": kind, "currency": currency, "value": D(value)}]))
+    with pytest.raises(BatchAssessmentError):
+        assess_batch_order(**args)

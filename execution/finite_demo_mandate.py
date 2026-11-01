@@ -23,6 +23,7 @@ POLICY = "finite-demo-v2"
 MANDATE_SCHEMA = "finite-demo-mandate-v2"
 _SCOPE_KEYS = {"instruments", "authorized_amounts", "max_submissions", "max_per_day", "per_order_cap",
                "total_commitment", "max_positions", "min_cash_fraction", "loss_stop", "order_types"}
+_OPTIONAL_SCOPE_KEYS = {"acknowledge_unreported_buffer"}
 _INSTRUMENT_KEYS = {"instrument_id", "symbol", "exchange", "asset_type", "economic_class",
                     "currency", "issuer", "sector", "class_source_reference"}
 
@@ -63,9 +64,12 @@ def _commit(value):
 
 def validate_scope(scope):
     """Normalize exact requested bounds; code ceilings do not create authority."""
-    if not isinstance(scope, dict) or set(scope) != _SCOPE_KEYS:
+    if (not isinstance(scope, dict) or not _SCOPE_KEYS <= set(scope)
+            or set(scope) - _SCOPE_KEYS - _OPTIONAL_SCOPE_KEYS):
         raise FiniteDemoMandateError("finite_scope_shape_invalid")
     scope = dict(scope)
+    if type(scope.get("acknowledge_unreported_buffer", False)) is not bool:
+        raise FiniteDemoMandateError("finite_explicit_buffer_acknowledgement_required")
     for key in ("max_submissions", "max_per_day", "max_positions"):
         _positive_int(scope[key], key)
     if scope["max_positions"] > 5:
@@ -148,6 +152,16 @@ class FiniteDemoMandate:
     def scope(self):
         # A returned dict cannot mutate this immutable authority in memory.
         return json.loads(self._scope_json)
+
+    @property
+    def acknowledge_unreported_buffer(self):
+        # Absence in a historical mandate remains false without rewriting it.
+        return self.scope.get("acknowledge_unreported_buffer", False)
+
+    def instrument_attempted(self, instrument_id, state):
+        """Every durable claim consumes this candidate, including no-fill."""
+        return any(row.get("mandate_hash") == self.mandate_hash
+                   and row["instrument_id"] == instrument_id for row in state["submissions"])
 
     @classmethod
     def create(cls, path, *, account_id, source_reference, issued_at, expires_at,

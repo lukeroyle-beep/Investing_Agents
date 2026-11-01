@@ -127,6 +127,8 @@ def locked_cycle(args, root, ledger):
         if not isinstance(args.amount, Decimal) or not args.amount.is_finite() or args.amount <= 0:
             raise ValueError("finite_positive_exact_amount_required")
         mandate.validate_order_amount(args.instrument_id, args.amount)
+        if mandate.instrument_attempted(args.instrument_id, state):
+            raise ValueError("finite_instrument_attempt_already_consumed")
         usage_host = UsageOnlyHost(root)
         usage = usage_evidence(usage_host, mandate)
         if usage.validate_for_work(now()):
@@ -199,7 +201,8 @@ def locked_cycle(args, root, ledger):
     quote, market = reader.market(instrument, spec)
     assessment = assess_batch_order(instrument_spec=spec, instrument=instrument,
         cost_receipt=costs, eligibility_receipt=eligibility, payload=payload, quote=quote,
-        quote_currency=spec["currency"], account_currency="USD", now=now())
+        quote_currency=spec["currency"], account_currency="USD", now=now(),
+        allow_unreported_buffer=mandate.acknowledge_unreported_buffer)
     intent = OrderIntent.create(strategy_id="finite-demo-v2", run_id=str(uuid4()),
         internal_instrument_id=instrument.internal_instrument_id, environment="demo", side="buy",
         order_type="market", sizing_method="fixed_notional", sizing_value=args.amount, currency="USD",
