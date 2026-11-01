@@ -6,7 +6,7 @@ send an order. An incomplete setup is preserved for review, never overwritten.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import fcntl
 import os
 from pathlib import Path
@@ -17,10 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agents.fill_agent.pilot_ledger import PilotLedger
-from agents.journal_agent.execution_journal import ExecutionJournal
+from agents.fill_agent.composite_import import _journal as _validated_original_journal
 from execution.domain import canonical_json, payload_hash
 from execution.finite_demo_mandate import FiniteDemoMandate, validate_scope
-from execution.store import ExecutionStore
 from risk.kill_switch import KillSwitch
 from scripts.run_autonomous_demo_pilot import verify_reviewed_checkout
 from scripts.setup_autonomous_demo_pilot import _owned_directory, _read_private, PilotSetupError
@@ -129,23 +128,47 @@ def load_catalog(root, mandate, ledger):
     return rows, record["sha256"]
 
 
+def setup_execution_journal(root, ledger, state):
+    """Validate or create the original audit before writing finite authority.
+
+    The shared historical loader opens an existing execution store without
+    bootstrapping its schema. Missing historical journals are never recreated.
+    This preflight runs before any finite authority or migration is written.
+    """
+    path = root / JOURNAL_FILE
+    if path.is_symlink():
+        raise PilotSetupError("finite_existing_journal_symlink_refused")
+    if path.exists():
+        return _validated_original_journal(root, ledger, allow_create=False)
+    if (state.get("external_imports") or state.get("_finite_migration") is not None
+            or any(row.get("mandate_policy") == "finite-demo-v2" for row in state["submissions"])):
+        raise PilotSetupError("finite_historical_journal_missing_never_recreate")
+    # The loader also validates the existing operational schema. Never use its
+    # normal constructor here: that would repair an empty/corrupt source store.
+    # A new empty journal interrupted before authority is safe to reuse later.
+    return _validated_original_journal(root, ledger, allow_create=True)
+
+
 def setup(*, runtime, authorization_reference, reviewed_commit, scope, catalog,
           issued_at, expires_at, checkout_verifier=verify_reviewed_checkout):
     checkout_verifier(reviewed_commit)
     root, _ = existing_runtime(runtime)
     with operator_lock(root):
         root, ledger = existing_runtime(root)
-        state = ledger.snapshot()
+        with closing(ledger._connect()) as db:
+            state = ledger._state(db)
         if state["unresolved"] or state["loss_stopped"]:
             raise PilotSetupError("existing_pilot_requires_reconciliation_before_expansion")
         switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
         before_switch = switch.status()
         if not before_switch.integrity_valid or not before_switch.engaged:
             raise PilotSetupError("finite_setup_requires_existing_engaged_kill_switch")
-        if any((root / name).exists() for name in (MANDATE_FILE, CATALOG_FILE, JOURNAL_FILE)):
+        if any((root / name).exists() or (root / name).is_symlink()
+               for name in (MANDATE_FILE, CATALOG_FILE)):
             raise PilotSetupError("finite_setup_exists_never_overwrite")
         normalized = validate_scope(scope)
         rows = classifications(catalog, normalized, state)
+        journal = setup_execution_journal(root, ledger, state)
         # Authority is retained before schema migration; a crash never grants an
         # unrecorded extension, and retry cannot recreate an empty allowance.
         mandate = FiniteDemoMandate.create(root / MANDATE_FILE, account_id=state["account_id"],
@@ -157,8 +180,9 @@ def setup(*, runtime, authorization_reference, reviewed_commit, scope, catalog,
         _save(root / CATALOG_FILE, {"catalog": body, "sha256": payload_hash(body)})
         ledger.enable_finite_mandates(source_reference=authorization_reference,
             reviewed_commit=reviewed_commit, now=issued_at)
-        store = ExecutionStore(root / "execution.sqlite3")
-        ExecutionJournal.create(root / JOURNAL_FILE, ledger=ledger, store=store, runtime_root=root)
+        # Schema migration cannot change the original inception, journal
+        # binding or source-backed terminal records; verify that again.
+        journal.ensure_ready()
         if switch.status() != before_switch:
             raise PilotSetupError("kill_switch_changed_during_finite_setup")
         return {"status": "FINITE_SETUP_SAVED_SWITCH_REMAINS_ENGAGED", "mandate_hash": mandate.mandate_hash,

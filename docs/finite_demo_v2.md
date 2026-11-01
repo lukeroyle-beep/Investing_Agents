@@ -42,13 +42,21 @@ USD100 per order, USD500 combined pilot capital, five pilot positions, at least
 20% whole-account cash and a cumulative loss stop no looser than USD25. A 5%
 whole-account issuer limit applies. New mandates cannot reset old capital,
 positions, claims or latched losses. Attempts consume budget even when rejected.
+Each listed instrument permits at most one submission within that mandate.
+The original durable claim consumes this allowance even after rejection,
+cancellation, a partial fill or a restart; changing the command ID or waiting
+for another day does not restore it. A different instrument may proceed only
+after the preceding economic and execution-journal reconciliation completes.
 
 ## Preservation and serial execution
 
 `scripts/setup_finite_demo_pilot.py` operates only on the original private runtime
 with its existing inception marker and ledgers. It requires an engaged kill
-switch, writes the explicit mandate and complete account classification catalog,
-migrates the same SQLite submission table, and creates an execution journal.
+switch, validates the original execution store and journal before writing the
+explicit mandate and complete account classification catalog, and migrates the
+same SQLite submission table. A valid existing journal is reused; a new journal
+is created only when no retained import, finite migration or finite claim proves
+that a historical journal must already exist. Missing history is never recreated.
 Migration preserves every old submission and digest; the old v1 reservation
 method still enforces its original daily limit. Setup never resets the switch,
 requests credentials or starts a worker. Partial setup is held for inspection.
@@ -56,14 +64,32 @@ requests credentials or starts a worker. Partial setup is held for inspection.
 The one-cycle worker `scripts/run_finite_demo_pilot.py` accepts a candidate
 instrument ID and amount, validates a clean reviewed checkout, and uses the
 existing dedicated Demo credentials. It never searches for replacement keys.
+Worker startup also validates the existing execution store and journal without
+initializing either, before requesting usage evidence or credentials. Missing,
+empty or corrupt operational history causes a hold without changing its bytes.
 Repeated invocations can process distinct candidates within the same mandate;
 the original operator lock and atomic shared-ledger claims serialize them. An
 unresolved order or incomplete execution journal blocks every new claim.
 
 The worker requires fresh source-backed usage evidence with a 20% work floor and
-five percentage points reserved for recovery. It does not inherit the old one-order usage or buffer waivers.
-A missing usage host or unreported required broker buffer therefore causes a
-hold. There is no automatic scheduler or strategy-to-worker deployment here.
+five percentage points reserved for recovery. It does not inherit the old
+one-order usage or buffer waivers. A missing usage host causes a hold.
+
+An unreported broker buffer also causes a hold by default. A future explicitly
+approved mandate may contain `acknowledge_unreported_buffer: true` in its scope;
+the optional field is bound into the immutable mandate digest. Absence means
+false, and existing mandate bytes are never rewritten. This narrowly permits
+an omitted `additionalBufferPercent`; it does not assert a zero buffer or
+verified available cash while an order is in flight. Nonzero reported buffers,
+all principal/cost/cash limits, freshness, usage and terminal reconciliation
+requirements remain unchanged. Assessment mode must match the exact mandate.
+Implementation of this option neither grants the acknowledgement nor activates
+a mandate. There is no automatic scheduler or strategy-to-worker deployment.
+
+The cost projection retains original GBP/EUR currencies for exactly-zero
+`overnightFee` or `overWeekendFee` rows. Zero requires no currency conversion.
+Nonzero foreign-currency costs, other foreign-currency cost types and unknown
+currencies remain rejected; no FX rate or converted charge is manufactured.
 
 ### Genuine Codex usage host
 

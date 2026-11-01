@@ -17,6 +17,16 @@ D = Decimal
 POLICY = "demo-pilot-v1"
 
 
+def zero_foreign_recurring_cost(kind, currency, value):
+    """A reported exact zero needs no FX rate; preserve its source currency.
+
+    Only the observed GBP/EUR recurring-fee denominations are admitted. This
+    does not qualify a nonzero charge, another cost type or an unknown currency.
+    """
+    return (kind in {"overnightFee", "overWeekendFee"}
+            and currency in {"GBP", "EUR"} and value == 0)
+
+
 def multiply(left, right):
     with localcontext() as context:
         context.prec = max(50, len(left.as_tuple().digits) + len(right.as_tuple().digits) + 2)
@@ -115,7 +125,9 @@ def preview_costs(preview):
             raise PilotPolicyError("cost_component_unknown_or_duplicate")
         seen.add(kind)
         value = number(item.get("value"), "cost")
-        if item.get("currency", "").upper() != "USD" or value < 0:
+        currency = item.get("currency", "")
+        if (not isinstance(currency, str) or value < 0
+                or currency.upper() != "USD" and not zero_foreign_recurring_cost(kind, currency, value)):
             raise PilotPolicyError("usd_nonnegative_cost_required")
         if kind not in {"overnightFee", "overWeekendFee", "marketSpread"}:
             cash_cost = total((cash_cost, value))
