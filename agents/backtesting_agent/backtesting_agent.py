@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from math import isfinite, isnan
 import os
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -15,13 +16,13 @@ from shared.market_data import (
     market_data_is_actionable,
 )
 from shared.io_utils import load_yaml, write_csv_with_run_id
-from shared.paths import EXPERIMENT_REGISTRY_PATH, config_path, data_path, run_path
+from shared.paths import EXPERIMENT_REGISTRY_PATH, config_path, data_path, project_path, run_path
 from shared.run_context import get_or_create_run_id
 from shared.research_universe import selected_research_universe
 from strategy.domain import CostModel, ExperimentMetrics, ExperimentSpec, StrategyValidationError, content_hash
 from strategy.backtest_portfolio import replay_portfolio
 from strategy.registry import ExperimentRegistry, write_experiment_artifact
-from strategy.validation import rolling_walk_forward_splits
+from strategy.validation import PointInTimeUniverse, rolling_walk_forward_splits
 
 
 BACKTEST_CONFIG_FILE = config_path("backtesting.yaml")
@@ -448,6 +449,108 @@ def build_equity_curve(
     return result.equity_curve, result.drawdown
 
 
+def _naive_session(value: object) -> pd.Timestamp:
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp):
+        raise StrategyValidationError("membership session is missing")
+    if stamp.tzinfo is not None:
+        stamp = stamp.tz_convert("UTC").tz_localize(None)
+    return stamp.normalize()
+
+
+def _as_utc(value: object) -> pd.Timestamp:
+    stamp = pd.Timestamp(value)
+    if pd.isna(stamp):
+        raise StrategyValidationError("point-in-time bound is missing")
+    if stamp.tzinfo is None:
+        return stamp.tz_localize("UTC")
+    return stamp.tz_convert("UTC")
+
+
+def configured_point_in_time_universe(config: dict[str, Any]) -> PointInTimeUniverse | None:
+    """Load an explicit membership table. Never synthesize one from current tickers."""
+    raw = config.get("point_in_time_universe_file")
+    if raw is None or not str(raw).strip():
+        return None
+    path = Path(str(raw))
+    if not path.is_absolute():
+        path = project_path(*path.parts)
+    if not path.is_file():
+        raise StrategyValidationError(f"point-in-time universe file is missing: {path}")
+    return PointInTimeUniverse.from_frame(pd.read_csv(path))
+
+
+def point_in_time_symbols(universe: PointInTimeUniverse, start: str, end: str = "") -> list[str]:
+    """Symbols whose membership overlaps [start, end], using the same bounds as members()."""
+    start_ts = _as_utc(start)
+    end_ts = _as_utc(end) if str(end).strip() else pd.Timestamp.now(tz="UTC")
+    if end_ts < start_ts:
+        raise StrategyValidationError("point-in-time window is inverted")
+    frame = universe.frame
+    overlap = frame["effective_from"] <= end_ts
+    overlap &= frame["effective_to"].isna() | (frame["effective_to"] > start_ts)
+    overlap &= frame["delisted_at"].isna() | (frame["delisted_at"] > start_ts)
+    symbols = sorted({
+        str(symbol).strip()
+        for symbol in frame.loc[overlap, "symbol"]
+        if str(symbol).strip() and str(symbol).strip().lower() != "nan"
+    })
+    if not symbols:
+        raise StrategyValidationError("point-in-time universe has no members in the backtest window")
+    return symbols
+
+
+def _membership_calendar(
+    universe: PointInTimeUniverse, sessions: pd.DatetimeIndex,
+) -> tuple[list[pd.Timestamp], dict[pd.Timestamp, frozenset[str]]]:
+    ordered: list[pd.Timestamp] = []
+    symbols: dict[pd.Timestamp, frozenset[str]] = {}
+    for session in sessions:
+        key = _naive_session(session)
+        ordered.append(key)
+        symbols[key] = frozenset(
+            str(symbol).strip()
+            for symbol in universe.members(key)["symbol"]
+            if str(symbol).strip()
+        )
+    return ordered, symbols
+
+
+def _member_runs(
+    ordered: list[pd.Timestamp],
+    symbols: dict[pd.Timestamp, frozenset[str]],
+    ticker: str,
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    runs: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    run_start: pd.Timestamp | None = None
+    run_end: pd.Timestamp | None = None
+    for session in ordered:
+        if ticker in symbols[session]:
+            if run_start is None:
+                run_start = session
+            run_end = session
+        elif run_start is not None and run_end is not None:
+            runs.append((run_start, run_end))
+            run_start = None
+            run_end = None
+    if run_start is not None and run_end is not None:
+        runs.append((run_start, run_end))
+    return runs
+
+
+def _assert_trades_inside_membership(
+    trades: list[dict[str, Any]], symbols: dict[pd.Timestamp, frozenset[str]],
+) -> None:
+    for trade in trades:
+        ticker = str(trade["ticker"])
+        for field in ("entry_date", "exit_date"):
+            session = _naive_session(trade[field])
+            if ticker not in symbols.get(session, frozenset()):
+                raise StrategyValidationError(
+                    f"{ticker}: {field} {session.date()} is outside point-in-time membership"
+                )
+
+
 def history_sessions(histories, start_date="", end_date="") -> pd.DatetimeIndex:
     dates = [date for history in histories.values() for date in history["Date"]]
     sessions = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
@@ -471,8 +574,14 @@ def configured_costs(config: dict[str, Any]) -> CostModel:
     )
 
 
-def evaluate_partition(histories, config, start, end, *, stress=False, history_start=None):
-    """Fixed parameters, cash reset, past-only warmup, liquidation at window end."""
+def evaluate_partition(histories, config, start, end, *, stress=False, history_start=None,
+                       universe: PointInTimeUniverse | None = None):
+    """Fixed parameters, cash reset, past-only warmup, liquidation at window end.
+
+    Without a universe, every symbol must cover the whole window. With a
+    PointInTimeUniverse, a symbol is tradable only while members() includes it,
+    through its last listed session, and a missing listed session is an error.
+    """
     costs = configured_costs(config)
     multiplier = float(costs.stress_multiplier) if stress else 1.0
     sliced = {}
@@ -480,6 +589,16 @@ def evaluate_partition(histories, config, start, end, *, stress=False, history_s
     expected_sessions = history_sessions(histories, str(start), str(end))
     if expected_sessions[0] != pd.Timestamp(start) or expected_sessions[-1] != pd.Timestamp(end):
         raise StrategyValidationError("price history does not cover the evaluation boundaries")
+    membership = None
+    if universe is not None:
+        ordered, symbols = _membership_calendar(universe, expected_sessions)
+        membership = (ordered, symbols)
+        required_symbols = {symbol for present in symbols.values() for symbol in present}
+        missing = sorted(required_symbols - set(histories))
+        if missing:
+            raise StrategyValidationError(
+                f"point-in-time members missing price history: {missing}"
+            )
     for ticker, history in sorted(histories.items()):
         dates = pd.to_datetime(history["Date"])
         selected = dates <= pd.Timestamp(end)
@@ -488,26 +607,48 @@ def evaluate_partition(histories, config, start, end, *, stress=False, history_s
         frame = history.loc[selected].copy().reset_index(drop=True)
         observed = pd.DatetimeIndex(pd.to_datetime(frame["Date"]))
         in_window = observed[(observed >= pd.Timestamp(start)) & (observed <= pd.Timestamp(end))]
-        if not in_window.equals(expected_sessions):
-            raise StrategyValidationError(f"{ticker}: incomplete evaluation-session coverage")
+        simulations = [(frame, str(start))]
+        if membership is None:
+            if not in_window.equals(expected_sessions):
+                raise StrategyValidationError(f"{ticker}: incomplete evaluation-session coverage")
+        else:
+            ordered, symbols = membership
+            runs = _member_runs(ordered, symbols, ticker)
+            if not runs:
+                continue
+            required = {session for session in ordered if ticker in symbols[session]}
+            observed_sessions = {_naive_session(value) for value in in_window}
+            if not required.issubset(observed_sessions):
+                raise StrategyValidationError(f"{ticker}: incomplete point-in-time session coverage")
+            last_listed = max(run_end for _, run_end in runs)
+            frame_dates = pd.to_datetime(frame["Date"]).map(_naive_session)
+            frame = frame.loc[frame_dates <= last_listed].copy().reset_index(drop=True)
+            simulations = []
+            for run_start, run_end in runs:
+                run_dates = pd.to_datetime(frame["Date"]).map(_naive_session)
+                run_frame = frame.loc[run_dates <= run_end].reset_index(drop=True)
+                simulations.append((run_frame, str(run_start.date())))
         sliced[ticker] = frame
-        candidates.extend(simulate_long_trades_for_ticker(
-            frame, ticker,
-            initial_capital=float(config["initial_capital"]),
-            position_size_pct=float(config["position_size_pct"]),
-            stop_loss_pct=float(config["stop_loss_pct"]),
-            take_profit_pct=float(config["take_profit_pct"]),
-            max_hold_days=int(config["max_hold_days"]),
-            ma_fast_window=int(config["ma_fast_window"]),
-            ma_slow_window=int(config["ma_slow_window"]),
-            return_lookback_window=int(config["return_lookback_window"]),
-            transaction_cost_bps=float(costs.fee_bps) * multiplier,
-            slippage_bps=float(costs.slippage_bps) * multiplier,
-            spread_bps=float(costs.spread_bps) * multiplier,
-            tax_bps=float(costs.tax_bps) * multiplier,
-            entry_start=str(start),
-        ))
-    sessions = history_sessions(sliced, str(start), str(end))
+        for sim_frame, entry_floor in simulations:
+            candidates.extend(simulate_long_trades_for_ticker(
+                sim_frame, ticker,
+                initial_capital=float(config["initial_capital"]),
+                position_size_pct=float(config["position_size_pct"]),
+                stop_loss_pct=float(config["stop_loss_pct"]),
+                take_profit_pct=float(config["take_profit_pct"]),
+                max_hold_days=int(config["max_hold_days"]),
+                ma_fast_window=int(config["ma_fast_window"]),
+                ma_slow_window=int(config["ma_slow_window"]),
+                return_lookback_window=int(config["return_lookback_window"]),
+                transaction_cost_bps=float(costs.fee_bps) * multiplier,
+                slippage_bps=float(costs.slippage_bps) * multiplier,
+                spread_bps=float(costs.spread_bps) * multiplier,
+                tax_bps=float(costs.tax_bps) * multiplier,
+                entry_start=entry_floor,
+            ))
+    if membership is not None:
+        _assert_trades_inside_membership(candidates, membership[1])
+    sessions = expected_sessions if membership is not None else history_sessions(sliced, str(start), str(end))
     return replay_portfolio(pd.DataFrame(candidates, columns=TRADE_COLUMNS), sliced,
                             float(config["initial_capital"]), sessions)
 
@@ -527,7 +668,7 @@ def partition_benchmark_return(history, start, end, costs):
     return (exit_value / entry - 1) * 100
 
 
-def evaluate_walk_forward(histories, benchmark_history, config):
+def evaluate_walk_forward(histories, benchmark_history, config, universe: PointInTimeUniverse | None = None):
     validation = config.get("validation", {})
     windows = validation.get("walk_forward", {})
     if int(windows.get("step_sessions", windows.get("test_sessions", 63))) < int(windows.get("test_sessions", 63)):
@@ -551,11 +692,13 @@ def evaluate_walk_forward(histories, benchmark_history, config):
     rows = []
     for split in splits:
         validation_result = evaluate_partition(histories, config, split.validation_start,
-                                               split.validation_end, history_start=split.train_start)
+                                               split.validation_end, history_start=split.train_start,
+                                               universe=universe)
         test = evaluate_partition(histories, config, split.test_start, split.test_end,
-                                  history_start=split.train_start)
+                                  history_start=split.train_start, universe=universe)
         stressed = evaluate_partition(histories, config, split.test_start, split.test_end,
-                                      stress=True, history_start=split.train_start)
+                                      stress=True, history_start=split.train_start,
+                                      universe=universe)
         validation_benchmark = partition_benchmark_return(
             benchmark, split.validation_start, split.validation_end, costs)
         test_benchmark = partition_benchmark_return(benchmark, split.test_start, split.test_end, costs)
@@ -720,12 +863,14 @@ def record_immutable_experiment(
     trades_df: pd.DataFrame,
     histories: dict[str, pd.DataFrame],
     benchmark_history: dict[str, pd.DataFrame],
+    universe: PointInTimeUniverse | None = None,
 ) -> str | None:
     """Save reproducible research evidence; this grants no execution authority."""
     if config.get("experiment_registry_enabled") is not True:
         return None
-    splits, evidence = evaluate_walk_forward(histories, benchmark_history, config)
-    repeated_splits, repeated_evidence = evaluate_walk_forward(histories, benchmark_history, config)
+    splits, evidence = evaluate_walk_forward(histories, benchmark_history, config, universe)
+    repeated_splits, repeated_evidence = evaluate_walk_forward(
+        histories, benchmark_history, config, universe)
     reproducible = splits == repeated_splits and evidence.equals(repeated_evidence)
     if not reproducible:
         raise StrategyValidationError("replaying the same snapshot changed evaluation results")
@@ -735,13 +880,21 @@ def record_immutable_experiment(
             for row in history.to_dict(orient="records"):
                 snapshot_rows.append({**row, "ticker": ticker, "role": role})
     data_snapshot_id = content_hash(snapshot_rows)
-    universe_identity = {
-        "kind": "static_current_universe_unqualified",
-        "tickers": sorted(histories),
-    }
-    if "research_universe_checksum" in config:
-        universe_identity["selected_manifest_checksum"] = config["research_universe_checksum"]
-    universe_checksum = content_hash(universe_identity)
+    if universe is None:
+        # A current ticker list is not rewritten into fake listing intervals.
+        universe_identity = {
+            "kind": "static_current_universe_unqualified",
+            "tickers": sorted(histories),
+        }
+        if "research_universe_checksum" in config:
+            universe_identity["selected_manifest_checksum"] = config["research_universe_checksum"]
+        universe_checksum = content_hash(universe_identity)
+        point_in_time_universe_passed = False
+        survivorship_checks_passed = False
+    else:
+        universe_checksum = universe.checksum
+        point_in_time_universe_passed = True
+        survivorship_checks_passed = True
     costs = configured_costs(config)
     parameters = {
         key: config.get(key)
@@ -789,8 +942,8 @@ def record_immutable_experiment(
         walk_forward_passed_folds=int((evidence["test_excess_return_pct"] >= 0).sum()),
         walk_forward_total_folds=len(splits),
         deterministic_reproduction=reproducible,
-        point_in_time_universe_passed=False,
-        survivorship_checks_passed=False,
+        point_in_time_universe_passed=point_in_time_universe_passed,
+        survivorship_checks_passed=survivorship_checks_passed,
         exchange_calendar_passed=False,
         cost_model_passed=False,
     )
@@ -841,6 +994,14 @@ def run() -> None:
     benchmark_tickers = [str(t).strip().upper() for t in config.get("benchmark_tickers", ["SPY", "QQQ"]) if str(t).strip()]
     start_date = str(config.get("start_date", "2022-01-01")).strip()
     end_date = str(config.get("end_date", "")).strip()
+    universe = configured_point_in_time_universe(config)
+    if universe is not None:
+        if "research_universe_checksum" in config:
+            raise StrategyValidationError(
+                "selected research universe is current membership, not a point-in-time universe"
+            )
+        tickers = point_in_time_symbols(universe, start_date, end_date)
+        config = {**config, "tickers": tickers}
 
     initial_capital = safe_float(config.get("initial_capital"), 100000.0)
     min_history_days = safe_int(config.get("min_history_days"), 120)
@@ -862,7 +1023,12 @@ def run() -> None:
             health_results=health_results,
         )
 
-        if history_df.empty or len(history_df) < min_history_days:
+        if history_df.empty:
+            if universe is not None:
+                raise StrategyValidationError(f"{ticker}: point-in-time member has no price history")
+            print(f"Skipping {ticker}: insufficient history.")
+            continue
+        if universe is None and len(history_df) < min_history_days:
             print(f"Skipping {ticker}: insufficient history.")
             continue
 
@@ -872,7 +1038,7 @@ def run() -> None:
 
     sessions = history_sessions(strategy_history, start_date, end_date)
     replay = evaluate_partition(strategy_history, config, str(sessions[0].date()),
-                                str(sessions[-1].date()))
+                                str(sessions[-1].date()), universe=universe)
     trades_df = replay.accepted_trades
     equity_df, drawdown_df = replay.equity_curve, replay.drawdown
     strategy_return_pct = safe_float(equity_df.iloc[-1]["cumulative_return_pct"], 0.0) if not equity_df.empty else 0.0
@@ -922,6 +1088,7 @@ def run() -> None:
         trades_df=trades_df,
         histories=strategy_history,
         benchmark_history=benchmark_history,
+        universe=universe,
     )
 
     total_trades = len(trades_df)

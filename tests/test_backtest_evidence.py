@@ -12,6 +12,7 @@ import yaml
 from agents.backtesting_agent import backtesting_agent as agent
 from scripts.validate_virtual_backtest import read_snapshot, synthetic_histories, validate
 from strategy.domain import StrategyValidationError, canonical_json
+from strategy.validation import PointInTimeUniverse
 
 
 def config():
@@ -244,5 +245,176 @@ def test_agent_run_twice_reconciles_and_reuses_immutable_experiment(tmp_path, mo
         assert connection.execute("SELECT COUNT(*) FROM experiments").fetchone()[0] == 1
     assert len(downloads) == 2 * len(all_histories)
     assert len(health_calls) == 2
+
+
+def _utc(value) -> str:
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        stamp = stamp.tz_localize("UTC")
+    return stamp.tz_convert("UTC").isoformat()
+
+
+def _membership_row(symbol, start, *, end=None, delisted=None):
+    return {
+        "internal_instrument_id": symbol.lower(),
+        "symbol": symbol,
+        "exchange": "XNYS",
+        "effective_from": _utc(start),
+        "effective_to": None if end is None else _utc(end),
+        "delisted_at": None if delisted is None else _utc(delisted),
+    }
+
+
+def _rising(dates) -> pd.DataFrame:
+    rows = []
+    for index, day in enumerate(dates):
+        close = 100.0 + index
+        rows.append({
+            "Date": day,
+            "Open": close,
+            "High": close + 1.0,
+            "Low": close - 0.5,
+            "Close": close,
+            "Volume": 1000 + index,
+        })
+    return pd.DataFrame(rows)
+
+
+def _pit_config():
+    return {
+        **agent.DEFAULT_CONFIG,
+        "ma_fast_window": 2,
+        "ma_slow_window": 3,
+        "return_lookback_window": 3,
+        "stop_loss_pct": 50.0,
+        "take_profit_pct": 80.0,
+        "max_hold_days": 2,
+        "position_size_pct": 10.0,
+        "initial_capital": 100000.0,
+    }
+
+
+def _trade_keys(frame: pd.DataFrame) -> list[tuple[str, str, str]]:
+    if frame.empty:
+        return []
+    return list(zip(frame["ticker"], frame["entry_date"], frame["exit_date"], strict=True))
+
+
+def test_permanent_members_replay_like_the_static_window():
+    dates = pd.bdate_range("2024-01-02", periods=30)
+    histories = {"STAY": _rising(dates), "ALSO": _rising(dates)}
+    universe = PointInTimeUniverse.from_frame(pd.DataFrame([
+        _membership_row("STAY", "2020-01-01"),
+        _membership_row("ALSO", "2020-01-01"),
+    ]))
+    settings = _pit_config()
+    start, end = str(dates[0].date()), str(dates[-1].date())
+    static = agent.evaluate_partition(histories, settings, start, end)
+    pointed = agent.evaluate_partition(histories, settings, start, end, universe=universe)
+    assert _trade_keys(static.accepted_trades) == _trade_keys(pointed.accepted_trades)
+    assert not static.accepted_trades.empty
+
+
+def test_point_in_time_replay_includes_listings_and_stops_at_delisting():
+    dates = pd.bdate_range("2024-01-02", periods=40)
+    listing = dates[15]
+    delisting = dates[22]
+    histories = {
+        "STAY": _rising(dates),
+        "ENTER": _rising(dates[dates >= listing]),
+        "GONE": _rising(dates),
+        "TODAY": _rising(dates),
+    }
+    universe = PointInTimeUniverse.from_frame(pd.DataFrame([
+        _membership_row("STAY", "2020-01-01"),
+        _membership_row("ENTER", listing),
+        _membership_row("GONE", "2020-01-01", delisted=delisting),
+    ]))
+    settings = _pit_config()
+    start, end = str(dates[0].date()), str(dates[-1].date())
+    result = agent.evaluate_partition(histories, settings, start, end, universe=universe)
+    trades = result.accepted_trades
+    assert set(trades["ticker"]) == {"STAY", "ENTER", "GONE"}
+
+    def listed(symbol, session) -> bool:
+        return symbol in set(universe.members(session)["symbol"].astype(str))
+
+    assert not listed("ENTER", dates[0])
+    assert listed("ENTER", listing)
+    assert listed("GONE", dates[21])
+    assert not listed("GONE", delisting)
+    for record in trades.to_dict(orient="records"):
+        assert listed(record["ticker"], record["entry_date"])
+        assert listed(record["ticker"], record["exit_date"])
+    gone_exits = pd.to_datetime(trades.loc[trades["ticker"] == "GONE", "exit_date"])
+    enter_entries = pd.to_datetime(trades.loc[trades["ticker"] == "ENTER", "entry_date"])
+    assert gone_exits.max() < pd.Timestamp(delisting)
+    assert enter_entries.min() >= pd.Timestamp(listing)
+    assert result.equity_curve.iloc[0]["date"] == start
+    assert result.equity_curve.iloc[-1]["date"] == end
+    assert int(result.equity_curve.iloc[-1]["open_positions"]) == 0
+
+    static_names = {name: histories[name] for name in ("STAY", "GONE", "TODAY")}
+    static = agent.evaluate_partition(static_names, settings, start, end).accepted_trades
+    static_gone = pd.to_datetime(static.loc[static["ticker"] == "GONE", "entry_date"])
+    assert (static_gone >= pd.Timestamp(delisting)).any()
+    assert "TODAY" in set(static["ticker"])
+
+    with pytest.raises(StrategyValidationError, match="coverage"):
+        agent.evaluate_partition(histories, settings, start, end)
+    with pytest.raises(StrategyValidationError, match="missing price history"):
+        agent.evaluate_partition(
+            {name: histories[name] for name in ("STAY", "ENTER", "TODAY")},
+            settings, start, end, universe=universe,
+        )
+    holed = {name: frame.copy() for name, frame in histories.items()}
+    holed["GONE"] = holed["GONE"].drop(index=10).reset_index(drop=True)
+    with pytest.raises(StrategyValidationError, match="incomplete point-in-time session coverage"):
+        agent.evaluate_partition(holed, settings, start, end, universe=universe)
+
+
+def test_point_in_time_file_selects_overlapping_members_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("INVESTING_RESEARCH_UNIVERSE", raising=False)
+    assert agent.configured_point_in_time_universe(agent.load_backtest_config()) is None
+    frame = pd.DataFrame([
+        _membership_row("OLD", "2010-01-01", delisted="2020-01-01"),
+        _membership_row("GONE", "2020-01-01", delisted="2024-06-01"),
+        _membership_row("ENTER", "2024-03-01"),
+        _membership_row("FUTURE", "2026-01-01"),
+    ])
+    path = tmp_path / "membership.csv"
+    frame.to_csv(path, index=False)
+    universe = agent.configured_point_in_time_universe({"point_in_time_universe_file": str(path)})
+    assert agent.point_in_time_symbols(universe, "2024-01-01", "2024-12-31") == ["ENTER", "GONE"]
+    with pytest.raises(StrategyValidationError, match="missing"):
+        agent.configured_point_in_time_universe(
+            {"point_in_time_universe_file": str(tmp_path / "absent.csv")}
+        )
+
+
+def test_survivorship_flags_follow_an_applied_point_in_time_universe(tmp_path, monkeypatch):
+    histories, benchmark = synthetic_histories()
+    dates = agent.history_sessions(histories)
+    delisting = dates[len(dates) // 2]
+    universe = PointInTimeUniverse.from_frame(pd.DataFrame([
+        _membership_row("SYNTH_A", dates[0]),
+        _membership_row("SYNTH_B", dates[0], delisted=delisting),
+    ]))
+    settings = {**config(), "experiment_registry_enabled": True}
+    monkeypatch.setattr(agent, "run_path", lambda run_id, *parts: tmp_path / run_id / Path(*parts))
+    monkeypatch.setattr(agent, "EXPERIMENT_REGISTRY_PATH", tmp_path / "experiments.sqlite3")
+    for name in ("BACKTEST_TRADES_FILE", "BACKTEST_SUMMARY_FILE", "BACKTEST_EQUITY_CURVE_FILE",
+                 "BACKTEST_DRAWDOWN_FILE", "BACKTEST_BENCHMARK_FILE", "BACKTEST_REJECTED_FILE"):
+        monkeypatch.setattr(agent, name, tmp_path / name)
+    identifier = agent.record_immutable_experiment(
+        run_id="pit-evidence", config=settings, trades_df=pd.DataFrame(),
+        histories=histories, benchmark_history=benchmark, universe=universe,
+    )
+    payload = json.loads((tmp_path / "pit-evidence" / "experiments" / identifier / "experiment.json").read_text())
+    assert payload["spec"]["point_in_time_universe_checksum"] == universe.checksum
+    assert payload["metrics"]["point_in_time_universe_passed"] is True
+    assert payload["metrics"]["survivorship_checks_passed"] is True
+    assert payload["metrics"]["exchange_calendar_passed"] is False
+    assert payload["metrics"]["cost_model_passed"] is False
 
 

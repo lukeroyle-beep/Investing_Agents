@@ -4,6 +4,9 @@ enabled: true
 objective: virtual_functionality
 return_target_pct: null
 
+# Present-day names only. This repo has no listing or delisting intervals.
+# point_in_time_universe_file can supply a PointInTimeUniverse table; until
+# then this replay stays survivor-biased and survivorship stays unqualified.
 tickers:
   - AAPL
   - MSFT
