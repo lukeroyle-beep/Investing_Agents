@@ -149,6 +149,8 @@ def fetch_signal_data(
 
         high_20 = float(close_series.tail(20).max())
         high_50 = float(close_series.tail(50).max())
+        # Confirmed breakout compares with the 20 sessions before the signal bar.
+        prior_high_20 = float(close_series.iloc[:-1].tail(20).max())
 
         latest_volume = float(volume_series.iloc[-1])
         avg_volume_20 = float(volume_series.tail(20).mean())
@@ -166,7 +168,7 @@ def fetch_signal_data(
         rsi_bullish = rsi_14 >= 55
         atr_reasonable = atr_pct <= 5.0
 
-        confirmed_breakout = latest_close >= high_20 and elevated_volume
+        confirmed_breakout = latest_close > prior_high_20 and elevated_volume
         breakout_ready = within_2pct_of_20d_high and above_ma20
         pre_breakout = within_5pct_of_50d_high and above_ma20
 
