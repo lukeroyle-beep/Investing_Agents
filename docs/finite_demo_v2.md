@@ -42,6 +42,11 @@ USD100 per order, USD500 combined pilot capital, five pilot positions, at least
 20% whole-account cash and a cumulative loss stop no looser than USD25. A 5%
 whole-account issuer limit applies. New mandates cannot reset old capital,
 positions, claims or latched losses. Attempts consume budget even when rejected.
+Each listed instrument permits at most one submission within that mandate.
+The original durable claim consumes this allowance even after rejection,
+cancellation, a partial fill or a restart; changing the command ID or waiting
+for another day does not restore it. A different instrument may proceed only
+after the preceding economic and execution-journal reconciliation completes.
 
 ## Preservation and serial execution
 
@@ -61,9 +66,24 @@ the original operator lock and atomic shared-ledger claims serialize them. An
 unresolved order or incomplete execution journal blocks every new claim.
 
 The worker requires fresh source-backed usage evidence with a 20% work floor and
-five percentage points reserved for recovery. It does not inherit the old one-order usage or buffer waivers.
-A missing usage host or unreported required broker buffer therefore causes a
-hold. There is no automatic scheduler or strategy-to-worker deployment here.
+five percentage points reserved for recovery. It does not inherit the old
+one-order usage or buffer waivers. A missing usage host causes a hold.
+
+An unreported broker buffer also causes a hold by default. A future explicitly
+approved mandate may contain `acknowledge_unreported_buffer: true` in its scope;
+the optional field is bound into the immutable mandate digest. Absence means
+false, and existing mandate bytes are never rewritten. This narrowly permits
+an omitted `additionalBufferPercent`; it does not assert a zero buffer or
+verified available cash while an order is in flight. Nonzero reported buffers,
+all principal/cost/cash limits, freshness, usage and terminal reconciliation
+requirements remain unchanged. Assessment mode must match the exact mandate.
+Implementation of this option neither grants the acknowledgement nor activates
+a mandate. There is no automatic scheduler or strategy-to-worker deployment.
+
+The cost projection retains original GBP/EUR currencies for exactly-zero
+`overnightFee` or `overWeekendFee` rows. Zero requires no currency conversion.
+Nonzero foreign-currency costs, other foreign-currency cost types and unknown
+currencies remain rejected; no FX rate or converted charge is manufactured.
 
 ### Genuine Codex usage host
 

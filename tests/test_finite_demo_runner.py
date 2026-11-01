@@ -268,7 +268,8 @@ def test_worker_recovers_committed_fill_without_credentials_or_network(tmp_path,
     assert len(result["submissions"]) == 1
 
 
-def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, monkeypatch):
+@pytest.mark.parametrize("acknowledge_buffer", [False, True])
+def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, monkeypatch, acknowledge_buffer):
     from brokers.etoro.autonomous_api import DirectDemoClient
     from brokers.etoro.batch_reads import DirectBatchReads
     from execution.usage_reserve import UsageAdmission, UsageWindow
@@ -278,7 +279,7 @@ def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, 
     from tests.test_finite_demo_operator import workflow, account_with_fills
     from tests.test_pilot_assessment import change_response
 
-    f = workflow(tmp_path)
+    f = workflow(tmp_path, acknowledge_unreported_buffer=acknowledge_buffer)
     _runner_artifacts(f, tmp_path)
     fills = []
     posts = []
@@ -324,6 +325,8 @@ def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, 
                     args[name]["request_started_at"] = f.clock[0].isoformat()
                     args[name]["response_received_at"] = f.clock[0].isoformat()
                 change_response(args, "cost", lambda value: value.update(lastUpdated=f.clock[0].isoformat()))
+                if acknowledge_buffer:
+                    change_response(args, "eligibility", lambda value: value["eligibilities"][0].pop("additionalBufferPercent"))
                 if path.endswith("/costs"):
                     assert isinstance(payload["amount"], Decimal)
                     return args["cost_receipt"]
@@ -372,3 +375,9 @@ def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, 
     assert result["position_count"] == 2
     assert len(result["submissions"]) == 2
     assert all(row["journal_complete"] for row in result["submissions"])
+    monkeypatch.setattr(runner, "UsageOnlyHost", lambda root: pytest.fail("usage for consumed candidate"))
+    monkeypatch.setattr(runner, "load_dedicated_credentials", lambda path: pytest.fail("credentials for consumed candidate"))
+    with pytest.raises(ValueError, match="instrument_attempt_already_consumed"):
+        runner.run(SimpleNamespace(runtime=tmp_path, reviewed_commit=f.mandate.reviewed_commit,
+            instrument_id=f.specs[0]["instrument_id"], amount=Decimal(10)))
+    assert len(posts) == 2

@@ -78,12 +78,12 @@ def plan(fixture, proof=None):
             reviewed_commit=COMMIT,review_reference="synthetic reviewed mechanical plan")
 
 
-def apply(fixture, proof=None, *, expected=None, now=None):
+def apply(fixture, proof=None, *, expected=None, now=None, historical_accounting=False):
     ledger,_,switch,_,original = fixture
     proof = proof or original
     return external._apply_qualified(ledger,proof,expected_plan_hash=expected or payload_hash(plan(fixture,proof)),
         reviewed_commit=COMMIT,review_reference="synthetic reviewed mechanical plan",kill_switch=switch,
-        now=now or NOW+timedelta(seconds=4))
+        now=now or NOW+timedelta(seconds=4), historical_accounting=historical_accounting)
 
 
 def recover(fixture, record):
@@ -454,3 +454,173 @@ def test_mark_cannot_absorb_unqualified_cash_change_into_next_external_checkpoin
     assert ledger.snapshot()["unresolved"]
     with closing(ledger._connect()) as db:
         assert ledger._state(db)["_account_checkpoint"]["cash"]==str(proof.account.cash)
+
+
+def composite_proof(fixture, *, amount="-37.41", original=None):
+    proof = original or fixture[4]
+    period = {"kind": "net_fees_less_dividends", "amount": amount, "account_currency": "USD",
+        "effect_after_observation": (NOW+timedelta(seconds=1)).isoformat(),
+        "effect_by_observation": proof.account.capture_completed_at.isoformat(),
+        "reporting_start_date": "2026-10-01", "reporting_end_date": "2026-10-31",
+        "reporting_timezone": None, "gross_fees": None, "gross_dividends": None,
+        "enumeration_complete": False, "individual_attribution": "unknown",
+        "baseline_position_ids": [row["position_id"] for row in proof.closures],
+        "source_reference": "synthetic-composite-period"}
+    account = recapture(proof.account, proof.account.capture_completed_at,
+        cash=proof.account.cash+D("37.41")+D(amount))
+    return replace(proof, account=account, cash_events=(), period_reconciliation=period,
+        sources=(*proof.sources[:2], source("synthetic-composite-period", period)),
+        cash_period_source="synthetic-composite-period")
+
+
+def test_v1_record_shape_and_identity_are_unchanged(fixture):
+    record = plan(fixture)
+    assert record["schema"] == external.SCHEMA == "external-demo-lifecycle-v1"
+    assert "period_reconciliation" not in record
+    old_identity = {"account_id": record["account_id"], "inception_hash": record["inception_hash"],
+        "closures": sorted(row["position_id"] for row in record["closures"]),
+        "openings": sorted((row["order_id"], row["position_id"]) for row in record["openings"]),
+        "cash_events": sorted(row["event_id"] for row in record["cash_events"])}
+    assert record["event_id"] == payload_hash(old_identity)
+    applied = apply(fixture)
+    recover(fixture, applied)
+    assert fixture[0].external_lifecycle_receipt(applied["event_id"])["record"] == record
+
+
+@pytest.mark.parametrize("amount", ["-37.41", "0", "8.23"])
+def test_composite_cash_debit_zero_and_credit_do_not_invent_gross_events_or_pilot_profit(fixture, amount):
+    proof = composite_proof(fixture, amount=amount)
+    before = database_rows(fixture[0])
+    record = apply(fixture, proof, now=NOW+timedelta(days=7), historical_accounting=True)
+    assert record["schema"] == external.COMPOSITE_SCHEMA
+    assert record["cash_events"] == []
+    assert record["qualification_credit"] is False
+    period = record["period_reconciliation"]
+    assert period["amount"] == amount
+    assert period["gross_fees"] is period["gross_dividends"] is period["reporting_timezone"] is None
+    assert period["enumeration_complete"] is False and period["individual_attribution"] == "unknown"
+    assert "event_id" not in period and "occurred_at_source" not in period
+    state = fixture[0].snapshot()
+    assert state["pilot_pnl"] == D("0.24") and state["committed_capital"] == D("12.37")
+    assert state["unresolved"] and len(state["inception"]["account"]["positions"]) == 8
+    after = database_rows(fixture[0])
+    assert after["inception"] == before["inception"] and after["submissions"] == before["submissions"]
+    assert after["events"][:len(before["events"])] == before["events"]
+    recover(fixture, record)
+    assert not fixture[0].snapshot()["unresolved"]
+    assert fixture[3].events()[0]["payload"]["economic_record"]["period_reconciliation"] == period
+
+
+def test_composite_preserves_nonempty_original_claims_and_untouched_cost_attribution(fixture):
+    proof = composite_proof(fixture, original=original_resolved_claim(fixture))
+    before = database_rows(fixture[0])
+    record = apply(fixture, proof, now=NOW+timedelta(days=1), historical_accounting=True)
+    recover(fixture, record)
+    after = database_rows(fixture[0])
+    assert after["submissions"] == before["submissions"] and len(after["submissions"]) == 1
+    assert after["inception"] == before["inception"] and after["events"][:len(before["events"])] == before["events"]
+    assert fixture[0].snapshot()["committed_capital"] == D("22.37")
+
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("gross_fees", "37.41", "gross_or_individual"),
+    ("gross_dividends", "0", "gross_or_individual"),
+    ("enumeration_complete", True, "gross_or_individual"),
+    ("reporting_timezone", "UTC", "gross_or_individual"),
+    ("individual_attribution", "legacy_fees", "gross_or_individual"),
+    ("kind", "fee", "source_or_currency"),
+    ("account_currency", "EUR", "source_or_currency"),
+    ("source_reference", "synthetic-opening", "source_or_currency"),
+    ("baseline_position_ids", ["1", "1", "2", "3", "4", "5", "6", "7", "8"], "closed_baseline"),
+    ("baseline_position_ids", ["1"], "closed_baseline"),
+    ("baseline_position_ids", [], "closed_baseline"),
+    ("baseline_position_ids", [1, 2, 3, 4, 5, 6, 7, 8], "closed_baseline"),
+    ("reporting_start_date", "2026-10-32", "reporting_dates"),
+    ("reporting_start_date", "2026-11-01", "reporting_dates"),
+    ("reporting_end_date", "20261031", "reporting_dates"),
+    ("effect_after_observation", "2026-10-23T11:59:59Z", "observation_bounds"),
+    ("effect_after_observation", "2026-10-23T12:00:03Z", "observation_bounds"),
+    ("effect_by_observation", "2026-10-23T12:00:03.0000001Z", "observation_bounds"),
+    ("effect_by_observation", "2026-10-23T12:00:00Z", "observation_bounds"),
+    ("effect_by_observation", "2026-10-23T12:00:03", "source_time"),
+])
+def test_composite_unsupported_claims_identities_and_bounds_fail_without_changes(fixture, field, value, reason):
+    proof = composite_proof(fixture)
+    changed = replace(proof, period_reconciliation=dict(proof.period_reconciliation, **{field: value}))
+    before = database_rows(fixture[0])
+    with pytest.raises(external.ExternalLifecycleError, match=reason):
+        apply(fixture, changed, historical_accounting=True)
+    assert database_rows(fixture[0]) == before
+
+
+def test_composite_requires_explicit_historical_mode_and_does_not_refresh_execution_evidence(fixture):
+    proof = composite_proof(fixture)
+    before = database_rows(fixture[0])
+    with pytest.raises(ValueError, match="stale"):
+        apply(fixture, proof, now=NOW+timedelta(days=1))
+    with pytest.raises(external.ExternalLifecycleError, match="historical_composite"):
+        apply(fixture, proof, now=NOW-timedelta(seconds=1), historical_accounting=True)
+    with pytest.raises(external.ExternalLifecycleError, match="historical_composite"):
+        apply(fixture, historical_accounting=True)
+    assert database_rows(fixture[0]) == before
+    record = apply(fixture, proof, now=NOW+timedelta(days=1), historical_accounting=True)
+    recover(fixture, record)
+    with pytest.raises(ValueError, match="stale"):
+        fixture[0].refresh_marks(proof.account, NOW+timedelta(days=1))
+
+
+def test_composite_exact_replay_and_both_journal_crash_boundaries_are_recoverable(fixture, monkeypatch):
+    proof = composite_proof(fixture)
+    record = apply(fixture, proof, now=NOW+timedelta(days=1), historical_accounting=True)
+    before = database_rows(fixture[0])
+    assert apply(fixture, proof, now=NOW+timedelta(days=2), historical_accounting=True) == record
+    assert database_rows(fixture[0]) == before
+    with monkeypatch.context() as patch:
+        def fail(*args, **kwargs):
+            raise OSError("synthetic journal failure")
+        patch.setattr(fixture[3], "_append", fail)
+        with pytest.raises(OSError):
+            recover(fixture, record)
+    assert fixture[0].snapshot()["unresolved"] and fixture[3].events() == ()
+    with monkeypatch.context() as patch:
+        patch.setattr(fixture[0], "_mark_external_journal_complete", fail)
+        with pytest.raises(OSError):
+            recover(fixture, record)
+    assert fixture[0].snapshot()["unresolved"] and len(fixture[3].events()) == 1
+    recover(fixture, record)
+    after = database_rows(fixture[0])
+    recover(fixture, record)
+    assert database_rows(fixture[0]) == after and not fixture[0].snapshot()["unresolved"]
+
+
+def test_composite_source_mutation_and_duplicate_reference_are_rejected(fixture):
+    proof = composite_proof(fixture)
+    for sources, reason in [((*proof.sources, proof.sources[-1]), "source_identity"),
+            ((*proof.sources[:-1], dict(proof.sources[-1], body="changed")), "source_bytes")]:
+        before = database_rows(fixture[0])
+        with pytest.raises(external.ExternalLifecycleError, match=reason):
+            apply(fixture, replace(proof, sources=sources), historical_accounting=True)
+        assert database_rows(fixture[0]) == before
+
+
+def test_composite_source_cannot_be_reused_for_distinct_baseline_group(fixture):
+    proof = composite_proof(fixture)
+    remaining = tuple(Position(position_id=str(i), instrument_id=9+i) for i in range(5, 9))
+    first = replace(proof, closures=proof.closures[:4],
+        period_reconciliation=dict(proof.period_reconciliation, baseline_position_ids=["1", "2", "3", "4"]),
+        account=recapture(proof.account, proof.account.capture_completed_at,
+            cash=proof.account.cash-D("4032"), positions=(*remaining, *proof.account.positions)))
+    record = apply(fixture, first, historical_accounting=True)
+    recover(fixture, record)
+    second = replace(proof, openings=(),
+        prior_account_hash=payload_hash(external._clean(first.account)),
+        closures=tuple(dict(row, occurred_at_source=(NOW+timedelta(seconds=7)).isoformat())
+            for row in proof.closures[4:]),
+        period_reconciliation=dict(proof.period_reconciliation, baseline_position_ids=["5", "6", "7", "8"],
+            effect_after_observation=(NOW+timedelta(seconds=4)).isoformat(),
+            effect_by_observation=(NOW+timedelta(seconds=8)).isoformat()),
+        account=recapture(proof.account, NOW+timedelta(seconds=8), cash=proof.account.cash-D("37.41")))
+    before = database_rows(fixture[0])
+    with pytest.raises(PilotLedgerError, match="external_lifecycle_integrity"):
+        apply(fixture, second, now=NOW+timedelta(days=1), historical_accounting=True)
+    assert database_rows(fixture[0]) == before

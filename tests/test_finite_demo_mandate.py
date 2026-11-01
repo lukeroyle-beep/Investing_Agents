@@ -95,6 +95,35 @@ def test_create_expiring_immutable_authority_and_scope_copy(tmp_path):
         mandate.validate_binding(ledger=ledger, now=NOW, reviewed_commit="d"*40)
 
 
+@pytest.mark.parametrize("value", [None, "true", "false", 0, 1, []])
+def test_buffer_acknowledgement_requires_literal_boolean(tmp_path, value):
+    with pytest.raises(FiniteDemoMandateError, match="explicit_buffer_acknowledgement"):
+        make(tmp_path, acknowledge_unreported_buffer=value)
+
+
+def test_buffer_acknowledgement_defaults_false_and_binds_exact_mandate(tmp_path):
+    _, original = make(tmp_path)
+    assert original.acknowledge_unreported_buffer is False
+    assert "acknowledge_unreported_buffer" not in original.scope
+    before = original.path.read_bytes()
+    assert FiniteDemoMandate.load(original.path, expected_account_id="123") == original
+    assert original.path.read_bytes() == before
+    folder = tmp_path / "explicit"
+    folder.mkdir()
+    ledger, approved = make(folder, acknowledge_unreported_buffer=True)
+    assert approved.acknowledge_unreported_buffer is True
+    assert approved.scope["acknowledge_unreported_buffer"] is True
+    changed = approved.scope
+    changed["acknowledge_unreported_buffer"] = False
+    assert approved.acknowledge_unreported_buffer is True
+    record = json.loads(approved.path.read_text())
+    record["mandate"]["scope"]["acknowledge_unreported_buffer"] = False
+    record["sha256"] = payload_hash(record["mandate"])
+    approved.path.write_text(canonical_json(record))
+    with pytest.raises(FiniteDemoMandateError, match="changed_after_load"):
+        approved.validate_binding(ledger=ledger, now=NOW)
+
+
 @pytest.mark.parametrize("changes", [
     {"max_submissions": True}, {"max_per_day": 0}, {"max_positions": 6},
     {"per_order_cap": "100.01"}, {"total_commitment": "500.01"}, {"loss_stop": "25.01"},
@@ -241,11 +270,36 @@ def test_unknown_consumes_attempt_and_cannot_be_replaced(tmp_path):
     enable(ledger)
     ledger.reserve_under_mandate(mandate, candidate(), Account(), NOW)
     ledger.record_outcome("first", {"status": "unknown"})
+    ledger = PilotLedger(ledger.path, "123")
     for proposed in (candidate(), candidate("replacement")):
         with pytest.raises(PilotLedgerError, match="lookup_only"):
             ledger.reserve_under_mandate(mandate, proposed, Account(), NOW)
     with pytest.raises(PilotLedgerError, match="economic_reconciliation"):
         ledger.mark_journal_complete("first", journal_reference="forged completion", now=NOW)
+
+
+@pytest.mark.parametrize("outcome", ["full", "partial", "no_fill"])
+def test_each_instrument_is_consumed_after_terminal_reconciliation_and_restart(tmp_path, outcome):
+    ledger, mandate = make(tmp_path)
+    enable(ledger)
+    if outcome == "no_fill":
+        pre = Account()
+        ledger.reserve_under_mandate(mandate, candidate(), pre, NOW)
+        at = NOW + timedelta(seconds=2)
+        post = recapture(pre, at)
+        ledger.reconcile_no_fill("first", pre, post, at, terminal_evidence=terminal("first", status="7"))
+        ledger.mark_journal_complete("first", journal_reference="synthetic cancelled", now=at)
+    else:
+        post, _, _ = complete(ledger, mandate, Account(), "first", NOW, partial=outcome == "partial")
+    # A restart and a new daily allowance cannot revive this candidate.
+    at = NOW + timedelta(days=1)
+    reopened = PilotLedger(ledger.path, "123")
+    retained = reopened.snapshot()
+    with pytest.raises(PilotLedgerError, match="instrument_attempt_already_consumed"):
+        reopened.reserve_under_mandate(mandate, candidate("retry"), recapture(post, at), at)
+    assert reopened.snapshot() == retained
+    reopened.reserve_under_mandate(mandate, candidate("different", 2), recapture(post, at), at)
+    assert [row["instrument_id"] for row in reopened.snapshot()["submissions"]] == [1, 2]
 
 
 def test_terminal_partial_requires_broker_and_actual_cash_evidence(tmp_path):
