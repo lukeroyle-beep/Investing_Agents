@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from decimal import Decimal, InvalidOperation
+from typing import Any, Collection
 
 import pandas as pd
 
+from execution.domain import DomainValidationError, decimal_text, decimal_value
 from shared.schema_registry import (
     DATETIME_TYPE_NAMES,
     NUMERIC_TYPE_NAMES,
@@ -428,11 +430,55 @@ def _apply_defaults(df: pd.DataFrame, spec: SchemaSpec) -> pd.DataFrame:
     return output_df
 
 
-def _coerce_numeric(df: pd.DataFrame, spec: SchemaSpec) -> pd.DataFrame:
+def _blank_decimal(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    try:
+        return bool(pd.isna(value))
+    except TypeError:
+        return False
+
+
+def _exact_decimal_token(value: Any) -> Any:
+    """Keep a finite decimal's text instead of a binary float.
+
+    Newly calculated values are already canonical. An existing token that is
+    the same number, such as historical ``10.0``, is preserved so reloads do
+    not look like an economic change.
+    """
+    if _blank_decimal(value):
+        return pd.NA
+    try:
+        parsed = value if isinstance(value, Decimal) else decimal_value(value, "amount")
+        canonical = decimal_text(parsed)
+    except (DomainValidationError, TypeError, ValueError, ArithmeticError):
+        return pd.NA
+    if isinstance(value, str):
+        original = value.strip()
+        try:
+            if Decimal(original) == Decimal(canonical):
+                return original
+        except (InvalidOperation, ValueError):
+            pass
+    return canonical
+
+
+def _coerce_numeric(
+    df: pd.DataFrame,
+    spec: SchemaSpec,
+    exact_decimal_columns: Collection[str] | None = None,
+) -> pd.DataFrame:
     output_df = df.copy()
+    exact = set(exact_decimal_columns or ())
 
     for col in spec.numeric_columns:
-        if col in output_df.columns:
+        if col not in output_df.columns:
+            continue
+        if col in exact:
+            output_df[col] = output_df[col].map(_exact_decimal_token)
+        else:
             output_df[col] = pd.to_numeric(output_df[col], errors="coerce")
 
     return output_df
@@ -501,12 +547,13 @@ def normalise_to_schema(
     df: pd.DataFrame,
     spec: SchemaSpec,
     keep_extra_columns: bool = True,
+    exact_decimal_columns: Collection[str] | None = None,
 ) -> pd.DataFrame:
     output_df = df.copy()
     output_df = _apply_aliases(output_df, spec)
     output_df = _ensure_columns(output_df, spec)
     output_df = _apply_defaults(output_df, spec)
-    output_df = _coerce_numeric(output_df, spec)
+    output_df = _coerce_numeric(output_df, spec, exact_decimal_columns)
     output_df = _coerce_text(output_df, spec)
     output_df = _normalise_case(output_df, spec)
     output_df = _validate_allowed_values(output_df, spec)
@@ -519,8 +566,17 @@ def validate_advisory_trades(df: pd.DataFrame, keep_extra_columns: bool = True) 
     return normalise_to_schema(df, ADVISORY_TRADES_SCHEMA, keep_extra_columns=keep_extra_columns)
 
 
-def validate_portfolio_state(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
-    return normalise_to_schema(df, PORTFOLIO_STATE_SCHEMA, keep_extra_columns=keep_extra_columns)
+def validate_portfolio_state(
+    df: pd.DataFrame,
+    keep_extra_columns: bool = True,
+    exact_decimal_columns: Collection[str] | None = None,
+) -> pd.DataFrame:
+    return normalise_to_schema(
+        df,
+        PORTFOLIO_STATE_SCHEMA,
+        keep_extra_columns=keep_extra_columns,
+        exact_decimal_columns=exact_decimal_columns,
+    )
 
 
 def validate_portfolio_monitor(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
@@ -539,20 +595,47 @@ def validate_processed_fills(df: pd.DataFrame, keep_extra_columns: bool = True) 
     return normalise_to_schema(df, PROCESSED_FILLS_SCHEMA, keep_extra_columns=keep_extra_columns)
 
 
-def validate_trade_fills(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
-    return normalise_to_schema(df, TRADE_FILLS_SCHEMA, keep_extra_columns=keep_extra_columns)
+def validate_trade_fills(
+    df: pd.DataFrame,
+    keep_extra_columns: bool = True,
+    exact_decimal_columns: Collection[str] | None = None,
+) -> pd.DataFrame:
+    return normalise_to_schema(
+        df,
+        TRADE_FILLS_SCHEMA,
+        keep_extra_columns=keep_extra_columns,
+        exact_decimal_columns=exact_decimal_columns,
+    )
 
 
 def validate_trade_journal(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
     return normalise_to_schema(df, TRADE_JOURNAL_SCHEMA, keep_extra_columns=keep_extra_columns)
 
 
-def validate_cash_state(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
-    return normalise_to_schema(df, CASH_STATE_SCHEMA, keep_extra_columns=keep_extra_columns)
+def validate_cash_state(
+    df: pd.DataFrame,
+    keep_extra_columns: bool = True,
+    exact_decimal_columns: Collection[str] | None = None,
+) -> pd.DataFrame:
+    return normalise_to_schema(
+        df,
+        CASH_STATE_SCHEMA,
+        keep_extra_columns=keep_extra_columns,
+        exact_decimal_columns=exact_decimal_columns,
+    )
 
 
-def validate_cash_ledger(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:
-    return normalise_to_schema(df, CASH_LEDGER_SCHEMA, keep_extra_columns=keep_extra_columns)
+def validate_cash_ledger(
+    df: pd.DataFrame,
+    keep_extra_columns: bool = True,
+    exact_decimal_columns: Collection[str] | None = None,
+) -> pd.DataFrame:
+    return normalise_to_schema(
+        df,
+        CASH_LEDGER_SCHEMA,
+        keep_extra_columns=keep_extra_columns,
+        exact_decimal_columns=exact_decimal_columns,
+    )
 
 
 def validate_portfolio_equity_history(df: pd.DataFrame, keep_extra_columns: bool = True) -> pd.DataFrame:

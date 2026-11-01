@@ -4,6 +4,8 @@ import json
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+from fractions import Fraction
 from typing import Optional
 
 import pandas as pd
@@ -21,6 +23,9 @@ from agents.shared.event_log import (
     append_position_reduced_event,
     ensure_event_log_exists,
 )
+from execution.accounting import _sum as exact_sum
+from execution.domain import DomainValidationError, canonical_decimal, decimal_text, decimal_value
+from execution.pilot_policy import multiply
 from shared.io_utils import write_csv, write_managed_csv_with_schema
 from shared.paths import DATA_DIR as RUNTIME_STATE_DIR
 from shared.run_context import get_or_create_run_id
@@ -55,8 +60,28 @@ BROKER_FILLS_PATH = os.path.join(DATA_DIR, "broker_fills.csv")
 CASH_STATE_PATH = os.path.join(DATA_DIR, "cash_state.csv")
 CASH_LEDGER_PATH = os.path.join(DATA_DIR, "cash_ledger.csv")
 
-DEFAULT_STARTING_CASH = 100000.0
+DEFAULT_STARTING_CASH = Decimal("100000")
 AGENT_NAME = "Fill Agent"
+# Cash, quantity, price, and fee columns stay canonical decimal text. The
+# legacy CSV schema and SQLite REAL mirror are unchanged; REAL remains a
+# compatibility copy and is not the exact record.
+EXACT_CASH_COLUMNS = frozenset({"cash_balance"})
+EXACT_LEDGER_COLUMNS = frozenset({"amount", "fees", "cash_balance_after"})
+EXACT_TRADE_FILL_COLUMNS = frozenset({"quantity", "fill_price", "fees"})
+EXACT_PORTFOLIO_COLUMNS = frozenset({
+    "quantity",
+    "entry_price",
+    "capital_allocated",
+    "current_price",
+    "market_value",
+    "pnl_abs",
+    "pnl_pct",
+    "realised_pnl_abs",
+    "fees_total",
+    "entry_fees_remaining",
+    "exit_price",
+})
+PERCENT_INCREMENT = Decimal("0.0000000001")
 PORTFOLIO_STATE_SCHEMA = get_file_schema("portfolio_state.csv")
 CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
 CASH_LEDGER_SCHEMA = get_file_schema("cash_ledger.csv")
@@ -66,6 +91,86 @@ TRADE_FILLS_SCHEMA = get_file_schema("trade_fills.csv")
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _decimal_increment(value: Decimal) -> Decimal:
+    """Increment implied by a canonical demo decimal's own exponent.
+
+    Demo execution values do not carry a separate venue tick. ``canonical_decimal``
+    is their spelling, and the exponent that spelling retains is the increment
+    quantity, price, and fees are already quantized to.
+    """
+    exponent = value.as_tuple().exponent
+    if exponent >= 0:
+        return Decimal(1)
+    return Decimal((0, (1,), exponent))
+
+
+def _quantize(value: Decimal, increment: Decimal, rounding: str) -> Decimal:
+    if increment <= 0:
+        raise ValueError("price/quantity increment must be positive")
+    units = Fraction(canonical_decimal(value)) / Fraction(increment)
+    with localcontext() as ctx:
+        ctx.prec = max(80, len(str(units.numerator)) + len(str(units.denominator)) + 5)
+        ctx.rounding = rounding
+        count = (Decimal(units.numerator) / Decimal(units.denominator)).to_integral_value(rounding=rounding)
+    return canonical_decimal(count * increment)
+
+
+def _money(value: object, field: str = "amount") -> Decimal:
+    try:
+        return canonical_decimal(decimal_value(value, field))
+    except DomainValidationError as exc:
+        raise ValueError(f"{field} must be a finite decimal") from exc
+
+
+def _on_own_increment(value: object, field: str) -> Decimal:
+    parsed = _money(value, field)
+    return _quantize(parsed, _decimal_increment(parsed), ROUND_HALF_EVEN)
+
+
+def _text(value: Decimal) -> str:
+    return decimal_text(value)
+
+
+def _percent(part: Decimal, whole: Decimal) -> Decimal:
+    """Display ratio only. Cash and quantity are not passed through this scale."""
+    if whole == 0:
+        return Decimal(0)
+    ratio = (Fraction(part) / Fraction(whole)) * 100
+    with localcontext() as ctx:
+        ctx.prec = 80
+        ctx.rounding = ROUND_HALF_EVEN
+        value = Decimal(ratio.numerator) / Decimal(ratio.denominator)
+    return _quantize(value, PERCENT_INCREMENT, ROUND_HALF_EVEN)
+
+
+def _allocate_entry_fee(remaining: Decimal, quantity: Decimal, original: Decimal) -> Decimal:
+    """Floor a pro-rata fee to the fee increment. The closing slice takes the rest.
+
+    Flooring keeps every intermediate allocation on the fee increment. The
+    slice that takes the final quantity receives the unallocated remainder, so
+    repeated partial closes sum back to the original fee exactly.
+    """
+    if quantity == original:
+        return remaining
+    if remaining == 0 or quantity == 0:
+        return Decimal(0)
+    increment = _decimal_increment(remaining)
+    share = Fraction(remaining) * Fraction(quantity) / Fraction(original)
+    units = share / Fraction(increment)
+    count = units.numerator // units.denominator
+    allocated = canonical_decimal(Decimal(count) * increment)
+    if allocated > remaining:
+        return remaining
+    return allocated
+
+
+def _same_decimal(left: object, right: object) -> bool:
+    try:
+        return _money(left) == _money(right)
+    except ValueError:
+        return False
 
 
 def current_run_id() -> str:
@@ -78,6 +183,7 @@ def safe_read_csv_or_default(
     default_df: Optional[pd.DataFrame] = None,
     producer: str | None = None,
     schema: SchemaSpec | None = None,
+    preserve_decimal_text: bool = False,
 ) -> pd.DataFrame:
     """
     Read CSV safely.
@@ -100,7 +206,10 @@ def safe_read_csv_or_default(
         return df
 
     try:
-        df = pd.read_csv(path)
+        if preserve_decimal_text:
+            df = pd.read_csv(path, dtype=str, keep_default_na=False)
+        else:
+            df = pd.read_csv(path)
     except EmptyDataError:
         if default_df is not None:
             df = default_df.copy()
@@ -146,20 +255,26 @@ def ensure_cash_files() -> tuple[pd.DataFrame, pd.DataFrame]:
         CASH_STATE_PATH,
         columns=CASH_STATE_SCHEMA.canonical_column_order,
         default_df=pd.DataFrame(
-            [{"as_of": utc_now_iso(), "cash_balance": DEFAULT_STARTING_CASH}]
+            [{"as_of": utc_now_iso(), "cash_balance": decimal_text(DEFAULT_STARTING_CASH)}]
         ),
         producer=AGENT_NAME,
         schema=CASH_STATE_SCHEMA_SPEC,
+        preserve_decimal_text=True,
     )
-    cash_state_df = validate_cash_state(cash_state_df, keep_extra_columns=False)
+    cash_state_df = validate_cash_state(
+        cash_state_df, keep_extra_columns=False, exact_decimal_columns=EXACT_CASH_COLUMNS
+    )
 
     cash_ledger_df = safe_read_csv_or_default(
         CASH_LEDGER_PATH,
         columns=CASH_LEDGER_SCHEMA.canonical_column_order,
         producer=AGENT_NAME,
         schema=CASH_LEDGER_SCHEMA_SPEC,
+        preserve_decimal_text=True,
     )
-    cash_ledger_df = validate_cash_ledger(cash_ledger_df, keep_extra_columns=False)
+    cash_ledger_df = validate_cash_ledger(
+        cash_ledger_df, keep_extra_columns=False, exact_decimal_columns=EXACT_LEDGER_COLUMNS
+    )
 
     return cash_state_df, cash_ledger_df
 
@@ -170,8 +285,11 @@ def ensure_state_file() -> pd.DataFrame:
         columns=PORTFOLIO_STATE_SCHEMA.canonical_column_order,
         producer=AGENT_NAME,
         schema=PORTFOLIO_STATE_SCHEMA_SPEC,
+        preserve_decimal_text=True,
     )
-    return validate_portfolio_state(df, keep_extra_columns=False)
+    return validate_portfolio_state(
+        df, keep_extra_columns=False, exact_decimal_columns=EXACT_PORTFOLIO_COLUMNS
+    )
 
 
 def ensure_processed_fills_file() -> pd.DataFrame:
@@ -190,8 +308,11 @@ def ensure_trade_fills_file() -> pd.DataFrame:
         columns=TRADE_FILLS_SCHEMA.canonical_column_order,
         producer=AGENT_NAME,
         schema=TRADE_FILLS_SCHEMA_SPEC,
+        preserve_decimal_text=True,
     )
-    return validate_trade_fills(df, keep_extra_columns=False)
+    return validate_trade_fills(
+        df, keep_extra_columns=False, exact_decimal_columns=EXACT_TRADE_FILL_COLUMNS
+    )
 
 
 def ensure_manual_fills_file() -> pd.DataFrame:
@@ -207,6 +328,7 @@ def ensure_manual_fills_file() -> pd.DataFrame:
             "fees",
             "fill_timestamp",
         ],
+        preserve_decimal_text=True,
     )
 
 
@@ -239,6 +361,7 @@ def ensure_broker_fills_file() -> pd.DataFrame:
             "fill_timestamp",
             *BROKER_IDENTITY_COLUMNS,
         ],
+        preserve_decimal_text=True,
     )
 
 
@@ -296,17 +419,26 @@ def validate_fill_row(row: pd.Series) -> None:
     if str(row["action"]).strip().lower() not in {"buy", "sell"}:
         raise ValueError(f"Invalid action: {row['action']}")
 
-    quantity = pd.to_numeric(row["quantity"], errors="coerce")
-    fill_price = pd.to_numeric(row["fill_price"], errors="coerce")
-    fees = pd.to_numeric(row["fees"], errors="coerce")
+    try:
+        quantity = _on_own_increment(row["quantity"], "quantity")
+    except ValueError:
+        quantity = Decimal(0)
+    try:
+        fill_price = _on_own_increment(row["fill_price"], "fill_price")
+    except ValueError:
+        fill_price = Decimal(0)
+    try:
+        fees = _on_own_increment(row["fees"], "fees")
+    except ValueError:
+        fees = Decimal(-1)
 
-    if pd.isna(quantity) or quantity <= 0:
+    if quantity <= 0:
         raise ValueError("quantity must be positive")
 
-    if pd.isna(fill_price) or fill_price <= 0:
+    if fill_price <= 0:
         raise ValueError("fill_price must be positive")
 
-    if pd.isna(fees) or fees < 0:
+    if fees < 0:
         raise ValueError("fees must be zero or positive")
 
     if pd.isna(row["fill_timestamp"]) or str(row["fill_timestamp"]).strip() == "":
@@ -338,7 +470,7 @@ def _read_existing_csv(path: str, columns: list[str]) -> pd.DataFrame:
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return pd.DataFrame(columns=columns)
     try:
-        return pd.read_csv(path)
+        return pd.read_csv(path, dtype=str, keep_default_na=False)
     except EmptyDataError:
         return pd.DataFrame(columns=columns)
 
@@ -376,21 +508,24 @@ def _event_row_mentions_fill(row: pd.Series, fill_id: str) -> bool:
     return _contains(metadata)
 
 
-def _money_close(left: object, right: float) -> bool:
-    value = pd.to_numeric(left, errors="coerce")
-    return not pd.isna(value) and abs(float(value) - right) < 0.005
+def _money_close(left: object, right: Decimal) -> bool:
+    return _same_decimal(left, right)
 
 
-def _expected_cash_ledger_values(row: pd.Series) -> tuple[str, float]:
+def _expected_cash_ledger_values(row: pd.Series) -> tuple[str, Decimal]:
     action = str(row["action"]).strip().lower()
-    quantity = float(row["quantity"])
-    fill_price = float(row["fill_price"])
-    fees = float(row["fees"])
+    try:
+        quantity = _on_own_increment(row["quantity"], "quantity")
+        fill_price = _on_own_increment(row["fill_price"], "fill_price")
+        fees = _on_own_increment(row["fees"], "fees")
+    except ValueError:
+        return "", Decimal(0)
+    gross = canonical_decimal(multiply(quantity, fill_price))
     if action == "buy":
-        return "position_open", -(quantity * fill_price)
+        return "position_open", canonical_decimal(-gross)
     if action == "sell":
-        return "position_close", (quantity * fill_price) - fees
-    return "", 0.0
+        return "position_close", exact_sum((gross, fees.copy_negate()))
+    return "", Decimal(0)
 
 
 def _cash_ledger_row_matches_fill(row: pd.Series, fill: pd.Series, fill_id: str) -> bool:
@@ -408,7 +543,7 @@ def _cash_ledger_row_matches_fill(row: pd.Series, fill: pd.Series, fill_id: str)
         and str(row.get("action", "")).strip().lower() == str(fill["action"]).strip().lower()
         and str(row.get("event_type", "")).strip().lower() == expected_event_type
         and _money_close(row.get("amount", None), expected_amount)
-        and _money_close(row.get("fees", None), float(fill["fees"]))
+        and _money_close(row.get("fees", None), _on_own_increment(fill["fees"], "fees"))
     )
 
 
@@ -416,19 +551,19 @@ def _portfolio_row_matches_fill(row: pd.Series, fill: pd.Series) -> bool:
     action = str(fill["action"]).strip().lower()
     ticker_matches = str(row.get("ticker", "")).strip().upper() == str(fill["ticker"]).strip().upper()
     side_matches = str(row.get("side", "")).strip().lower() == str(fill["side"]).strip().lower()
-    quantity_matches = _money_close(row.get("quantity", None), float(fill["quantity"]))
+    quantity_matches = _money_close(row.get("quantity", None), _on_own_increment(fill["quantity"], "quantity"))
     if not (ticker_matches and side_matches and quantity_matches):
         return False
 
     if action == "buy":
         return (
-            _money_close(row.get("entry_price", None), float(fill["fill_price"]))
+            _money_close(row.get("entry_price", None), _on_own_increment(fill["fill_price"], "fill_price"))
             and str(row.get("entry_date", "")).strip() == str(fill["fill_timestamp"]).strip()
         )
     if action == "sell":
         return (
             str(row.get("status", "")).strip().lower() == "closed"
-            and _money_close(row.get("exit_price", None), float(fill["fill_price"]))
+            and _money_close(row.get("exit_price", None), _on_own_increment(fill["fill_price"], "fill_price"))
             and str(row.get("closed_at", "")).strip() == str(fill["fill_timestamp"]).strip()
         )
     return False
@@ -503,10 +638,10 @@ def fail_if_unmarked_fill_has_existing_mutation(
             )
 
 
-def get_cash_balance(cash_state_df: pd.DataFrame) -> float:
+def get_cash_balance(cash_state_df: pd.DataFrame) -> Decimal:
     if cash_state_df.empty:
         return DEFAULT_STARTING_CASH
-    return float(cash_state_df.iloc[-1]["cash_balance"])
+    return _money(cash_state_df.iloc[-1]["cash_balance"])
 
 
 def serialise_row_state(row: pd.Series | dict) -> dict[str, object]:
@@ -521,17 +656,20 @@ def serialise_row_state(row: pd.Series | dict) -> dict[str, object]:
     return clean_payload
 
 
-def write_cash_balance(balance: float) -> None:
+def write_cash_balance(balance: Decimal) -> None:
     cash_state_df = pd.DataFrame(
-        [{"as_of": utc_now_iso(), "cash_balance": balance}]
+        [{"as_of": utc_now_iso(), "cash_balance": _text(_money(balance))}]
     )
-    cash_state_df = validate_cash_state(cash_state_df, keep_extra_columns=False)
+    cash_state_df = validate_cash_state(
+        cash_state_df, keep_extra_columns=False, exact_decimal_columns=EXACT_CASH_COLUMNS
+    )
     write_managed_csv_with_schema(
         cash_state_df,
         CASH_STATE_PATH,
         schema=CASH_STATE_SCHEMA_SPEC,
         producer=AGENT_NAME,
         keep_extra_columns=False,
+        exact_decimal_columns=EXACT_CASH_COLUMNS,
     )
     replace_cash_state_rows(cash_state_df.to_dict(orient="records"))
 
@@ -544,9 +682,9 @@ def append_cash_ledger_row(
     ticker: str,
     side: str,
     action: str,
-    amount: float,
-    fees: float,
-    cash_balance_after: float,
+    amount: Decimal,
+    fees: Decimal,
+    cash_balance_after: Decimal,
     notes: str,
 ) -> pd.DataFrame:
     new_row = pd.DataFrame(
@@ -560,22 +698,25 @@ def append_cash_ledger_row(
                 "ticker": ticker,
                 "side": side,
                 "action": action,
-                "amount": amount,
-                "fees": fees,
-                "cash_balance_after": cash_balance_after,
+                "amount": _text(_money(amount)),
+                "fees": _text(_money(fees)),
+                "cash_balance_after": _text(_money(cash_balance_after)),
                 "notes": notes,
             }
         ],
         columns=CASH_LEDGER_SCHEMA.canonical_column_order,
     )
     out = pd.concat([ledger_df, new_row], ignore_index=True)
-    out = validate_cash_ledger(out, keep_extra_columns=False)
+    out = validate_cash_ledger(
+        out, keep_extra_columns=False, exact_decimal_columns=EXACT_LEDGER_COLUMNS
+    )
     write_managed_csv_with_schema(
         out,
         CASH_LEDGER_PATH,
         schema=CASH_LEDGER_SCHEMA_SPEC,
         producer=AGENT_NAME,
         keep_extra_columns=False,
+        exact_decimal_columns=EXACT_LEDGER_COLUMNS,
     )
     append_cash_ledger_row_sqlite(new_row.iloc[0].to_dict())
     return out
@@ -596,24 +737,34 @@ def find_open_position(state_df: pd.DataFrame, ticker: str, side: str) -> Option
 
 def open_long_position(
     state_df: pd.DataFrame,
-    cash_balance: float,
+    cash_balance: Decimal | float | str,
     ledger_df: pd.DataFrame,
     row: pd.Series,
     run_id: str,
-) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+) -> tuple[pd.DataFrame, Decimal, pd.DataFrame]:
     assert_legacy_fill_row_admissible(row)
     ticker = str(row["ticker"]).upper()
     side = str(row["side"]).lower()
-    quantity = float(row["quantity"])
-    fill_price = float(row["fill_price"])
-    fees = float(row["fees"])
-    gross_cost = quantity * fill_price
-    total_cash_out = gross_cost + fees
+    quantity = _on_own_increment(row["quantity"], "quantity")
+    fill_price = _on_own_increment(row["fill_price"], "fill_price")
+    fees = _on_own_increment(row["fees"], "fees")
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    if fill_price <= 0:
+        raise ValueError("fill_price must be positive")
+    if fees < 0:
+        raise ValueError("fees must be zero or positive")
+    gross_cost = canonical_decimal(multiply(quantity, fill_price))
+    total_cash_out = exact_sum((gross_cost, fees))
+    cash_balance = _money(cash_balance)
+    quantity_text = _text(quantity)
+    price_text = _text(fill_price)
+    fees_text = _text(fees)
 
     if cash_balance < total_cash_out:
         raise RuntimeError(
             f"Insufficient cash to open position in {ticker}. "
-            f"Required={total_cash_out:.2f}, Available={cash_balance:.2f}"
+            f"Required={_text(total_cash_out)}, Available={_text(cash_balance)}"
         )
 
     existing_idx = find_open_position(state_df, ticker, side)
@@ -621,6 +772,7 @@ def open_long_position(
         raise RuntimeError(f"Active position already exists for {ticker} {side}")
 
     position_id = "POS_" + uuid.uuid4().hex[:10].upper()
+    pnl_abs = canonical_decimal(-fees)
 
     new_row = pd.DataFrame(
         [
@@ -629,16 +781,16 @@ def open_long_position(
                 "ticker": ticker,
                 "side": side,
                 "status": "open",
-                "quantity": quantity,
-                "entry_price": fill_price,
+                "quantity": quantity_text,
+                "entry_price": price_text,
                 "entry_date": row["fill_timestamp"],
-                "current_price": fill_price,
-                "market_value": quantity * fill_price,
-                "pnl_abs": -fees,
-                "pnl_pct": (-fees / gross_cost * 100) if gross_cost > 0 else 0.0,
-                "realised_pnl_abs": 0.0,
-                "fees_total": fees,
-                "entry_fees_remaining": fees,
+                "current_price": price_text,
+                "market_value": _text(gross_cost),
+                "pnl_abs": _text(pnl_abs),
+                "pnl_pct": _text(_percent(pnl_abs, gross_cost)),
+                "realised_pnl_abs": "0",
+                "fees_total": fees_text,
+                "entry_fees_remaining": fees_text,
                 "exit_flag": False,
                 "exit_reason": "",
                 "last_updated": utc_now_iso(),
@@ -652,8 +804,9 @@ def open_long_position(
     state_df = pd.concat([state_df, new_row], ignore_index=True)
 
     position_after = serialise_row_state(new_row.iloc[0])
-    cash_balance_before = cash_balance
-    cash_balance -= total_cash_out
+    cash_before_text = _text(cash_balance)
+    cash_balance = exact_sum((cash_balance, total_cash_out.copy_negate()))
+    cash_text = _text(cash_balance)
     write_cash_balance(cash_balance)
 
     ledger_df = append_cash_ledger_row(
@@ -664,10 +817,10 @@ def open_long_position(
         ticker=ticker,
         side=side,
         action="buy",
-        amount=-gross_cost,
+        amount=canonical_decimal(-gross_cost),
         fees=fees,
         cash_balance_after=cash_balance,
-        notes=f"fill_id={row['fill_id']}; Opened {quantity} shares at {fill_price}",
+        notes=f"fill_id={row['fill_id']}; Opened {quantity_text} shares at {price_text}",
     )
 
     append_position_opened_event(
@@ -682,9 +835,9 @@ def open_long_position(
             "fill_id": str(row["fill_id"]),
             "action": "buy",
             "side": side,
-            "quantity": quantity,
-            "fill_price": fill_price,
-            "fees": fees,
+            "quantity": quantity_text,
+            "fill_price": price_text,
+            "fees": fees_text,
         },
     )
     append_cash_adjusted_event(
@@ -693,33 +846,56 @@ def open_long_position(
         ticker=ticker,
         position_id=position_id,
         message=f"Cash debited for opening {ticker}",
-        before_state={"cash_balance": round(cash_balance_before, 2)},
-        after_state={"cash_balance": round(cash_balance, 2)},
+        before_state={"cash_balance": cash_before_text},
+        after_state={"cash_balance": cash_text},
         details={
             "fill_id": str(row["fill_id"]),
             "action": "buy",
-            "gross_cost": round(gross_cost, 2),
-            "fees": fees,
-            "net_cash_change": round(-total_cash_out, 2),
+            "gross_cost": _text(gross_cost),
+            "fees": fees_text,
+            "net_cash_change": _text(canonical_decimal(-total_cash_out)),
         },
     )
 
     return state_df, cash_balance, ledger_df
 
 
+def _stored_money(value: object, fallback: Decimal) -> Decimal:
+    if value is None:
+        return fallback
+    if isinstance(value, str) and value.strip() == "":
+        return fallback
+    try:
+        if not isinstance(value, (str, Decimal, int, float)) and pd.isna(value):
+            return fallback
+    except TypeError:
+        return fallback
+    try:
+        return _money(value)
+    except ValueError:
+        return fallback
+
+
 def close_long_position(
     state_df: pd.DataFrame,
-    cash_balance: float,
+    cash_balance: Decimal | float | str,
     ledger_df: pd.DataFrame,
     row: pd.Series,
     run_id: str,
-) -> tuple[pd.DataFrame, float, pd.DataFrame]:
+) -> tuple[pd.DataFrame, Decimal, pd.DataFrame]:
     assert_legacy_fill_row_admissible(row)
     ticker = str(row["ticker"]).upper()
     side = str(row["side"]).lower()
-    quantity = float(row["quantity"])
-    fill_price = float(row["fill_price"])
-    fees = float(row["fees"])
+    quantity = _on_own_increment(row["quantity"], "quantity")
+    fill_price = _on_own_increment(row["fill_price"], "fill_price")
+    fees = _on_own_increment(row["fees"], "fees")
+    if quantity <= 0:
+        raise ValueError("quantity must be positive")
+    if fill_price <= 0:
+        raise ValueError("fill_price must be positive")
+    if fees < 0:
+        raise ValueError("fees must be zero or positive")
+    cash_balance = _money(cash_balance)
 
     idx = find_open_position(state_df, ticker, side)
     if idx is None:
@@ -728,62 +904,61 @@ def close_long_position(
     position = state_df.loc[idx].copy()
     position_before = serialise_row_state(position)
 
-    original_quantity = float(position["quantity"])
-    if quantity > original_quantity + 1e-9:
+    original_quantity = _money(position["quantity"], "quantity")
+    if quantity > original_quantity:
         raise RuntimeError(
             f"Close quantity exceeds the active position for {ticker}. "
-            f"Available={position['quantity']}, received={quantity}"
+            f"Available={_text(original_quantity)}, received={_text(quantity)}"
         )
 
-    entry_price = float(position["entry_price"])
-    total_fees_before = float(position.get("fees_total", 0.0) or 0.0)
-    entry_fees_remaining_raw = pd.to_numeric(
-        position.get("entry_fees_remaining", total_fees_before), errors="coerce"
+    entry_price = _money(position["entry_price"], "entry_price")
+    total_fees_before = _stored_money(position.get("fees_total", None), Decimal(0))
+    entry_fees_remaining = _stored_money(
+        position.get("entry_fees_remaining", None), total_fees_before
     )
-    entry_fees_remaining = (
-        total_fees_before
-        if pd.isna(entry_fees_remaining_raw)
-        else float(entry_fees_remaining_raw)
-    )
-    realised_before_raw = pd.to_numeric(
-        position.get("realised_pnl_abs", 0.0), errors="coerce"
-    )
-    realised_before = 0.0 if pd.isna(realised_before_raw) else float(realised_before_raw)
+    realised_before = _stored_money(position.get("realised_pnl_abs", None), Decimal(0))
 
-    gross_proceeds = quantity * fill_price
-    net_proceeds = gross_proceeds - fees
-    allocated_entry_fees = entry_fees_remaining * (quantity / original_quantity)
-    realised_increment = net_proceeds - (quantity * entry_price) - allocated_entry_fees
-    realised_pnl = realised_before + realised_increment
+    gross_proceeds = canonical_decimal(multiply(quantity, fill_price))
+    net_proceeds = exact_sum((gross_proceeds, fees.copy_negate()))
+    allocated_entry_fees = _allocate_entry_fee(entry_fees_remaining, quantity, original_quantity)
+    entry_cost = canonical_decimal(multiply(quantity, entry_price))
+    realised_increment = exact_sum((
+        net_proceeds, entry_cost.copy_negate(), allocated_entry_fees.copy_negate()
+    ))
+    realised_pnl = exact_sum((realised_before, realised_increment))
+    quantity_text = _text(quantity)
+    price_text = _text(fill_price)
+    fees_text = _text(fees)
+    realised_text = _text(realised_pnl)
+    increment_text = _text(realised_increment)
 
-    if quantity < original_quantity - 1e-9:
-        remaining_quantity = original_quantity - quantity
-        remaining_entry_fees = entry_fees_remaining - allocated_entry_fees
-        state_df.at[idx, "quantity"] = remaining_quantity
+    if quantity < original_quantity:
+        remaining_quantity = exact_sum((original_quantity, quantity.copy_negate()))
+        remaining_entry_fees = exact_sum((entry_fees_remaining, allocated_entry_fees.copy_negate()))
+        remaining_basis = canonical_decimal(multiply(remaining_quantity, entry_price))
+        unrealised = exact_sum((
+            canonical_decimal(multiply(exact_sum((fill_price, entry_price.copy_negate())), remaining_quantity)),
+            remaining_entry_fees.copy_negate(),
+        ))
+        state_df.at[idx, "quantity"] = _text(remaining_quantity)
         if "capital_allocated" in state_df.columns:
-            state_df.at[idx, "capital_allocated"] = remaining_quantity * entry_price
-        state_df.at[idx, "current_price"] = fill_price
-        state_df.at[idx, "market_value"] = remaining_quantity * fill_price
-        unrealised = (
-            (fill_price - entry_price) * remaining_quantity - remaining_entry_fees
-        )
-        state_df.at[idx, "pnl_abs"] = unrealised
-        state_df.at[idx, "pnl_pct"] = (
-            unrealised / (remaining_quantity * entry_price) * 100
-            if remaining_quantity * entry_price > 0
-            else 0.0
-        )
-        state_df.at[idx, "realised_pnl_abs"] = realised_pnl
-        state_df.at[idx, "fees_total"] = total_fees_before + fees
-        state_df.at[idx, "entry_fees_remaining"] = remaining_entry_fees
+            state_df.at[idx, "capital_allocated"] = _text(remaining_basis)
+        state_df.at[idx, "current_price"] = price_text
+        state_df.at[idx, "market_value"] = _text(canonical_decimal(multiply(remaining_quantity, fill_price)))
+        state_df.at[idx, "pnl_abs"] = _text(unrealised)
+        state_df.at[idx, "pnl_pct"] = _text(_percent(unrealised, remaining_basis))
+        state_df.at[idx, "realised_pnl_abs"] = realised_text
+        state_df.at[idx, "fees_total"] = _text(exact_sum((total_fees_before, fees)))
+        state_df.at[idx, "entry_fees_remaining"] = _text(remaining_entry_fees)
         state_df.at[idx, "exit_flag"] = "False"
         state_df.at[idx, "exit_reason"] = "partial_close"
         state_df.at[idx, "last_updated"] = utc_now_iso()
         state_df.at[idx, "run_id"] = run_id
 
         position_after = serialise_row_state(state_df.loc[idx])
-        cash_balance_before = cash_balance
-        cash_balance += net_proceeds
+        cash_before_text = _text(cash_balance)
+        cash_balance = exact_sum((cash_balance, net_proceeds))
+        cash_text = _text(cash_balance)
         write_cash_balance(cash_balance)
         ledger_df = append_cash_ledger_row(
             ledger_df=ledger_df,
@@ -797,8 +972,8 @@ def close_long_position(
             fees=fees,
             cash_balance_after=cash_balance,
             notes=(
-                f"fill_id={row['fill_id']}; Partially closed {quantity} shares "
-                f"at {fill_price}; realised_pnl_increment={realised_increment:.2f}"
+                f"fill_id={row['fill_id']}; Partially closed {quantity_text} shares "
+                f"at {price_text}; realised_pnl_increment={increment_text}"
             ),
         )
         append_position_reduced_event(
@@ -811,11 +986,11 @@ def close_long_position(
             after_state=position_after,
             details={
                 "fill_id": str(row["fill_id"]),
-                "quantity_closed": quantity,
-                "quantity_remaining": remaining_quantity,
-                "fill_price": fill_price,
-                "fees": fees,
-                "realised_pnl_increment": round(realised_increment, 2),
+                "quantity_closed": quantity_text,
+                "quantity_remaining": _text(remaining_quantity),
+                "fill_price": price_text,
+                "fees": fees_text,
+                "realised_pnl_increment": increment_text,
             },
         )
         append_cash_adjusted_event(
@@ -824,25 +999,25 @@ def close_long_position(
             ticker=ticker,
             position_id=str(position["position_id"]),
             message=f"Cash credited for partial close of {ticker}",
-            before_state={"cash_balance": round(cash_balance_before, 2)},
-            after_state={"cash_balance": round(cash_balance, 2)},
+            before_state={"cash_balance": cash_before_text},
+            after_state={"cash_balance": cash_text},
             details={
                 "fill_id": str(row["fill_id"]),
-                "gross_proceeds": round(gross_proceeds, 2),
-                "fees": fees,
-                "net_cash_change": round(net_proceeds, 2),
+                "gross_proceeds": _text(gross_proceeds),
+                "fees": fees_text,
+                "net_cash_change": _text(net_proceeds),
             },
         )
         return state_df, cash_balance, ledger_df
 
     state_df.at[idx, "status"] = "closed"
-    state_df.at[idx, "current_price"] = fill_price
-    state_df.at[idx, "market_value"] = 0.0
-    state_df.at[idx, "pnl_abs"] = 0.0
-    state_df.at[idx, "pnl_pct"] = 0.0
-    state_df.at[idx, "realised_pnl_abs"] = realised_pnl
-    state_df.at[idx, "fees_total"] = total_fees_before + fees
-    state_df.at[idx, "entry_fees_remaining"] = 0.0
+    state_df.at[idx, "current_price"] = price_text
+    state_df.at[idx, "market_value"] = "0"
+    state_df.at[idx, "pnl_abs"] = "0"
+    state_df.at[idx, "pnl_pct"] = "0"
+    state_df.at[idx, "realised_pnl_abs"] = realised_text
+    state_df.at[idx, "fees_total"] = _text(exact_sum((total_fees_before, fees)))
+    state_df.at[idx, "entry_fees_remaining"] = "0"
     state_df.at[idx, "exit_flag"] = "False"
     state_df.at[idx, "exit_reason"] = "position_closed"
     state_df.at[idx, "last_updated"] = utc_now_iso()
@@ -851,11 +1026,12 @@ def close_long_position(
     # Restore an object-capable dtype before recording the first close timestamp.
     state_df["closed_at"] = state_df["closed_at"].astype("object")
     state_df.at[idx, "closed_at"] = row["fill_timestamp"]
-    state_df.at[idx, "exit_price"] = fill_price
+    state_df.at[idx, "exit_price"] = price_text
 
     position_after = serialise_row_state(state_df.loc[idx])
-    cash_balance_before = cash_balance
-    cash_balance += net_proceeds
+    cash_before_text = _text(cash_balance)
+    cash_balance = exact_sum((cash_balance, net_proceeds))
+    cash_text = _text(cash_balance)
     write_cash_balance(cash_balance)
 
     ledger_df = append_cash_ledger_row(
@@ -869,7 +1045,7 @@ def close_long_position(
         amount=net_proceeds,
         fees=fees,
         cash_balance_after=cash_balance,
-        notes=f"fill_id={row['fill_id']}; Closed {quantity} shares at {fill_price}; realised_pnl={realised_pnl:.2f}",
+        notes=f"fill_id={row['fill_id']}; Closed {quantity_text} shares at {price_text}; realised_pnl={realised_text}",
     )
 
     append_position_closed_event(
@@ -884,10 +1060,10 @@ def close_long_position(
             "fill_id": str(row["fill_id"]),
             "action": "sell",
             "side": side,
-            "quantity": quantity,
-            "fill_price": fill_price,
-            "fees": fees,
-            "realised_pnl_abs": round(realised_pnl, 2),
+            "quantity": quantity_text,
+            "fill_price": price_text,
+            "fees": fees_text,
+            "realised_pnl_abs": realised_text,
         },
     )
     append_cash_adjusted_event(
@@ -896,14 +1072,14 @@ def close_long_position(
         ticker=ticker,
         position_id=str(position["position_id"]),
         message=f"Cash credited for closing {ticker}",
-        before_state={"cash_balance": round(cash_balance_before, 2)},
-        after_state={"cash_balance": round(cash_balance, 2)},
+        before_state={"cash_balance": cash_before_text},
+        after_state={"cash_balance": cash_text},
         details={
             "fill_id": str(row["fill_id"]),
             "action": "sell",
-            "gross_proceeds": round(gross_proceeds, 2),
-            "fees": fees,
-            "net_cash_change": round(net_proceeds, 2),
+            "gross_proceeds": _text(gross_proceeds),
+            "fees": fees_text,
+            "net_cash_change": _text(net_proceeds),
         },
     )
 
@@ -945,9 +1121,9 @@ def append_trade_fill(
                 "ticker": str(row["ticker"]).strip().upper(),
                 "side": str(row["side"]).strip().lower(),
                 "action": str(row["action"]).strip().lower(),
-                "quantity": float(row["quantity"]),
-                "fill_price": float(row["fill_price"]),
-                "fees": float(row["fees"]),
+                "quantity": _text(_on_own_increment(row["quantity"], "quantity")),
+                "fill_price": _text(_on_own_increment(row["fill_price"], "fill_price")),
+                "fees": _text(_on_own_increment(row["fees"], "fees")),
                 "fill_timestamp": str(row["fill_timestamp"]).strip(),
                 "run_id": run_id,
                 **{
@@ -960,6 +1136,7 @@ def append_trade_fill(
     output_df = validate_trade_fills(
         pd.concat([trade_fills_df, new_row], ignore_index=True),
         keep_extra_columns=False,
+        exact_decimal_columns=EXACT_TRADE_FILL_COLUMNS,
     )
     write_managed_csv_with_schema(
         output_df,
@@ -967,6 +1144,7 @@ def append_trade_fill(
         schema=TRADE_FILLS_SCHEMA_SPEC,
         producer=AGENT_NAME,
         keep_extra_columns=False,
+        exact_decimal_columns=EXACT_TRADE_FILL_COLUMNS,
     )
     append_trade_fill_row_sqlite(new_row.iloc[0].to_dict())
     return output_df
@@ -992,7 +1170,7 @@ def run_fill_agent() -> None:
     if fills_df.empty:
         print("Fill Agent finished.")
         print(f"No fills found in {MANUAL_FILLS_PATH}")
-        print(f"Ending cash balance: {cash_balance:.2f}")
+        print(f"Ending cash balance: {_text(cash_balance)}")
         return
 
     validate_fill_batch(fills_df)
@@ -1043,20 +1221,23 @@ def run_fill_agent() -> None:
             details={
                 "side": side,
                 "action": action,
-                "quantity": float(row["quantity"]),
-                "fill_price": float(row["fill_price"]),
-                "fees": float(row["fees"]),
+                "quantity": _text(_on_own_increment(row["quantity"], "quantity")),
+                "fill_price": _text(_on_own_increment(row["fill_price"], "fill_price")),
+                "fees": _text(_on_own_increment(row["fees"], "fees")),
                 "fill_timestamp": str(row["fill_timestamp"]),
             },
         )
 
-    state_df = validate_portfolio_state(state_df, keep_extra_columns=False)
+    state_df = validate_portfolio_state(
+        state_df, keep_extra_columns=False, exact_decimal_columns=EXACT_PORTFOLIO_COLUMNS
+    )
     write_managed_csv_with_schema(
         state_df,
         STATE_PATH,
         schema=PORTFOLIO_STATE_SCHEMA_SPEC,
         producer=AGENT_NAME,
         keep_extra_columns=False,
+        exact_decimal_columns=EXACT_PORTFOLIO_COLUMNS,
     )
     replace_portfolio_state_rows(state_df.to_dict(orient="records"))
 
@@ -1066,7 +1247,7 @@ def run_fill_agent() -> None:
     print(f"Saved trade fills to: {TRADE_FILLS_PATH}")
     print(f"Saved cash state to: {CASH_STATE_PATH}")
     print(f"Saved cash ledger to: {CASH_LEDGER_PATH}")
-    print(f"Ending cash balance: {cash_balance:.2f}")
+    print(f"Ending cash balance: {_text(cash_balance)}")
 
 
 if __name__ == "__main__":

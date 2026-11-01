@@ -4,7 +4,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Collection, Iterable, Optional
 
 import pandas as pd
 import yaml
@@ -252,6 +252,7 @@ def write_csv_with_schema(
     sort_columns: Optional[list[str]] = None,
     keep_extra_columns: bool = False,
     producer: str | None = None,
+    exact_decimal_columns: Collection[str] | None = None,
 ) -> None:
     path = Path(file_path)
 
@@ -259,6 +260,7 @@ def write_csv_with_schema(
         df=df,
         spec=schema,
         keep_extra_columns=keep_extra_columns,
+        exact_decimal_columns=exact_decimal_columns,
     )
 
     write_csv_file(
@@ -277,6 +279,7 @@ def write_managed_csv_with_schema(
     producer: str,
     sort_columns: Optional[list[str]] = None,
     keep_extra_columns: bool = False,
+    exact_decimal_columns: Collection[str] | None = None,
 ) -> None:
     """Atomically write a registered artifact under its exact declared owner."""
     path = Path(file_path)
@@ -289,6 +292,7 @@ def write_managed_csv_with_schema(
         sort_columns=sort_columns,
         keep_extra_columns=keep_extra_columns,
         producer=producer,
+        exact_decimal_columns=exact_decimal_columns,
     )
 
 
