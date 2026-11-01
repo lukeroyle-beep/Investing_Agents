@@ -95,8 +95,10 @@ def main():
     append_market_data_health_artifact(health_results)
 
     if len(results) != 3:
+        MACRO_PROXIES_PATH.unlink(missing_ok=True)
+        MACRO_REGIME_PATH.unlink(missing_ok=True)
         print("Macro Agent could not collect all required proxy data.")
-        return
+        raise RuntimeError("Macro Agent could not collect all required proxy data.")
 
     df = pd.DataFrame(results)
 

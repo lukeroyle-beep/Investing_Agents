@@ -250,9 +250,16 @@ def main():
     write_market_data_health_artifact(health_results, health_path)
 
     if not results:
+        for stale_path in (
+            UNIVERSE_SNAPSHOT_PATH,
+            TOP_LEADS_PATH,
+            WATCHLIST_PATH,
+            REJECTS_PATH,
+        ):
+            stale_path.unlink(missing_ok=True)
         print("No results collected.")
         print(f"Saved data-source health to: {health_path}")
-        return
+        raise RuntimeError("No results collected.")
 
     df = pd.DataFrame(results)
     df = df.sort_values(by=["score", "ticker"], ascending=[False, True])

@@ -277,8 +277,10 @@ def main():
     append_market_data_health_artifact(health_results)
 
     if not results:
+        SIGNAL_SETUPS_PATH.unlink(missing_ok=True)
+        SIGNAL_TOP_SETUPS_PATH.unlink(missing_ok=True)
         print("No signal results collected.")
-        return
+        raise RuntimeError("No signal results collected.")
 
     df = pd.DataFrame(results)
     df = df.sort_values(by=["adjusted_setup_score", "ticker"], ascending=[False, True])
