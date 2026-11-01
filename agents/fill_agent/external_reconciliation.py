@@ -170,13 +170,20 @@ def _original(root, retained):
     paths = [root / name for name in ("pilot.sqlite3", "execution.sqlite3", "operator.sqlite3")]
     for path in paths:
         retained[path] = _read(path)
-        # A moving WAL cannot be represented by a hash of the main DB alone.
-        wal = Path(str(path) + "-wal")
-        if wal.exists() and wal.stat().st_size:
-            raise ExternalReconciliationError("external_runtime_wal_requires_stopped_snapshot")
         for suffix in ("-wal", "-shm", "-journal"):
             sidecar = Path(str(path) + suffix)
-            retained[sidecar] = _read(sidecar) if sidecar.exists() else None
+            retained[sidecar] = _read(sidecar) if sidecar.exists() or sidecar.is_symlink() else None
+        # Main-file digests and quick_check cannot prove committed state when
+        # WAL or rollback recovery is outstanding. Never open the original DB.
+        if retained[Path(str(path) + "-wal")]:
+            raise ExternalReconciliationError("external_runtime_wal_requires_stopped_snapshot")
+        journal = retained[Path(str(path) + "-journal")]
+        # Admit only absent/empty journals or SQLite PERSIST's fully zeroed
+        # 28-byte header. A zero magic alone may be an unsynchronized writer;
+        # short, nonzero or malformed headers are ambiguous, even if not hot.
+        # Do not infer safety from locks or a super-journal's current absence.
+        if journal and (len(journal) < 28 or journal[:28] != bytes(28)):
+            raise ExternalReconciliationError("external_runtime_rollback_journal_requires_stopped_snapshot")
     try:
         # Deserialize the already-read stable bytes: SQLite never opens the
         # original path and cannot create/update its WAL or SHM sidecars.

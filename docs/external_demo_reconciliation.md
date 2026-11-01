@@ -16,7 +16,10 @@ without introducing a permissive migration path.
 The caller selects the canonical existing runtime. The planner checks its
 inception marker, inception and existing ledger-row digests, and snapshots the
 original economic, execution and operator files. Nonempty SQLite WAL state is
-rejected. The already-read economic database bytes are deserialized into memory
+rejected. Rollback journals must be absent, empty, or have a complete zeroed
+28-byte header; hot, truncated, partially initialized or otherwise ambiguous
+headers are rejected before SQLite inspection. Original stores and sidecars are
+never recovered or altered. The already-read economic database bytes are deserialized into memory
 so SQLite cannot write sidecars beside original stores. Main files and existing
 or absent sidecars are checked again before returning.
 

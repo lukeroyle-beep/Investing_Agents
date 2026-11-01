@@ -87,14 +87,19 @@ def _plan(path, raw):
     fields, rows = _parse(raw)
     groups = {}
     unresolved = set()
+    keyed_indices = []
     for index, row in enumerate(rows):
-        # Schema normalization matches the live Journal's identity comparison.
         if not row["run_id"].strip() or not row["ticker"].strip():
             unresolved.add(index)
-            continue
-        normalized = validate_trade_journal(pd.DataFrame([row])).iloc[0]
-        key = (normalized["run_id"], normalized["ticker"])
-        groups.setdefault(key, []).append(index)
+        else:
+            keyed_indices.append(index)
+    if keyed_indices:
+        # Normalize identities in one batch, retaining original strings below
+        # for every conflict comparison, archive byte and row mapping.
+        normalized = validate_trade_journal(pd.DataFrame([rows[i] for i in keyed_indices]))
+        identities = normalized[["run_id", "ticker"]].itertuples(index=False, name=None)
+        for index, key in zip(keyed_indices, identities, strict=True):
+            groups.setdefault(key, []).append(index)
     canonical = []
     output_indices = {}
     representatives = {}
