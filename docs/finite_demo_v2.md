@@ -15,6 +15,19 @@ and explicitly authorised market orders. Funds can represent equity, fixed
 income, commodity or crypto exposure when the classification is substantiated.
 There are no implied instrument selections or per-class allocation targets.
 
+The scope also requires `authorized_amounts`, an object mapping every allowlisted
+instrument ID (as a decimal string) to its exact approved USD principal amount
+(as a decimal string), for example `{"101": "10", "202": "15"}` for two synthetic
+instruments. Missing, extra or noncanonical instrument keys are rejected. The
+worker rejects a different principal before requesting usage or credentials;
+the operator and atomic ledger admission check it again. Financial ceilings
+still constrain principal plus costs and existing committed capital. They cannot
+authorize a larger or smaller principal than this explicit amount. Any price or
+eligibility change that makes the approved amount inadmissible causes a hold.
+Older finite mandate files without these amounts remain untouched and cannot
+authorize new orders on this revision; no amounts are inferred or migrated.
+Recover any historical claim using its original reviewed recovery path.
+
 Direct crypto, foreign exchange, contracts for difference, contract sizing and
 non-USD/GBX quotes are rejected. Limit IOC is not implemented in this path and a
 limit mandate cannot fall back to a market order. Broker minimums, settlement,

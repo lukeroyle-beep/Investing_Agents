@@ -27,6 +27,7 @@ def scope(**changes):
         {"instrument_id": 2, "symbol": "SYNTHBOND", "exchange": "NYSE", "asset_type": "etf",
          "economic_class": "fixed_income", "currency": "USD", "issuer": "Synthetic fund",
          "sector": "bond-fund", "class_source_reference": "synthetic:instrument-2-fund-holdings"}],
+        "authorized_amounts": {"1": "10", "2": "10"},
         "max_submissions": 3, "max_per_day": 4, "per_order_cap": "100", "total_commitment": "500",
         "max_positions": 5, "min_cash_fraction": "0.20", "loss_stop": "25", "order_types": ["market"]}
     value["max_per_day"] = 3
@@ -113,6 +114,60 @@ def test_instruments_need_explicit_supported_classification(tmp_path):
         instruments[0].update(changes)
         with pytest.raises(FiniteDemoMandateError):
             make(tmp_path, ledger=ledger, instruments=instruments)
+
+
+@pytest.mark.parametrize("amounts", [None, [], {}, {"1": "10"},
+    {"1": "10", "2": "10", "3": "10"}, {"01": "10", "2": "10"},
+    {1: "10", "2": "10"}, {"1": 10.0, "2": "10"},
+    {"1": True, "2": "10"}, {"1": "NaN", "2": "10"},
+    {"1": "Infinity", "2": "10"}, {"1": "0", "2": "10"},
+    {"1": "-10", "2": "10"}, {"1": "100.01", "2": "10"}])
+def test_amount_authority_requires_complete_exact_positive_bounded_mapping(tmp_path, amounts):
+    with pytest.raises(FiniteDemoMandateError):
+        make(tmp_path, authorized_amounts=amounts)
+    assert not (tmp_path / "finite.json").exists()
+
+
+def test_legacy_amountless_authority_is_rejected_without_rewrite(tmp_path):
+    _, mandate = make(tmp_path)
+    record = json.loads(mandate.path.read_text())
+    del record["mandate"]["scope"]["authorized_amounts"]
+    record["sha256"] = payload_hash(record["mandate"])
+    mandate.path.write_text(canonical_json(record))
+    original = mandate.path.read_bytes()
+    with pytest.raises(FiniteDemoMandateError, match="scope_shape"):
+        FiniteDemoMandate.load(mandate.path, expected_account_id="123")
+    assert mandate.path.read_bytes() == original
+
+
+def test_exact_amount_is_per_instrument_and_cannot_be_changed_through_scope_copy(tmp_path):
+    _, mandate = make(tmp_path, authorized_amounts={"1": "10", "2": "15.125"})
+    mandate.validate_candidate(candidate(instrument=1, amount="10.00"))
+    mandate.validate_candidate(candidate(instrument=2, amount="15.125"))
+    altered = mandate.scope
+    altered["authorized_amounts"]["1"] = "11"
+    assert mandate.scope["authorized_amounts"]["1"] == "10"
+    for item in (candidate(instrument=1, amount="15.125"), candidate(instrument=2, amount="10")):
+        with pytest.raises(FiniteDemoMandateError, match="exact_authorized_amount"):
+            mandate.validate_candidate(item)
+
+
+@pytest.mark.parametrize("amount", ["9.99", "10.01"])
+def test_ledger_rejects_different_amount_within_financial_ceiling_without_claim(tmp_path, amount):
+    ledger, mandate = make(tmp_path)
+    enable(ledger)
+    before = ledger.path.read_bytes()
+    with pytest.raises(FiniteDemoMandateError, match="exact_authorized_amount"):
+        ledger.reserve_under_mandate(mandate, candidate(amount=amount), Account(), NOW)
+    assert ledger.path.read_bytes() == before
+    assert ledger.snapshot()["submissions"] == ()
+
+
+def test_exact_principal_never_exempts_costs_from_the_order_cap(tmp_path):
+    _, mandate = make(tmp_path, per_order_cap="10.25")
+    mandate.validate_candidate(candidate(fees="0.25"))
+    with pytest.raises(FiniteDemoMandateError, match="order_cap"):
+        mandate.validate_candidate(candidate(fees="0.2501"))
 
 
 def test_migration_preserves_inception_claim_bytes_and_v1_limits(tmp_path):
