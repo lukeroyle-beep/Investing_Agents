@@ -243,6 +243,20 @@ def _parse_aware(value: object, field_name: str) -> datetime:
     return parsed.to_pydatetime().astimezone(UTC)
 
 
+def _daily_session_date(observed: datetime, tz: ZoneInfo) -> date:
+    """Session date in the exchange zone, with daily labels left on their date.
+
+    ``YYYY-MM-DDT00:00:00+00:00`` is a session label. That instant is the
+    previous evening in New York, so converting it would select the prior
+    session. Every other instant uses its calendar date in ``tz``, which keeps
+    a late-evening New York print on that session after UTC has rolled forward.
+    """
+    utc = observed.astimezone(UTC)
+    if (utc.hour, utc.minute, utc.second, utc.microsecond) == (0, 0, 0, 0):
+        return utc.date()
+    return utc.astimezone(tz).date()
+
+
 def _mode_for_failure(policy: FreshnessPolicy) -> str:
     return MODE_NO_TRADE if policy.critical else MODE_DEGRADED
 
@@ -352,7 +366,7 @@ def assess_freshness(
 
     latest_session = resolved_calendar.latest_completed_session(resolved_now)
     if policy.kind == "latest_completed_session":
-        observation_session = pd.Timestamp(observation_time).date()
+        observation_session = _daily_session_date(observed, resolved_calendar.tz)
         market_session = observation_session.isoformat()
         if observation_session > latest_session:
             return FreshnessAssessment(
