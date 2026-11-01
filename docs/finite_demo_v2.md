@@ -52,8 +52,11 @@ after the preceding economic and execution-journal reconciliation completes.
 
 `scripts/setup_finite_demo_pilot.py` operates only on the original private runtime
 with its existing inception marker and ledgers. It requires an engaged kill
-switch, writes the explicit mandate and complete account classification catalog,
-migrates the same SQLite submission table, and creates an execution journal.
+switch, validates the original execution store and journal before writing the
+explicit mandate and complete account classification catalog, and migrates the
+same SQLite submission table. A valid existing journal is reused; a new journal
+is created only when no retained import, finite migration or finite claim proves
+that a historical journal must already exist. Missing history is never recreated.
 Migration preserves every old submission and digest; the old v1 reservation
 method still enforces its original daily limit. Setup never resets the switch,
 requests credentials or starts a worker. Partial setup is held for inspection.
@@ -61,6 +64,9 @@ requests credentials or starts a worker. Partial setup is held for inspection.
 The one-cycle worker `scripts/run_finite_demo_pilot.py` accepts a candidate
 instrument ID and amount, validates a clean reviewed checkout, and uses the
 existing dedicated Demo credentials. It never searches for replacement keys.
+Worker startup also validates the existing execution store and journal without
+initializing either, before requesting usage evidence or credentials. Missing,
+empty or corrupt operational history causes a hold without changing its bytes.
 Repeated invocations can process distinct candidates within the same mandate;
 the original operator lock and atomic shared-ledger claims serialize them. An
 unresolved order or incomplete execution journal blocks every new claim.

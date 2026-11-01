@@ -17,7 +17,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agents.journal_agent.execution_journal import ExecutionJournal
+from agents.fill_agent.composite_import import _journal as _validated_original_journal
 from brokers.etoro.autonomous_api import DirectBindingStore, DirectDemoClient, build_order_payload
 from brokers.etoro.batch_api import BatchDemoAdapter
 from brokers.etoro.batch_reads import DirectBatchReads
@@ -31,7 +31,6 @@ from execution.finite_demo_operator import FiniteDemoOperator
 from execution.instruments import BrokerInstrumentMapping, Instrument, InstrumentRegistry
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_policy import PilotCatalog, PilotClassification
-from execution.store import ExecutionStore
 from execution.usage_reserve import PilotUsageAdmission
 from risk.kill_switch import KillSwitch
 from risk.pretrade import RiskLimits
@@ -39,7 +38,7 @@ from scripts.run_autonomous_demo_pilot import verify_reviewed_checkout
 from scripts.probe_codex_usage import UsageOnlyHost
 from scripts.setup_autonomous_demo_pilot import load_dedicated_credentials
 from scripts.setup_finite_demo_pilot import (
-    JOURNAL_FILE, MANDATE_FILE, existing_runtime, load_catalog, operator_lock,
+    MANDATE_FILE, existing_runtime, load_catalog, operator_lock,
 )
 
 
@@ -113,8 +112,10 @@ def locked_cycle(args, root, ledger):
     if (mandate.ledger_path != ledger.path.resolve() or mandate.reviewed_commit != args.reviewed_commit):
         raise ValueError("finite_original_runtime_and_reviewed_commit_required")
     classifications, catalog_hash = load_catalog(root, mandate, ledger)
-    store = ExecutionStore(root / "execution.sqlite3")
-    journal = ExecutionJournal(root / JOURNAL_FILE, ledger=ledger, store=store, runtime_root=root)
+    # Admission must not initialize or migrate the original operational store,
+    # even when the switch is engaged or an existing claim needs recovery.
+    journal = _validated_original_journal(root, ledger, allow_create=False)
+    store = journal.store
     journal.ensure_ready()
     claim = pending_claim(state)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
