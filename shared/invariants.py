@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 import pandas as pd
@@ -89,20 +90,36 @@ class InvariantResult:
 
 
 def normalise_scalar(value: Any) -> Any:
-    if pd.isna(value):
+    if value is None:
+        return None
+    try:
+        if not isinstance(value, (str, bytes)) and pd.isna(value):
+            return None
+    except TypeError:
         return None
 
     if isinstance(value, bool):
         return value
 
-    if isinstance(value, (int, float)):
-        return round(float(value), 10)
+    # NumPy 2 integers are not Python int. Decimal text from the fill ledger
+    # is the same number as the historical float snapshot at this comparison's
+    # existing 10-decimal-place scale.
+    if isinstance(value, (int, float)) or type(value).__module__ == "numpy":
+        try:
+            return round(float(value), 10)
+        except (TypeError, ValueError):
+            pass
 
     text = str(value).strip()
     if text == "":
         return None
-
-    return text
+    try:
+        number = Decimal(text)
+    except (InvalidOperation, ValueError):
+        return text
+    if not number.is_finite():
+        return text
+    return round(float(number), 10)
 
 
 def values_equal(a: Any, b: Any) -> bool:

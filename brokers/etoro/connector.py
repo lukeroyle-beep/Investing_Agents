@@ -17,7 +17,10 @@ from uuid import UUID
 
 from brokers.base import BrokerExecution, BrokerReconciliationResult, BrokerSubmissionResult
 from brokers.etoro.schemas import EtoroSchemaError, _pnl_timestamp
-from execution.domain import Environment, OrderSide, OrderType, SizingMethod, _aware_utc, canonical_json, payload_hash
+from execution.domain import (
+    Environment, OrderSide, OrderType, SizingMethod, _aware_utc, canonical_decimal,
+    canonical_json, payload_hash,
+)
 
 
 class ConnectorEvidenceError(ValueError):
@@ -68,10 +71,7 @@ def number(value, name):
 
 def economic_decimal(value):
     """Canonical value spelling without Decimal.normalize context rounding."""
-    rendered = format(value, "f")
-    if "." in rendered:
-        rendered = rendered.rstrip("0").rstrip(".")
-    return Decimal(rendered)
+    return canonical_decimal(value)
 
 
 def instant(value, name):

@@ -164,6 +164,24 @@ def decimal_value(value: Decimal | str | int | float, field_name: str) -> Decima
     return result
 
 
+def canonical_decimal(value: Decimal) -> Decimal:
+    """Strip trailing zeros without context rounding.
+
+    This is the demo-execution spelling used by ``economic_decimal``. The
+    remaining exponent is the value's own price, quantity, or fee increment.
+    """
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return Decimal(rendered or "0")
+
+
+def decimal_text(value: Decimal) -> str:
+    """Canonical fixed-point spelling shared by cash files and audit events."""
+    rendered = format(canonical_decimal(value), "f")
+    return "0" if rendered == "-0" else rendered
+
+
 def _primitive(value: Any) -> Any:
     if isinstance(value, StrEnum):
         return str(value)
