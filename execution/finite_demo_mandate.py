@@ -21,7 +21,7 @@ from risk.kill_switch import KillSwitch, KillSwitchStatus
 
 POLICY = "finite-demo-v2"
 MANDATE_SCHEMA = "finite-demo-mandate-v2"
-_SCOPE_KEYS = {"instruments", "max_submissions", "max_per_day", "per_order_cap",
+_SCOPE_KEYS = {"instruments", "authorized_amounts", "max_submissions", "max_per_day", "per_order_cap",
                "total_commitment", "max_positions", "min_cash_fraction", "loss_stop", "order_types"}
 _INSTRUMENT_KEYS = {"instrument_id", "symbol", "exchange", "asset_type", "economic_class",
                     "currency", "issuer", "sector", "class_source_reference"}
@@ -101,6 +101,17 @@ def validate_scope(scope):
         symbols.add((item["symbol"], item["exchange"]))
         normalized.append(item)
     scope["instruments"] = normalized
+    amounts = scope["authorized_amounts"]
+    if not isinstance(amounts, dict) or set(amounts) != {str(i) for i in ids}:
+        raise FiniteDemoMandateError("finite_exact_instrument_amounts_required")
+    normalized_amounts = {}
+    for instrument in normalized:
+        key = str(instrument["instrument_id"])
+        amount = _decimal(amounts[key], "authorized_amount")
+        if not 0 < amount <= Decimal(scope["per_order_cap"]):
+            raise FiniteDemoMandateError("finite_authorized_amount_outside_order_cap")
+        normalized_amounts[key] = str(amount)
+    scope["authorized_amounts"] = normalized_amounts
     return scope
 
 
@@ -282,4 +293,14 @@ class FiniteDemoMandate:
         matches = [i for i in self.scope["instruments"] if i["instrument_id"] == candidate.instrument_id]
         if len(matches) != 1:
             raise FiniteDemoMandateError("finite_candidate_instrument_not_authorized")
+        self.validate_order_amount(candidate.instrument_id, amount)
         return matches[0]
+
+    def validate_order_amount(self, instrument_id, amount):
+        """Require the approved principal, independently of financial ceilings."""
+        _positive_int(instrument_id, "instrument_id")
+        amounts = self.scope["authorized_amounts"]
+        if str(instrument_id) not in amounts:
+            raise FiniteDemoMandateError("finite_candidate_instrument_not_authorized")
+        if _decimal(amount, "amount") != Decimal(amounts[str(instrument_id)]):
+            raise FiniteDemoMandateError("finite_exact_authorized_amount_required")

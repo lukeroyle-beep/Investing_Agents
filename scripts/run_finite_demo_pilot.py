@@ -126,6 +126,7 @@ def locked_cycle(args, root, ledger):
         spec = specs[0]
         if not isinstance(args.amount, Decimal) or not args.amount.is_finite() or args.amount <= 0:
             raise ValueError("finite_positive_exact_amount_required")
+        mandate.validate_order_amount(args.instrument_id, args.amount)
         usage_host = UsageOnlyHost(root)
         usage = usage_evidence(usage_host, mandate)
         if usage.validate_for_work(now()):

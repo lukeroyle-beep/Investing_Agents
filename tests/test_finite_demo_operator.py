@@ -95,6 +95,7 @@ def workflow(tmp_path, *, max_submissions=3, max_per_day=3):
     ledger = PilotLedger.create(tmp_path / "pilot.sqlite3", pre, catalog.legacy_breaches(pre), NOW)
     ledger.enable_finite_mandates(source_reference="synthetic-migration-consent", reviewed_commit=COMMIT, now=NOW)
     scope = {"instruments": specs, "max_submissions": max_submissions, "max_per_day": max_per_day,
+        "authorized_amounts": {str(spec["instrument_id"]): "10" for spec in specs},
         "per_order_cap": "20", "total_commitment": "100", "max_positions": 5,
         "min_cash_fraction": ".20", "loss_stop": "25", "order_types": ["market"]}
     mandate = FiniteDemoMandate.create(tmp_path / "finite.json", account_id="123",

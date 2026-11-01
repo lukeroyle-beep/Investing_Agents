@@ -258,6 +258,7 @@ def finite_claim(source):
     scope = {"instruments": [{"instrument_id": 1, "symbol": "TEST", "exchange": "TEST",
         "asset_type": "equity", "economic_class": "equity", "currency": "USD", "issuer": "TEST",
         "sector": "TEST", "class_source_reference": "synthetic"}], "max_submissions": 2,
+        "authorized_amounts": {"1": "99"},
         "max_per_day": 2, "per_order_cap": "100", "total_commitment": "200", "max_positions": 5,
         "min_cash_fraction": "0.20", "loss_stop": "25", "order_types": ["market"]}
     mandate = FiniteDemoMandate.create(journal.path.parent / "mandate.json", account_id="123",
