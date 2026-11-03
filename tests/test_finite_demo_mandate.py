@@ -27,6 +27,7 @@ def scope(**changes):
         {"instrument_id": 2, "symbol": "SYNTHBOND", "exchange": "NYSE", "asset_type": "etf",
          "economic_class": "fixed_income", "currency": "USD", "issuer": "Synthetic fund",
          "sector": "bond-fund", "class_source_reference": "synthetic:instrument-2-fund-holdings"}],
+        "authorized_amounts": {"1": "10", "2": "10"},
         "max_submissions": 3, "max_per_day": 4, "per_order_cap": "100", "total_commitment": "500",
         "max_positions": 5, "min_cash_fraction": "0.20", "loss_stop": "25", "order_types": ["market"]}
     value["max_per_day"] = 3
@@ -94,6 +95,35 @@ def test_create_expiring_immutable_authority_and_scope_copy(tmp_path):
         mandate.validate_binding(ledger=ledger, now=NOW, reviewed_commit="d"*40)
 
 
+@pytest.mark.parametrize("value", [None, "true", "false", 0, 1, []])
+def test_buffer_acknowledgement_requires_literal_boolean(tmp_path, value):
+    with pytest.raises(FiniteDemoMandateError, match="explicit_buffer_acknowledgement"):
+        make(tmp_path, acknowledge_unreported_buffer=value)
+
+
+def test_buffer_acknowledgement_defaults_false_and_binds_exact_mandate(tmp_path):
+    _, original = make(tmp_path)
+    assert original.acknowledge_unreported_buffer is False
+    assert "acknowledge_unreported_buffer" not in original.scope
+    before = original.path.read_bytes()
+    assert FiniteDemoMandate.load(original.path, expected_account_id="123") == original
+    assert original.path.read_bytes() == before
+    folder = tmp_path / "explicit"
+    folder.mkdir()
+    ledger, approved = make(folder, acknowledge_unreported_buffer=True)
+    assert approved.acknowledge_unreported_buffer is True
+    assert approved.scope["acknowledge_unreported_buffer"] is True
+    changed = approved.scope
+    changed["acknowledge_unreported_buffer"] = False
+    assert approved.acknowledge_unreported_buffer is True
+    record = json.loads(approved.path.read_text())
+    record["mandate"]["scope"]["acknowledge_unreported_buffer"] = False
+    record["sha256"] = payload_hash(record["mandate"])
+    approved.path.write_text(canonical_json(record))
+    with pytest.raises(FiniteDemoMandateError, match="changed_after_load"):
+        approved.validate_binding(ledger=ledger, now=NOW)
+
+
 @pytest.mark.parametrize("changes", [
     {"max_submissions": True}, {"max_per_day": 0}, {"max_positions": 6},
     {"per_order_cap": "100.01"}, {"total_commitment": "500.01"}, {"loss_stop": "25.01"},
@@ -113,6 +143,60 @@ def test_instruments_need_explicit_supported_classification(tmp_path):
         instruments[0].update(changes)
         with pytest.raises(FiniteDemoMandateError):
             make(tmp_path, ledger=ledger, instruments=instruments)
+
+
+@pytest.mark.parametrize("amounts", [None, [], {}, {"1": "10"},
+    {"1": "10", "2": "10", "3": "10"}, {"01": "10", "2": "10"},
+    {1: "10", "2": "10"}, {"1": 10.0, "2": "10"},
+    {"1": True, "2": "10"}, {"1": "NaN", "2": "10"},
+    {"1": "Infinity", "2": "10"}, {"1": "0", "2": "10"},
+    {"1": "-10", "2": "10"}, {"1": "100.01", "2": "10"}])
+def test_amount_authority_requires_complete_exact_positive_bounded_mapping(tmp_path, amounts):
+    with pytest.raises(FiniteDemoMandateError):
+        make(tmp_path, authorized_amounts=amounts)
+    assert not (tmp_path / "finite.json").exists()
+
+
+def test_legacy_amountless_authority_is_rejected_without_rewrite(tmp_path):
+    _, mandate = make(tmp_path)
+    record = json.loads(mandate.path.read_text())
+    del record["mandate"]["scope"]["authorized_amounts"]
+    record["sha256"] = payload_hash(record["mandate"])
+    mandate.path.write_text(canonical_json(record))
+    original = mandate.path.read_bytes()
+    with pytest.raises(FiniteDemoMandateError, match="scope_shape"):
+        FiniteDemoMandate.load(mandate.path, expected_account_id="123")
+    assert mandate.path.read_bytes() == original
+
+
+def test_exact_amount_is_per_instrument_and_cannot_be_changed_through_scope_copy(tmp_path):
+    _, mandate = make(tmp_path, authorized_amounts={"1": "10", "2": "15.125"})
+    mandate.validate_candidate(candidate(instrument=1, amount="10.00"))
+    mandate.validate_candidate(candidate(instrument=2, amount="15.125"))
+    altered = mandate.scope
+    altered["authorized_amounts"]["1"] = "11"
+    assert mandate.scope["authorized_amounts"]["1"] == "10"
+    for item in (candidate(instrument=1, amount="15.125"), candidate(instrument=2, amount="10")):
+        with pytest.raises(FiniteDemoMandateError, match="exact_authorized_amount"):
+            mandate.validate_candidate(item)
+
+
+@pytest.mark.parametrize("amount", ["9.99", "10.01"])
+def test_ledger_rejects_different_amount_within_financial_ceiling_without_claim(tmp_path, amount):
+    ledger, mandate = make(tmp_path)
+    enable(ledger)
+    before = ledger.path.read_bytes()
+    with pytest.raises(FiniteDemoMandateError, match="exact_authorized_amount"):
+        ledger.reserve_under_mandate(mandate, candidate(amount=amount), Account(), NOW)
+    assert ledger.path.read_bytes() == before
+    assert ledger.snapshot()["submissions"] == ()
+
+
+def test_exact_principal_never_exempts_costs_from_the_order_cap(tmp_path):
+    _, mandate = make(tmp_path, per_order_cap="10.25")
+    mandate.validate_candidate(candidate(fees="0.25"))
+    with pytest.raises(FiniteDemoMandateError, match="order_cap"):
+        mandate.validate_candidate(candidate(fees="0.2501"))
 
 
 def test_migration_preserves_inception_claim_bytes_and_v1_limits(tmp_path):
@@ -186,11 +270,36 @@ def test_unknown_consumes_attempt_and_cannot_be_replaced(tmp_path):
     enable(ledger)
     ledger.reserve_under_mandate(mandate, candidate(), Account(), NOW)
     ledger.record_outcome("first", {"status": "unknown"})
+    ledger = PilotLedger(ledger.path, "123")
     for proposed in (candidate(), candidate("replacement")):
         with pytest.raises(PilotLedgerError, match="lookup_only"):
             ledger.reserve_under_mandate(mandate, proposed, Account(), NOW)
     with pytest.raises(PilotLedgerError, match="economic_reconciliation"):
         ledger.mark_journal_complete("first", journal_reference="forged completion", now=NOW)
+
+
+@pytest.mark.parametrize("outcome", ["full", "partial", "no_fill"])
+def test_each_instrument_is_consumed_after_terminal_reconciliation_and_restart(tmp_path, outcome):
+    ledger, mandate = make(tmp_path)
+    enable(ledger)
+    if outcome == "no_fill":
+        pre = Account()
+        ledger.reserve_under_mandate(mandate, candidate(), pre, NOW)
+        at = NOW + timedelta(seconds=2)
+        post = recapture(pre, at)
+        ledger.reconcile_no_fill("first", pre, post, at, terminal_evidence=terminal("first", status="7"))
+        ledger.mark_journal_complete("first", journal_reference="synthetic cancelled", now=at)
+    else:
+        post, _, _ = complete(ledger, mandate, Account(), "first", NOW, partial=outcome == "partial")
+    # A restart and a new daily allowance cannot revive this candidate.
+    at = NOW + timedelta(days=1)
+    reopened = PilotLedger(ledger.path, "123")
+    retained = reopened.snapshot()
+    with pytest.raises(PilotLedgerError, match="instrument_attempt_already_consumed"):
+        reopened.reserve_under_mandate(mandate, candidate("retry"), recapture(post, at), at)
+    assert reopened.snapshot() == retained
+    reopened.reserve_under_mandate(mandate, candidate("different", 2), recapture(post, at), at)
+    assert [row["instrument_id"] for row in reopened.snapshot()["submissions"]] == [1, 2]
 
 
 def test_terminal_partial_requires_broker_and_actual_cash_evidence(tmp_path):

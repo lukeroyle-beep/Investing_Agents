@@ -21,8 +21,9 @@ from risk.kill_switch import KillSwitch, KillSwitchStatus
 
 POLICY = "finite-demo-v2"
 MANDATE_SCHEMA = "finite-demo-mandate-v2"
-_SCOPE_KEYS = {"instruments", "max_submissions", "max_per_day", "per_order_cap",
+_SCOPE_KEYS = {"instruments", "authorized_amounts", "max_submissions", "max_per_day", "per_order_cap",
                "total_commitment", "max_positions", "min_cash_fraction", "loss_stop", "order_types"}
+_OPTIONAL_SCOPE_KEYS = {"acknowledge_unreported_buffer"}
 _INSTRUMENT_KEYS = {"instrument_id", "symbol", "exchange", "asset_type", "economic_class",
                     "currency", "issuer", "sector", "class_source_reference"}
 
@@ -63,9 +64,12 @@ def _commit(value):
 
 def validate_scope(scope):
     """Normalize exact requested bounds; code ceilings do not create authority."""
-    if not isinstance(scope, dict) or set(scope) != _SCOPE_KEYS:
+    if (not isinstance(scope, dict) or not _SCOPE_KEYS <= set(scope)
+            or set(scope) - _SCOPE_KEYS - _OPTIONAL_SCOPE_KEYS):
         raise FiniteDemoMandateError("finite_scope_shape_invalid")
     scope = dict(scope)
+    if type(scope.get("acknowledge_unreported_buffer", False)) is not bool:
+        raise FiniteDemoMandateError("finite_explicit_buffer_acknowledgement_required")
     for key in ("max_submissions", "max_per_day", "max_positions"):
         _positive_int(scope[key], key)
     if scope["max_positions"] > 5:
@@ -101,6 +105,17 @@ def validate_scope(scope):
         symbols.add((item["symbol"], item["exchange"]))
         normalized.append(item)
     scope["instruments"] = normalized
+    amounts = scope["authorized_amounts"]
+    if not isinstance(amounts, dict) or set(amounts) != {str(i) for i in ids}:
+        raise FiniteDemoMandateError("finite_exact_instrument_amounts_required")
+    normalized_amounts = {}
+    for instrument in normalized:
+        key = str(instrument["instrument_id"])
+        amount = _decimal(amounts[key], "authorized_amount")
+        if not 0 < amount <= Decimal(scope["per_order_cap"]):
+            raise FiniteDemoMandateError("finite_authorized_amount_outside_order_cap")
+        normalized_amounts[key] = str(amount)
+    scope["authorized_amounts"] = normalized_amounts
     return scope
 
 
@@ -137,6 +152,16 @@ class FiniteDemoMandate:
     def scope(self):
         # A returned dict cannot mutate this immutable authority in memory.
         return json.loads(self._scope_json)
+
+    @property
+    def acknowledge_unreported_buffer(self):
+        # Absence in a historical mandate remains false without rewriting it.
+        return self.scope.get("acknowledge_unreported_buffer", False)
+
+    def instrument_attempted(self, instrument_id, state):
+        """Every durable claim consumes this candidate, including no-fill."""
+        return any(row.get("mandate_hash") == self.mandate_hash
+                   and row["instrument_id"] == instrument_id for row in state["submissions"])
 
     @classmethod
     def create(cls, path, *, account_id, source_reference, issued_at, expires_at,
@@ -282,4 +307,14 @@ class FiniteDemoMandate:
         matches = [i for i in self.scope["instruments"] if i["instrument_id"] == candidate.instrument_id]
         if len(matches) != 1:
             raise FiniteDemoMandateError("finite_candidate_instrument_not_authorized")
+        self.validate_order_amount(candidate.instrument_id, amount)
         return matches[0]
+
+    def validate_order_amount(self, instrument_id, amount):
+        """Require the approved principal, independently of financial ceilings."""
+        _positive_int(instrument_id, "instrument_id")
+        amounts = self.scope["authorized_amounts"]
+        if str(instrument_id) not in amounts:
+            raise FiniteDemoMandateError("finite_candidate_instrument_not_authorized")
+        if _decimal(amount, "amount") != Decimal(amounts[str(instrument_id)]):
+            raise FiniteDemoMandateError("finite_exact_authorized_amount_required")

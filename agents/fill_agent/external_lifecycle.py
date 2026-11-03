@@ -1,14 +1,15 @@
-"""Internal external-origin lifecycle mechanics; live source admission is closed.
+"""Append-only external-origin lifecycle mechanics and journal recovery.
 
-No supported cash-event/opening-debit source contract has been qualified. The
-public entry point therefore rejects every input before opening any runtime
-file. Private transaction mechanics are exercised with synthetic qualified
-bundles in tests, not exposed through a CLI, flag, or planner-report token.
+The legacy public entry point rejects every input before opening runtime files.
+A separately reviewed source adapter owns admission to the private engine;
+constructing a bundle, balancing totals or setting a flag is never source proof.
+V2 preserves a bounded aggregate period without asserting gross cash coverage.
 """
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal, localcontext
 from functools import wraps
 import fcntl
@@ -27,6 +28,7 @@ from risk.kill_switch import KillSwitch
 
 
 SCHEMA = "external-demo-lifecycle-v1"
+COMPOSITE_SCHEMA = "external-demo-lifecycle-v2"
 EXTERNAL_PREFIX = "external:"
 
 
@@ -36,11 +38,12 @@ class ExternalLifecycleError(ValueError):
 
 @dataclass(frozen=True)
 class _QualifiedLifecycle:
-    """Private result shape for a future qualified source adapter.
+    """Private result shape for a qualified source adapter.
 
     This type is not an admission token. No public API accepts it as proof.
-    A future adapter must derive every projection from authenticated source
-    bytes, complete cash-event coverage and original opening-debit evidence.
+    The adapter must derive projections from retained source bytes and original
+    opening-debit evidence. V2 period qualification preserves its explicitly
+    narrower net-coverage claim instead of asserting complete gross events.
     """
     account: PilotAccount
     prior_account_hash: str
@@ -49,6 +52,7 @@ class _QualifiedLifecycle:
     cash_events: tuple[dict, ...]
     sources: tuple[dict, ...]
     cash_period_source: str
+    period_reconciliation: dict | None = None
 
 
 def _qualify_sources(*, runtime, sources):
@@ -180,10 +184,53 @@ def _source_map(sources):
 
 
 def _identity(record):
-    return payload_hash({"account_id": record["account_id"], "inception_hash": record["inception_hash"],
+    identity = {"account_id": record["account_id"], "inception_hash": record["inception_hash"],
         "closures": sorted(row["position_id"] for row in record["closures"]),
         "openings": sorted((row["order_id"], row["position_id"]) for row in record["openings"]),
-        "cash_events": sorted(row["event_id"] for row in record["cash_events"])})
+        "cash_events": sorted(row["event_id"] for row in record["cash_events"])}
+    if record["schema"] == COMPOSITE_SCHEMA:
+        # A local record identity, never a fabricated broker cash-event ID.
+        identity["period_reconciliation"] = record["period_reconciliation"]
+    return payload_hash(identity)
+
+
+def _period_effect(period, *, sources, source_reference, close_ids, start, end):
+    """Validate an aggregate observation without inventing its gross postings.
+
+    Source admission must establish the independently reported aggregate and
+    its cash bridge. This kernel validates the narrower recorded claim; a zero
+    residual alone cannot qualify a period or enumerate its component events.
+    """
+    _shape(period, "kind amount account_currency effect_after_observation effect_by_observation reporting_start_date reporting_end_date reporting_timezone gross_fees gross_dividends enumeration_complete individual_attribution baseline_position_ids source_reference")
+    if (period["kind"] != "net_fees_less_dividends"
+            or period["account_currency"] != "USD"
+            or period["source_reference"] != source_reference
+            or period["source_reference"] not in sources):
+        raise ExternalLifecycleError("external_period_source_or_currency_invalid")
+    if (period["reporting_timezone"] is not None or period["gross_fees"] is not None
+            or period["gross_dividends"] is not None or period["enumeration_complete"] is not False
+            or period["individual_attribution"] != "unknown"):
+        raise ExternalLifecycleError("external_period_gross_or_individual_claim_unsupported")
+    try:
+        first, last = (date.fromisoformat(period[field]) for field in
+            ("reporting_start_date", "reporting_end_date"))
+        if (first.isoformat() != period["reporting_start_date"]
+                or last.isoformat() != period["reporting_end_date"] or first > last):
+            raise ValueError
+    except (ValueError, TypeError):
+        raise ExternalLifecycleError("external_period_reporting_dates_invalid") from None
+    lower = _time(period["effect_after_observation"])
+    upper = _time(period["effect_by_observation"])
+    if not start <= lower < upper <= end:
+        raise ExternalLifecycleError("external_period_cash_observation_bounds_invalid")
+    identities = period["baseline_position_ids"]
+    if (not isinstance(identities, list) or not identities or len(identities) > 1000
+            or any(not isinstance(identity, str) or _id(identity) != identity for identity in identities)
+            or len(set(identities)) != len(identities) or set(identities) != close_ids):
+        raise ExternalLifecycleError("external_period_exact_closed_baseline_required")
+    # This is the signed cash effect: negative when fees exceed dividends,
+    # positive for a net credit, and zero without asserting no gross events.
+    return _number(period["amount"]), sources[source_reference]["sha256"]
 
 
 @_exact_context
@@ -196,8 +243,10 @@ def validate_record(record, *, inception, prior_account, retired, attributed):
     """
     from agents.fill_agent.pilot_ledger import _same_holdings
     _clean(record)
-    _shape(record, "schema event_id ledger_path account_id inception_hash prior_account_hash post_account closures openings cash_events sources cash_period_source reviewed_commit review_reference qualification_credit")
-    if (record["schema"] != SCHEMA or record["qualification_credit"] is not False
+    composite = record.get("schema") == COMPOSITE_SCHEMA
+    fields = "schema event_id ledger_path account_id inception_hash prior_account_hash post_account closures openings cash_events sources cash_period_source reviewed_commit review_reference qualification_credit"
+    _shape(record, fields + (" period_reconciliation" if composite else ""))
+    if (record["schema"] not in {SCHEMA, COMPOSITE_SCHEMA} or record["qualification_credit"] is not False
             or record["account_id"] != inception["account_id"]
             or record["inception_hash"] != payload_hash(inception)
             or record["prior_account_hash"] != payload_hash(prior_account)
@@ -279,6 +328,12 @@ def validate_record(record, *, inception, prior_account, retired, attributed):
             raise ExternalLifecycleError("external_cash_event_sign_invalid")
         cash_ids.add(key)
         nontrade.append(amount)
+    period_source_hash = None
+    if composite:
+        amount, period_source_hash = _period_effect(record["period_reconciliation"], sources=sources,
+            source_reference=record["cash_period_source"], close_ids=close_ids,
+            start=start, end=exact_datetime_epoch_seconds(post.capture_completed_at))
+        nontrade.append(amount)
     if not (close_ids or open_ids or cash_ids):
         raise ExternalLifecycleError("external_empty_lifecycle_event")
     if record["event_id"] != _identity(record):
@@ -295,18 +350,22 @@ def validate_record(record, *, inception, prior_account, retired, attributed):
     pnl = _exact_sum(_difference(after[key].pnl, _number(p["opening_fees"]), _number(p["opening_taxes"]))
                      for key, p in combined.items())
     return {"retired": close_ids, "positions": _clean(positions), "pilot_pnl": pnl,
-            "cash_event_ids": cash_ids, "order_ids": orders, "source_account": record["post_account"]}
+            "cash_event_ids": cash_ids, "order_ids": orders, "source_account": record["post_account"],
+            "period_source_hash": period_source_hash}
 
 
 def _record(ledger, state, proof, *, reviewed_commit, review_reference):
     if type(proof) is not _QualifiedLifecycle or type(proof.account) is not PilotAccount:
         raise ExternalLifecycleError("external_private_qualified_bundle_required")
-    record = _clean({"schema": SCHEMA, "event_id": "pending", "ledger_path": str(ledger.path.resolve()),
+    record = _clean({"schema": SCHEMA if proof.period_reconciliation is None else COMPOSITE_SCHEMA,
+        "event_id": "pending", "ledger_path": str(ledger.path.resolve()),
         "account_id": state["account_id"], "inception_hash": payload_hash(state["inception"]),
         "prior_account_hash": proof.prior_account_hash, "post_account": proof.account,
         "closures": proof.closures, "openings": proof.openings, "cash_events": proof.cash_events,
         "sources": proof.sources, "cash_period_source": proof.cash_period_source,
         "reviewed_commit": reviewed_commit, "review_reference": review_reference, "qualification_credit": False})
+    if proof.period_reconciliation is not None:
+        record["period_reconciliation"] = _clean(proof.period_reconciliation)
     record["event_id"] = _identity(record)
     return record
 
@@ -337,9 +396,12 @@ def _original_lock(ledger, switch):
 
 
 @_exact_context
-def _apply_qualified(ledger, proof, *, expected_plan_hash, reviewed_commit, review_reference, kill_switch, now):
-    """Private transaction engine; unavailable to production source admission."""
+def _apply_qualified(ledger, proof, *, expected_plan_hash, reviewed_commit, review_reference, kill_switch, now,
+                     historical_accounting=False):
+    """Private transaction engine; a reviewed adapter must own admission."""
     _sha(expected_plan_hash)
+    if type(historical_accounting) is not bool:
+        raise ExternalLifecycleError("external_historical_accounting_flag_invalid")
     from agents.fill_agent.pilot_ledger import _time as moment
     with _original_lock(ledger, kill_switch) as switch_before:
         with closing(ledger._connect()) as db, db:
@@ -355,7 +417,14 @@ def _apply_qualified(ledger, proof, *, expected_plan_hash, reviewed_commit, revi
                 return record
             if state["unresolved"]:
                 raise ExternalLifecycleError("external_pending_outcome_or_journal_blocks_import")
-            proof.account.validate_fresh(now)
+            if historical_accounting:
+                if record["schema"] != COMPOSITE_SCHEMA or moment(now) < proof.account.capture_completed_at:
+                    raise ExternalLifecycleError("external_historical_composite_capture_required")
+                # Admission at the original capture time validates retained
+                # observations. It supplies no present execution freshness.
+                proof.account.validate_fresh(proof.account.capture_completed_at)
+            else:
+                proof.account.validate_fresh(now)
             validate_record(record, inception=state["inception"], prior_account=state["_account_checkpoint"],
                 retired=state["_retired_baseline"], attributed={p["position_id"]: p for p in state["positions"]})
             ledger._append(db, "external_lifecycle", None, record)

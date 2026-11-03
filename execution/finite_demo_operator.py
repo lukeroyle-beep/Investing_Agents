@@ -84,6 +84,7 @@ class FiniteDemoOperator(AutonomousPilotOperator):
             "loss_stop": not state["loss_stopped"] and state["pilot_pnl"] > -Decimal(scope["loss_stop"]),
             "reconciled": not state["unresolved"],
             "submission_budget": len(attempts) < scope["max_submissions"],
+            "instrument_attempt": not mandate.instrument_attempted(candidate.instrument_id, state),
             "daily_submission": sum(row["london_day"] == day for row in
                 (*state["submissions"], *state.get("external_openings", ()))) < scope["max_per_day"],
         }
@@ -102,8 +103,9 @@ class FiniteDemoOperator(AutonomousPilotOperator):
         if type(assessment) is not BatchOrderAssessment:
             raise SubmissionBlockedError("typed_batch_assessment_required")
         assessment.validate(now)
-        if quote != assessment.evidence["quote"] or assessment.evidence.get("allow_unreported_buffer"):
-            raise SubmissionBlockedError("finite_exact_quote_and_reported_buffer_required")
+        if (quote != assessment.evidence["quote"]
+                or assessment.evidence.get("allow_unreported_buffer") != mandate.acknowledge_unreported_buffer):
+            raise SubmissionBlockedError("finite_exact_quote_and_authorized_buffer_mode_required")
         self.ledger.refresh_marks(account, now)
         instrument = self.coordinator.registry.get(intent.internal_instrument_id)
         mapping = self.coordinator.registry.broker_mapping(intent.internal_instrument_id,
@@ -152,7 +154,7 @@ class FiniteDemoOperator(AutonomousPilotOperator):
             raise SubmissionBlockedError("typed_batch_assessment_required")
         assessment.validate(now)
         if (assessment.evidence_hash != proof["assessment_hash"]
-                or assessment.evidence.get("allow_unreported_buffer")
+                or assessment.evidence.get("allow_unreported_buffer") != mandate.acknowledge_unreported_buffer
                 or account.source_hash != proof["account"]["source_hash"]
                 or quote != assessment.evidence["quote"] or quote.quote_id != decision.quote_id
                 or mandate.mandate_hash != proof["mandate_hash"]

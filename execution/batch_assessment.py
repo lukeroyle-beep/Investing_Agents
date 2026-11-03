@@ -23,7 +23,7 @@ from execution.pilot_assessment import (
     COST_PATH, ELIGIBILITY_PATH, MAX_AGE_SECONDS, PilotAssessmentError,
     _CONTRACT, _COST_TYPES, _ZERO_ONLY_COSTS, _datetime, _number, _receipt,
 )
-from execution.pilot_policy import preview_costs
+from execution.pilot_policy import preview_costs, zero_foreign_recurring_cost
 from risk.pretrade import QuoteEvidence
 
 D = Decimal
@@ -196,11 +196,12 @@ def _assess_batch_order(instrument_spec, instrument, cost_receipt, eligibility_r
             raise BatchAssessmentError("assessment_cost_component_unknown_or_duplicate")
         seen.add(kind)
         value = _number(row["value"], "cost")
-        if row["currency"] != "USD" or value < 0:
+        if (value < 0 or row["currency"] != "USD"
+                and not zero_foreign_recurring_cost(kind, row["currency"], value)):
             raise BatchAssessmentError("assessment_usd_nonnegative_cost_required")
         if kind in _ZERO_ONLY_COSTS and value != 0:
             raise BatchAssessmentError("assessment_markup_or_recurring_cost_unsupported")
-        normalized.append({"type": kind, "value": value, "currency": "USD"})
+        normalized.append({"type": kind, "value": value, "currency": row["currency"]})
     upfront = _exact_sum(row["value"] for row in normalized if row["type"] in {"transactionFee", "sdrt"})
     # Non-terminating amount/ask divisions round upward for the spread reserve.
     # Eligibility above compares exact rational units, without context rounding.
