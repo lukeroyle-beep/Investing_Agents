@@ -138,17 +138,10 @@ class BatchDemoAdapter(DirectDemoAdapter):
             instrument_spec=spec, now=self.clock())
         return super().bind(command, **kwargs)
 
-    def _wire_guard(self, command, intent):
-        self._scope(intent)
-        bound = self._bound(command)
-        authorization = self.bindings.read_authorization(command.command_id)
-        self._shared_guard()
-        quote, state, instrument, spec = _market(bound)
+    def _require_send_deadlines(self, command, intent, bound, authorization, state, instrument, spec, quote, now):
+        """Binding, authorization and freshness, with no network I/O."""
         validate_market_evidence(quote=quote, market_state=state, instrument=instrument,
-            instrument_spec=spec, now=self.clock(), require_handoff=True)
-        # Parsing is complete. These final checks do no I/O and resample the
-        # clock after all retained evidence work, at the HTTP request hook.
-        now = _aware_utc(self.clock(), "now")
+            instrument_spec=spec, now=now, require_handoff=True)
         self._validate_binding_values(command, intent, bound, now)
         if (authorization.get("authorization_hash", bound["authorization_hash"]) != bound["authorization_hash"]
                 or not instant(authorization["authorized_at"], "authorized_at") <= now
@@ -163,13 +156,24 @@ class BatchDemoAdapter(DirectDemoAdapter):
         state_start = exact_datetime_epoch_seconds(instant(state["state_request_started_at"], "state_request_started_at"))
         if not Decimal(0) <= current - state_start <= Decimal(15):
             raise DirectDemoError("batch_market_state_stale")
-        # One last rate read, still inside the five-second handoff. The clock
-        # is sampled again after the read so a slow read cannot outlive it.
-        fresh_ask = self._read_last_ask(int(bound["instrument_id"]))
+        return current, received
+
+    def _wire_guard(self, command, intent):
+        self._scope(intent)
+        bound = self._bound(command)
+        authorization = self.bindings.read_authorization(command.command_id)
+        self._shared_guard()
+        quote, state, instrument, spec = _market(bound)
+        # Retained evidence is parsed before the clock is sampled. The same
+        # deadlines run again after the rate read, which is the only I/O
+        # between those two samples.
         now = _aware_utc(self.clock(), "now")
-        current = exact_datetime_epoch_seconds(now)
-        if not Decimal(0) <= current - received <= Decimal(5):
-            raise DirectDemoError("batch_quote_handoff_exceeded")
+        self._require_send_deadlines(command, intent, bound, authorization, state, instrument, spec, quote, now)
+        fresh_ask = self._read_last_ask(int(bound["instrument_id"]))
+        self._shared_guard()
+        now = _aware_utc(self.clock(), "now")
+        current, received = self._require_send_deadlines(
+            command, intent, bound, authorization, state, instrument, spec, quote, now)
         if price_move_exceeds_band(quote.ask, fresh_ask, self.reapproval_price_band):
             raise DirectDemoError("price_moved_outside_reapproval_band")
         self._request_hooks[str(command.command_id)] = {

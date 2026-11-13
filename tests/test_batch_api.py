@@ -238,6 +238,19 @@ def test_last_rate_within_band_sends(tmp_path, ask):
     assert len(transport.posts) == 1
 
 
+def test_rate_read_cannot_outlive_quote_source_or_handoff_deadlines(tmp_path):
+    adapter, command, intent, transport, clock = workflow(tmp_path, source=NOW - timedelta(seconds=29))
+
+    def slow_same_ask(instrument_id):
+        clock[0] += timedelta(seconds=2)
+        return D("100")
+
+    adapter.rate_reader = slow_same_ask
+    result = adapter.submit_order(intent, command)
+    assert result.ambiguous and not result.accepted_for_processing
+    assert transport.posts == []
+
+
 @pytest.mark.parametrize("ask", [D("100.51"), D("99.49")])
 def test_last_rate_outside_band_does_not_post(tmp_path, ask):
     adapter, command, intent, transport, _ = workflow(tmp_path)
