@@ -81,6 +81,8 @@ EXACT_PORTFOLIO_COLUMNS = frozenset({
     "entry_fees_remaining",
     "exit_price",
 })
+# Optional on legacy rows. open_long_position always writes all three.
+CLOSE_ECONOMIC_FIELDS = ("fees_total", "entry_fees_remaining", "realised_pnl_abs")
 PERCENT_INCREMENT = Decimal("0.0000000001")
 PORTFOLIO_STATE_SCHEMA = get_file_schema("portfolio_state.csv")
 CASH_STATE_SCHEMA = get_file_schema("cash_state.csv")
@@ -287,9 +289,19 @@ def ensure_state_file() -> pd.DataFrame:
         schema=PORTFOLIO_STATE_SCHEMA_SPEC,
         preserve_decimal_text=True,
     )
-    return validate_portfolio_state(
+    # Schema coercion maps '', 'n/a', and other non-decimals to NA. Close
+    # must still see those tokens; NA is only for a column that was absent.
+    raw_close_money = {
+        column: df[column].copy()
+        for column in CLOSE_ECONOMIC_FIELDS
+        if column in df.columns
+    }
+    validated = validate_portfolio_state(
         df, keep_extra_columns=False, exact_decimal_columns=EXACT_PORTFOLIO_COLUMNS
     )
+    for column, raw in raw_close_money.items():
+        validated[column] = raw.reindex(validated.index)
+    return validated
 
 
 def ensure_processed_fills_file() -> pd.DataFrame:
@@ -860,20 +872,54 @@ def open_long_position(
     return state_df, cash_balance, ledger_df
 
 
-def _stored_money(value: object, fallback: Decimal) -> Decimal:
+def _money_token_missing(value: object) -> bool:
+    """True when the cell was never stored.
+
+    An empty string is present and is not a decimal. None and pandas NA are
+    the optional-column absence legacy rows are allowed to have.
+    """
+    if isinstance(value, str):
+        return False
     if value is None:
-        return fallback
-    if isinstance(value, str) and value.strip() == "":
-        return fallback
+        return True
     try:
-        if not isinstance(value, (str, Decimal, int, float)) and pd.isna(value):
-            return fallback
+        return bool(pd.isna(value))
     except TypeError:
+        return False
+
+
+def _position_opened_by_fill_agent(position_id: object, ledger_df: pd.DataFrame) -> bool:
+    """True when open_long_position created this portfolio row.
+
+    open_long_position is the only writer of cash-ledger event_type
+    ``position_open``, and it stores realised_pnl_abs, fees_total, and
+    entry_fees_remaining in that same call. A row with no matching
+    position_open event was not opened by Fill Agent, so those optional
+    columns may be absent. A later partial close does not write this marker.
+    """
+    position = "" if position_id is None else str(position_id).strip()
+    if position == "" or ledger_df.empty:
+        return False
+    if "event_type" not in ledger_df.columns or "position_id" not in ledger_df.columns:
+        return False
+    opened = ledger_df["event_type"].astype(str).str.strip().eq("position_open")
+    same = ledger_df["position_id"].astype(str).str.strip().eq(position)
+    return bool((opened & same).any())
+
+
+def _stored_money(value: object, fallback: Decimal, *, field: str, required: bool) -> Decimal:
+    if _money_token_missing(value):
+        if required:
+            raise ValueError(
+                f"{field} is missing on a position opened by Fill Agent; refusing to close"
+            )
         return fallback
     try:
-        return _money(value)
-    except ValueError:
-        return fallback
+        return _money(value, field)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field} is present but not an exact decimal ({value!r}); refusing to close"
+        ) from exc
 
 
 def close_long_position(
@@ -912,11 +958,25 @@ def close_long_position(
         )
 
     entry_price = _money(position["entry_price"], "entry_price")
-    total_fees_before = _stored_money(position.get("fees_total", None), Decimal(0))
-    entry_fees_remaining = _stored_money(
-        position.get("entry_fees_remaining", None), total_fees_before
+    opened_by_fill_agent = _position_opened_by_fill_agent(position.get("position_id"), ledger_df)
+    total_fees_before = _stored_money(
+        position.get("fees_total", None),
+        Decimal(0),
+        field="fees_total",
+        required=opened_by_fill_agent,
     )
-    realised_before = _stored_money(position.get("realised_pnl_abs", None), Decimal(0))
+    entry_fees_remaining = _stored_money(
+        position.get("entry_fees_remaining", None),
+        total_fees_before,
+        field="entry_fees_remaining",
+        required=opened_by_fill_agent,
+    )
+    realised_before = _stored_money(
+        position.get("realised_pnl_abs", None),
+        Decimal(0),
+        field="realised_pnl_abs",
+        required=opened_by_fill_agent,
+    )
 
     gross_proceeds = canonical_decimal(multiply(quantity, fill_price))
     net_proceeds = exact_sum((gross_proceeds, fees.copy_negate()))
