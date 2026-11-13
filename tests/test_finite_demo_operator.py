@@ -118,7 +118,7 @@ def workflow(tmp_path, *, max_submissions=3, max_per_day=3, acknowledge_unreport
     client = DirectDemoClient(credentials=KEYS, receipt_dir=tmp_path / "wire", transport=transport, clock=lambda: clock[0])
     bindings = DirectBindingStore(tmp_path / "direct.sqlite3")
     adapter = BatchDemoAdapter(expected_account_id="123", client=client, bindings=bindings,
-        clock=lambda: clock[0], pre_send_guard=lambda: None)
+        clock=lambda: clock[0], pre_send_guard=lambda: None, rate_reader=lambda instrument_id: D("100"))
     return SimpleNamespace(**locals())
 
 
@@ -189,6 +189,23 @@ def finish(p, previous=(), *, amount="10", status=3):
     result = f.op.reconcile_finite(command.command_id, adapter=f.adapter,
                                    pre_account=p.account, post_account=post, now=f.clock[0])
     return result, fills, post
+
+
+def test_last_rate_on_the_band_sends_once(tmp_path):
+    f = workflow(tmp_path)
+    f.adapter.rate_reader = lambda instrument_id: D("100.50")
+    prepared = prepare(f)
+    assert submit(prepared).state == CommandState.ACKNOWLEDGED
+    assert len(f.transport.posts) == 1
+
+
+def test_last_rate_outside_band_does_not_post(tmp_path):
+    f = workflow(tmp_path)
+    f.adapter.rate_reader = lambda instrument_id: D("100.51")
+    prepared = prepare(f)
+    result = submit(prepared)
+    assert f.transport.posts == []
+    assert result.state == CommandState.UNKNOWN
 
 
 def test_two_distinct_instruments_one_mandate_no_per_order_confirmation(tmp_path):

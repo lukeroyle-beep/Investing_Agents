@@ -22,6 +22,7 @@ from brokers.etoro.connector import economic_decimal, instant, number, positive_
 from brokers.etoro.schemas import EtoroSchemaError, _pnl_timestamp, exact_datetime_epoch_seconds
 from execution.domain import Environment, _aware_utc, canonical_json, payload_hash
 from execution.instruments import Instrument
+from execution.pilot_policy import price_move_exceeds_band
 from risk.pretrade import QuoteEvidence
 
 _STATUS_NAMES = {1: "Received", 2: "Placed", 3: "Filled", 4: "Rejected",
@@ -49,12 +50,68 @@ def _market(bound):
         raise DirectDemoError("batch_bound_market_evidence_required") from None
 
 
+def ask_from_rate_body(body, instrument_id):
+    """Parse one realtime ask from a getRates body without using float."""
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode("utf-8")
+    if not isinstance(body, str):
+        raise DirectDemoError("final_rate_read_incomplete")
+
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate rate field")
+            result[key] = value
+        return result
+
+    def reject_non_finite(_value):
+        raise ValueError("nonfinite rate")
+
+    try:
+        payload = json.loads(body, parse_float=Decimal, parse_constant=reject_non_finite,
+                             object_pairs_hook=pairs)
+        results = payload.get("results")
+        if not isinstance(results, list) or len(results) != 1 or not isinstance(results[0], dict):
+            raise ValueError("incomplete")
+        rate = results[0]
+        if type(rate.get("instrumentId")) is not int or rate["instrumentId"] != int(instrument_id):
+            raise ValueError("identity")
+        if rate.get("quoteType") != "realtime":
+            raise ValueError("quote type")
+        ask, bid = number(rate.get("ask"), "ask"), number(rate.get("bid"), "bid")
+        if min(ask, bid) <= 0 or ask < bid:
+            raise ValueError("quote")
+    except DirectDemoError:
+        raise
+    except (ValueError, TypeError, KeyError, ArithmeticError, UnicodeError):
+        raise DirectDemoError("final_rate_read_incomplete") from None
+    return ask
+
+
 class BatchDemoAdapter(DirectDemoAdapter):
     """A new finite path; the original single-order adapter is unchanged."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, rate_reader=None, reapproval_price_band=None, **kwargs):
         super().__init__(**kwargs)
         self._request_hooks = {}
+        self.rate_reader = rate_reader
+        if reapproval_price_band is None:
+            from risk.pretrade import RiskLimits
+            from shared.paths import RISK_CONFIG_PATH
+            reapproval_price_band = RiskLimits.load(RISK_CONFIG_PATH).reapproval_price_band
+        self.reapproval_price_band = number(reapproval_price_band, "reapproval_price_band")
+
+    def _read_last_ask(self, instrument_id):
+        if not callable(self.rate_reader):
+            raise DirectDemoError("final_handoff_rate_read_required")
+        try:
+            ask = self.rate_reader(instrument_id)
+        except DirectDemoError:
+            raise
+        except Exception:
+            raise DirectDemoError("final_handoff_rate_read_failed") from None
+        return number(ask, "ask")
 
     def submit_order(self, intent, command):
         # Recording after transport avoids an fsync between the final clock
@@ -106,6 +163,15 @@ class BatchDemoAdapter(DirectDemoAdapter):
         state_start = exact_datetime_epoch_seconds(instant(state["state_request_started_at"], "state_request_started_at"))
         if not Decimal(0) <= current - state_start <= Decimal(15):
             raise DirectDemoError("batch_market_state_stale")
+        # One last rate read, still inside the five-second handoff. The clock
+        # is sampled again after the read so a slow read cannot outlive it.
+        fresh_ask = self._read_last_ask(int(bound["instrument_id"]))
+        now = _aware_utc(self.clock(), "now")
+        current = exact_datetime_epoch_seconds(now)
+        if not Decimal(0) <= current - received <= Decimal(5):
+            raise DirectDemoError("batch_quote_handoff_exceeded")
+        if price_move_exceeds_band(quote.ask, fresh_ask, self.reapproval_price_band):
+            raise DirectDemoError("price_moved_outside_reapproval_band")
         self._request_hooks[str(command.command_id)] = {
             "request_hook_at": now.isoformat(),
             "quote_source_at": state["quote_source_at"],

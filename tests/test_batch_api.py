@@ -20,7 +20,8 @@ def workflow(tmp_path, *, received=NOW, source=NOW):
     old, command, intent, transport, clock = legacy_workflow(tmp_path)
     bindings = DirectBindingStore(tmp_path / "batch-bindings.sqlite3")
     adapter = BatchDemoAdapter(expected_account_id="123", client=old.client,
-        bindings=bindings, clock=lambda: clock[0], pre_send_guard=lambda: None)
+        bindings=bindings, clock=lambda: clock[0], pre_send_guard=lambda: None,
+        rate_reader=lambda instrument_id: D("100"))
     instrument = Instrument.create(internal_instrument_id=intent.internal_instrument_id,
         canonical_symbol="SYNBOND", exchange="NASDAQ", asset_type="etf", currency="USD", sector="fixed_income")
     spec = {"instrument_id": 1001, "symbol": "SYNBOND", "exchange": "NASDAQ", "asset_type": "etf",
@@ -226,6 +227,24 @@ def test_durable_hook_survives_unknown_transport_and_is_not_replaced_on_retry(tm
         adapter.submit_order(intent, command)
     assert request_hooks(adapter, command) == [hook]
     assert len(transport.posts) == 1
+
+
+@pytest.mark.parametrize("ask", [D("100"), D("100.50"), D("99.50")])
+def test_last_rate_within_band_sends(tmp_path, ask):
+    adapter, command, intent, transport, _ = workflow(tmp_path)
+    adapter.rate_reader = lambda instrument_id: ask
+    assert adapter.reapproval_price_band == D("0.005")
+    assert adapter.submit_order(intent, command).accepted_for_processing
+    assert len(transport.posts) == 1
+
+
+@pytest.mark.parametrize("ask", [D("100.51"), D("99.49")])
+def test_last_rate_outside_band_does_not_post(tmp_path, ask):
+    adapter, command, intent, transport, _ = workflow(tmp_path)
+    adapter.rate_reader = lambda instrument_id: ask
+    result = adapter.submit_order(intent, command)
+    assert result.ambiguous and not result.accepted_for_processing
+    assert transport.posts == []
 
 
 def test_failed_handoff_has_no_successful_hook_or_send(tmp_path):

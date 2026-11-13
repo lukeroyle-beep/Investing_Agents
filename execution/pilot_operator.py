@@ -8,7 +8,9 @@ from uuid import uuid4
 from brokers.etoro.connector import instant, number, response_object, _sanitized
 from execution.connector_operator import ConnectorDemoOperator
 from execution.domain import CommandState, Environment, RiskCheck, RiskDecision, RiskOutcome, canonical_json, payload_hash
-from execution.pilot_policy import POLICY, PilotPolicyError, evaluate_pilot, preview_costs
+from execution.pilot_policy import (
+    POLICY, PilotPolicyError, evaluate_pilot, preview_costs, price_move_exceeds_band,
+)
 from execution.usage_reserve import UsageAdmission, MAX_USAGE_AGE_SECONDS
 from risk.approval import ApprovalAuthority, ApprovalError
 from risk.submission_gate import SubmissionBlockedError
@@ -114,6 +116,9 @@ class DemoPilotOperator(ConnectorDemoOperator):
                 or not 0 <= (now-instant(market_state.get("received_at"), "market_time")).total_seconds() <= 15
                 or not 0 <= (now-quote.observed_at).total_seconds() <= 30):
             raise SubmissionBlockedError("fresh_open_tradable_realtime_market_required")
+        preview_ask = number(bound["confirmation"]["quote"]["ask"], "preview_ask")
+        if price_move_exceeds_band(preview_ask, quote.ask, self.limits.reapproval_price_band):
+            raise SubmissionBlockedError("price_moved_outside_reapproval_band")
         # Bound all freshness clocks; the adapter rechecks after its identity read.
         next_day = (now.astimezone(ZoneInfo("Europe/London"))+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
         deadline = min(next_day, intent.expires_at, approval.expires_at, instant(bound["expires_at"], "preview_expiry"),

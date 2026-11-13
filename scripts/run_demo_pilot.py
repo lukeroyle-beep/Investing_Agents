@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agents.fill_agent.pilot_ledger import PilotLedger
-from brokers.etoro.connector import ConnectorBindingStore, EtoroConnectorAdapter, response_object, instant
+from brokers.etoro.connector import ConnectorBindingStore, EtoroConnectorAdapter, response_object, instant, number
 from brokers.etoro.pilot_account import build_pilot_account
 from brokers.etoro.schemas import _pnl_timestamp, exact_datetime_epoch_seconds
 from execution.coordinator import ExecutionConfig, ExecutionCoordinator
@@ -29,7 +29,7 @@ from execution.domain import Environment, OrderIntent, canonical_json, payload_h
 from execution.instruments import Instrument, InstrumentRegistry, BrokerInstrumentMapping
 from execution.operator import OperatorEvidenceStore
 from execution.pilot_operator import DemoPilotOperator
-from execution.pilot_policy import PilotCatalog, PilotClassification
+from execution.pilot_policy import PilotCatalog, PilotClassification, price_move_exceeds_band
 from execution.store import ExecutionStore
 from execution.usage_reserve import UsageAdmission, UsageWindow, PilotUsageAdmission
 from risk.kill_switch import KillSwitch, RESET_ACKNOWLEDGEMENT
@@ -320,6 +320,9 @@ def run(args):
     usage = pilot_usage(host, args)
     pre = host.account(expected)
     quote, state = host.market(instrument)
+    preview_ask = number(binding["confirmation"]["quote"]["ask"], "preview_ask")
+    if price_move_exceeds_band(preview_ask, quote.ask, workflow.limits.reapproval_price_band):
+        raise ValueError("price_moved_outside_reapproval_band")
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
     if not switch.state_path.exists() and not switch.audit_path.exists():
         switch.initialize_engaged(operator_id="Luke", reason="new explicit Demo pilot", now=NOW())

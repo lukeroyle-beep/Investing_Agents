@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from agents.fill_agent.composite_import import _journal as _validated_original_journal
 from brokers.etoro.autonomous_api import DirectBindingStore, DirectDemoClient, build_order_payload
-from brokers.etoro.batch_api import BatchDemoAdapter
+from brokers.etoro.batch_api import BatchDemoAdapter, ask_from_rate_body
 from brokers.etoro.batch_reads import DirectBatchReads
 from brokers.etoro.connector import instant, response_object
 from brokers.etoro.pilot_account import build_pilot_account
@@ -165,8 +165,13 @@ def locked_cycle(args, root, ledger):
         if usage.validate_for_submission(now()):
             raise ValueError("finite_usage_evidence_expired_before_dispatch")
 
+    def read_last_ask(instrument_id):
+        receipt = reader.read("/api/v2/market-data/rates", query={"instrumentIds": str(int(instrument_id))})
+        return ask_from_rate_body(receipt["result"]["body"], instrument_id)
+
     adapter = BatchDemoAdapter(expected_account_id=expected, client=client,
-        bindings=DirectBindingStore(root / "direct-api.sqlite3"), clock=now, pre_send_guard=final_guard)
+        bindings=DirectBindingStore(root / "direct-api.sqlite3"), clock=now, pre_send_guard=final_guard,
+        rate_reader=read_last_ask)
     adapter.verify_demo_identity()
     metadata = reader.read("/api/v2/market-data/instruments", query={
         "instrumentsIds": ",".join(str(row["instrument_id"]) for row in classifications)})
