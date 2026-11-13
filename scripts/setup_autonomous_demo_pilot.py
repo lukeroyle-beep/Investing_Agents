@@ -20,7 +20,7 @@ from brokers.etoro.autonomous_api import DirectDemoClient, DirectDemoError, veri
 from brokers.etoro.client import EtoroCredentials
 from execution.domain import canonical_json, payload_hash
 from execution.pilot_mandate import StandingPilotMandate, PilotMandateError
-from risk.kill_switch import KillSwitch, RESET_ACKNOWLEDGEMENT
+from risk.kill_switch import KillSwitch, KillSwitchError, operator_reset_phrase
 
 CREDENTIAL_FILENAME = "demo-api-credentials.json"
 MANDATE_FILENAME = "standing-mandate.json"
@@ -155,6 +155,11 @@ def setup(*, runtime, authorization_reference, activate=False, resume_activation
         raise PilotSetupError("explicit_activation_resume_selection_required")
     credentials_path, mandate_path = root / CREDENTIAL_FILENAME, root / MANDATE_FILENAME
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
+    # Read before any credential or switch write. A missing or wrong phrase
+    # must not be replaceable by the imported acknowledgement constant.
+    pending_phrase = None
+    if activate and not switch.state_path.exists() and not switch.audit_path.exists():
+        pending_phrase = operator_reset_phrase()
     # Share the existing operator's lock. Setup never races an active runner.
     descriptor = os.open(root / "operator.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "a+") as lock:
@@ -204,13 +209,16 @@ def setup(*, runtime, authorization_reference, activate=False, resume_activation
             # A wholly absent switch may be initialized for this exact human
             # mandate. Existing engaged/corrupt state always requires review.
             if prior_switch is None:
+                if pending_phrase is None:
+                    raise KillSwitchError("operator reset acknowledgement was not supplied")
+                moment = clock()
                 initialized = switch.initialize_engaged(operator_id="standing-mandate:" + mandate.mandate_id,
-                    reason="standing mandate activation: " + mandate.mandate_hash, now=clock())
+                    reason="standing mandate activation: " + mandate.mandate_hash, now=moment)
                 if switch.status() != initialized:
                     raise PilotSetupError("kill_switch_changed_during_setup_requires_review")
                 switch.reset(operator_id="standing-mandate:" + mandate.mandate_id,
                     reason="explicit standing mandate activation: " + mandate.mandate_hash,
-                    acknowledgement=RESET_ACKNOWLEDGEMENT, now=clock())
+                    acknowledgement=pending_phrase, now=moment)
             mandate.validate(ledger=ledger, kill_switch=switch, now=clock())
         return {"status": "SETUP_SAVED_WRITES_ENABLED" if activate else "SETUP_SAVED_ACTIVATION_PENDING",
                 "mandate_hash": mandate.mandate_hash, "worker_started": False, "order_submitted": False}

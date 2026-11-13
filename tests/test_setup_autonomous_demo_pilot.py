@@ -45,10 +45,16 @@ def f(tmp_path):
 
 
 def run(f, **options):
+    typed = options.pop("typed_acknowledgement", RESET_ACKNOWLEDGEMENT + "\n")
     values = dict(runtime=f.root, authorization_reference="Synthetic human standing mandate",
         credential_reader=f.reader, client_factory=f.client, clock=lambda:NOW)
     values.update(options)
-    return setup.setup(**values)
+    previous = setup.sys.stdin
+    setup.sys.stdin = io.StringIO("" if typed is None else typed)
+    try:
+        return setup.setup(**values)
+    finally:
+        setup.sys.stdin = previous
 
 
 def switch(f):
@@ -75,10 +81,43 @@ def test_explicit_activation_binds_new_shared_switch_to_verified_mandate(f):
     result = run(f, activate=True)
     assert result["status"] == "SETUP_SAVED_WRITES_ENABLED"
     assert switch(f).status().writes_allowed
+    assert switch(f).status().integrity_valid
     mandate = StandingPilotMandate.load(f.root / setup.MANDATE_FILENAME, expected_account_id="123")
     assert mandate.mandate_hash in switch(f).status().reason
+    events = [json.loads(line) for line in switch(f).audit_path.read_text().splitlines() if line.strip()]
+    assert [event["action"] for event in events] == ["initialize_engaged", "reset"]
+    assert events[1]["previous_hash"] == events[0]["event_hash"]
+    assert events[1]["operator_id"] == "standing-mandate:" + mandate.mandate_id
     assert not f.ledger.snapshot()["submissions"]
     assert f.calls == {"prompt":1, "profile":1}
+
+
+@pytest.mark.parametrize("typed", ["", "\n", None])
+def test_activation_without_typed_phrase_does_not_open_the_switch(f, typed):
+    with pytest.raises(setup.KillSwitchError, match="not supplied"):
+        run(f, activate=True, typed_acknowledgement=typed)
+    assert not switch(f).state_path.exists()
+    assert not switch(f).audit_path.exists()
+    assert not switch(f).status().writes_allowed
+    assert not (f.root / setup.CREDENTIAL_FILENAME).exists()
+    assert f.calls == {"prompt":0, "profile":0}
+
+
+def test_activation_with_wrong_phrase_does_not_open_the_switch(f):
+    with pytest.raises(setup.KillSwitchError, match="did not match"):
+        run(f, activate=True, typed_acknowledgement="I DO NOT AUTHORIZE THIS\n")
+    assert not switch(f).state_path.exists()
+    assert not switch(f).status().writes_allowed
+    assert not (f.root / setup.CREDENTIAL_FILENAME).exists()
+
+
+def test_activation_cannot_be_satisfied_by_passing_the_imported_constant(f):
+    with pytest.raises(TypeError):
+        setup.setup(runtime=f.root, authorization_reference="Synthetic human standing mandate",
+            activate=True, credential_reader=f.reader, client_factory=f.client, clock=lambda: NOW,
+            acknowledgement=RESET_ACKNOWLEDGEMENT)
+    assert not switch(f).state_path.exists()
+    assert f.calls == {"prompt":0, "profile":0}
 
 
 def test_explicit_resume_uses_existing_secret_file_without_prompt_or_overwrite(f):
