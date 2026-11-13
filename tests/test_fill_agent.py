@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 
@@ -417,3 +418,29 @@ def test_legacy_decimal_spellings_still_close_and_match_audit(
     assert position["status"] == "closed"
     assert position["entry_fees_remaining"] == "0"
     assert cash == audit == "100000"
+
+
+def test_corrupt_sqlite_sidecar_raises_instead_of_hiding_evidence(isolated_workspace) -> None:
+    sidecar = isolated_workspace / "data" / "trading_system.sqlite3"
+    sidecar.write_bytes(b"this is not a sqlite database")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        fill_agent._find_interrupted_fill_evidence(pd.Series(_manual_fill("FILL_CORRUPT_SIDECAR")))
+
+
+def test_sidecar_reader_returns_rows_and_empty_when_table_is_absent(isolated_workspace) -> None:
+    sidecar = isolated_workspace / "data" / "trading_system.sqlite3"
+    assert fill_agent._read_sqlite_table_if_available("processed_fills").empty
+
+    connection = sqlite3.connect(sidecar)
+    connection.execute("CREATE TABLE processed_fills (fill_id TEXT)")
+    connection.execute("INSERT INTO processed_fills (fill_id) VALUES ('FILL_SEEN')")
+    connection.commit()
+    connection.close()
+
+    seen = fill_agent._read_sqlite_table_if_available("processed_fills")
+    assert seen["fill_id"].astype(str).tolist() == ["FILL_SEEN"]
+    assert fill_agent._read_sqlite_table_if_available("event_log").empty
+    with sqlite3.connect(sidecar) as check:
+        names = [row[0] for row in check.execute("SELECT name FROM sqlite_master")]
+    assert "event_log" not in names
