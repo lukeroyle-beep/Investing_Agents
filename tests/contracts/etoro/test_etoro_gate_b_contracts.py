@@ -409,6 +409,7 @@ def test_coordinator_stages_once_but_legacy_fill_cannot_invent_account_economics
             FakeTransport([_response(_accepted(), 202), _response(_lookup(3), 200)])
         ),
         registry=registry,
+        store=store,
     )
     command = coordinator.submit_pending_command(
         command=command, intent=intent, adapter=adapter, now=NOW

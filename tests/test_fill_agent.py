@@ -444,3 +444,149 @@ def test_sidecar_reader_returns_rows_and_empty_when_table_is_absent(isolated_wor
     with sqlite3.connect(sidecar) as check:
         names = [row[0] for row in check.execute("SELECT name FROM sqlite_master")]
     assert "event_log" not in names
+
+
+def _legacy_open_row() -> dict[str, str]:
+    return {
+        "position_id": "POS_LEGACY",
+        "ticker": "AAPL",
+        "side": "long",
+        "status": "open",
+        "quantity": "1",
+        "entry_price": "10",
+        "entry_date": "2026-03-28T09:00:00+00:00",
+        "current_price": "10",
+        "market_value": "10",
+        "pnl_abs": "0",
+        "pnl_pct": "0",
+        "exit_flag": "False",
+        "exit_reason": "",
+        "last_updated": "2026-03-28T09:00:00+00:00",
+        "run_id": "RUN_OLD",
+        "closed_at": "",
+        "exit_price": "",
+    }
+
+
+def _sell_one_at_twelve(fill_id: str = "SELL_FEE") -> dict[str, str]:
+    return {
+        "fill_id": fill_id,
+        "ticker": "AAPL",
+        "side": "long",
+        "action": "sell",
+        "quantity": "1",
+        "fill_price": "12",
+        "fees": "0",
+        "fill_timestamp": "2026-03-28T12:00:00+00:00",
+    }
+
+
+def _seed_open_position(data_dir: Path, row: dict[str, str]) -> None:
+    pd.DataFrame([row]).to_csv(data_dir / "portfolio_state.csv", index=False)
+    pd.DataFrame(
+        [{"as_of": "2026-03-28T09:00:00+00:00", "cash_balance": "100000"}]
+    ).to_csv(data_dir / "cash_state.csv", index=False)
+    pd.DataFrame([_sell_one_at_twelve()]).to_csv(data_dir / "manual_fills.csv", index=False)
+
+
+@pytest.mark.parametrize("field", ["fees_total", "entry_fees_remaining", "realised_pnl_abs"])
+@pytest.mark.parametrize("token", ["", "n/a"])
+def test_close_rejects_present_non_decimal_fee_or_pnl(
+    isolated_workspace, monkeypatch, field: str, token: str
+) -> None:
+    data_dir = isolated_workspace / "data"
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_BAD_MONEY")
+    row = _legacy_open_row()
+    row["fees_total"] = "0"
+    row["entry_fees_remaining"] = "0"
+    row["realised_pnl_abs"] = "0"
+    row[field] = token
+    _seed_open_position(data_dir, row)
+    before = (data_dir / "portfolio_state.csv").read_bytes()
+
+    with pytest.raises(ValueError, match=f"{field} is present but not an exact decimal"):
+        fill_agent.run_fill_agent()
+
+    assert (data_dir / "portfolio_state.csv").read_bytes() == before
+
+
+def test_legacy_position_without_fee_columns_still_closes(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_MISSING_LEGACY")
+    # No position_open cash-ledger row: this position was not opened by Fill Agent.
+    _seed_open_position(data_dir, _legacy_open_row())
+
+    fill_agent.run_fill_agent()
+
+    closed = _text_rows(data_dir / "portfolio_state.csv")[0]
+    assert closed["status"] == "closed"
+    assert closed["realised_pnl_abs"] == "2"
+    assert closed["fees_total"] == "0"
+    assert closed["entry_fees_remaining"] == "0"
+
+
+def test_close_uses_exact_stored_fee_in_realised_pnl(isolated_workspace, monkeypatch) -> None:
+    data_dir = isolated_workspace / "data"
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_EXACT_FEE")
+    row = _legacy_open_row()
+    row["fees_total"] = "9"
+    row["entry_fees_remaining"] = "1.25"
+    row["realised_pnl_abs"] = "0"
+    _seed_open_position(data_dir, row)
+
+    fill_agent.run_fill_agent()
+
+    closed = _text_rows(data_dir / "portfolio_state.csv")[0]
+    assert closed["status"] == "closed"
+    assert closed["realised_pnl_abs"] == "0.75"
+    assert closed["fees_total"] == "9"
+    assert closed["entry_fees_remaining"] == "0"
+
+
+def _drop_csv_columns(path: Path, dropped: set[str]) -> None:
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = [name for name in (reader.fieldnames or []) if name not in dropped]
+        rows = [{name: row[name] for name in fieldnames} for row in reader]
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_fill_agent_position_missing_fee_fields_cannot_close(
+    isolated_workspace, monkeypatch
+) -> None:
+    data_dir = isolated_workspace / "data"
+    monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_DROP_FEES")
+    opened = {
+        "fill_id": "OPEN_DROP",
+        "ticker": "AAPL",
+        "side": "long",
+        "action": "buy",
+        "quantity": "1",
+        "fill_price": "10",
+        "fees": "1",
+        "fill_timestamp": "2026-03-28T10:00:00+00:00",
+    }
+    pd.DataFrame([opened]).to_csv(data_dir / "manual_fills.csv", index=False)
+    fill_agent.run_fill_agent()
+    assert any(
+        row["event_type"] == "position_open" and row["position_id"]
+        for row in _text_rows(data_dir / "cash_ledger.csv")
+    )
+
+    _drop_csv_columns(
+        data_dir / "portfolio_state.csv",
+        {"fees_total", "entry_fees_remaining", "realised_pnl_abs"},
+    )
+    pd.DataFrame([opened, _sell_one_at_twelve("SELL_DROP")]).to_csv(
+        data_dir / "manual_fills.csv",
+        index=False,
+    )
+    before = (data_dir / "portfolio_state.csv").read_bytes()
+
+    with pytest.raises(ValueError, match="missing on a position opened by Fill Agent"):
+        fill_agent.run_fill_agent()
+
+    assert (data_dir / "portfolio_state.csv").read_bytes() == before

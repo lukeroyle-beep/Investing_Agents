@@ -32,7 +32,7 @@ from execution.pilot_operator import DemoPilotOperator
 from execution.pilot_policy import PilotCatalog, PilotClassification
 from execution.store import ExecutionStore
 from execution.usage_reserve import UsageAdmission, UsageWindow, PilotUsageAdmission
-from risk.kill_switch import KillSwitch, RESET_ACKNOWLEDGEMENT
+from risk.kill_switch import KillSwitch, operator_reset_phrase
 from risk.pretrade import RiskLimits, QuoteEvidence
 from risk.submission_gate import GovernanceWritePolicy
 
@@ -192,6 +192,17 @@ class Host:
             tuple(x.window_id for x in windows), str(self.directory), payload_hash(receipt))
 
 
+def arm_new_pilot_switch(switch, *, operator_id, reason, now):
+    """Open a brand-new Demo switch only after the operator types the phrase.
+
+    ``reason`` is recorded in the hash-chained audit with ``operator_id``.
+    The acknowledgement is read from stdin and cannot be supplied as an argument.
+    """
+    phrase = operator_reset_phrase()
+    switch.initialize_engaged(operator_id=operator_id, reason="new explicit Demo pilot", now=now)
+    return switch.reset(operator_id=operator_id, reason=reason, acknowledgement=phrase, now=now)
+
+
 def pilot_usage(host, args):
     """Bind an explicitly selected pilot floor to fresh, complete quota evidence."""
     original = host.usage()
@@ -322,9 +333,8 @@ def run(args):
     quote, state = host.market(instrument)
     switch = KillSwitch(state_path=root / "kill-switch.json", audit_path=root / "kill-switch.jsonl")
     if not switch.state_path.exists() and not switch.audit_path.exists():
-        switch.initialize_engaged(operator_id="Luke", reason="new explicit Demo pilot", now=NOW())
-        switch.reset(operator_id="Luke", reason="exact order approved: "+binding["confirmation_hash"],
-                     acknowledgement=RESET_ACKNOWLEDGEMENT, now=NOW())
+        arm_new_pilot_switch(switch, operator_id="Luke",
+            reason="exact order approved: "+binding["confirmation_hash"], now=NOW())
     submitted = workflow.submit(command.command_id, adapter=adapter, account=pre, quote=quote, market_state=state,
         kill_switch=switch.status(), governance=GovernanceWritePolicy("demo_manual",True,True,True), now=NOW(), usage=usage)
     emit({"event":"submitted_once", "command_id":str(command.command_id), "state":str(submitted.state)})

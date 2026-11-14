@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,28 @@ RESET_ACKNOWLEDGEMENT = "I UNDERSTAND DEMO WRITES MAY RESUME"
 
 class KillSwitchError(RuntimeError):
     """Kill-switch state cannot be safely changed."""
+
+
+def operator_reset_phrase() -> str:
+    """Read the reset acknowledgement from the operator's stdin.
+
+    There is no phrase argument. A script cannot satisfy the reset by passing
+    ``RESET_ACKNOWLEDGEMENT``; the text has to be typed on stdin.
+    """
+    sys.stderr.write(
+        "Type the Demo kill-switch reset acknowledgement to resume writes:\n"
+    )
+    sys.stderr.flush()
+    try:
+        line = sys.stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        raise KillSwitchError("operator reset acknowledgement was not supplied") from None
+    if line == "" or line.strip() == "":
+        raise KillSwitchError("operator reset acknowledgement was not supplied")
+    phrase = line.rstrip("\r\n")
+    if phrase != RESET_ACKNOWLEDGEMENT:
+        raise KillSwitchError("interactive reset acknowledgement did not match")
+    return phrase
 
 
 @dataclass(frozen=True, slots=True)

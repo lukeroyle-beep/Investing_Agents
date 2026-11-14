@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,8 @@ from brokers.etoro.account_evidence import EtoroPretradeAccountEvidence, capture
 from brokers.etoro.execution_client import EtoroDemoExecutionClient
 from brokers.etoro.read_model import write_reconciliation_read_model
 from brokers.etoro.schemas import EtoroPortfolioSnapshot, EtoroSchemaError
-from execution.domain import BrokerCommand, Environment, OrderIntent, payload_hash
+from execution.domain import BrokerCommand, CommandState, Environment, OrderIntent, payload_hash
+from execution.store import ExecutionStore
 from execution.instruments import (
     BrokerInstrumentMapping,
     Instrument,
@@ -244,16 +246,72 @@ class EtoroDemoExecutionAdapter(EtoroDemoReadOnlyAdapter):
         client: EtoroReadOnlyClient,
         execution_client: EtoroDemoExecutionClient,
         registry: InstrumentRegistry,
+        store: ExecutionStore | None = None,
     ) -> None:
         super().__init__(client=client, registry=registry)
         if execution_client.environment != Environment.DEMO or execution_client.read_only:
             raise ValueError("Gate B requires a Demo execution client")
         self.execution_client = execution_client
+        self.store = store
 
     @staticmethod
     def _validate_command(command: BrokerCommand) -> None:
         if command.environment != Environment.DEMO or command.broker != "etoro":
             raise BrokerWriteDisabled("command is not bound to eToro Demo")
+
+    def _require_persisted_approval_and_send_claim(self, command: BrokerCommand) -> None:
+        """Refuse the POST unless authorize_submission and claim_submission already ran.
+
+        The in-memory command must already carry the single durable send claim
+        the direct adapter requires. The store is re-read so a proposed command,
+        or a claim painted only onto the object, cannot reach the transport.
+        """
+        attempt = command.attempt_history[0] if len(command.attempt_history) == 1 else None
+        claimed = (
+            command.state == CommandState.SUBMISSION_PENDING
+            and attempt is not None
+            and attempt.outcome == "send_started"
+            and attempt.request_id == command.logical_request_id
+            and attempt.attempt_number == 1
+        )
+        if not claimed or not isinstance(self.store, ExecutionStore):
+            raise BrokerWriteDisabled("persisted_consumed_approval_and_send_claim_required")
+        persisted = self.store.get_command(command.command_id)
+        approval = self.store.get_command_approval(command.command_id)
+        if (
+            persisted is None
+            or approval is None
+            or persisted.state != CommandState.SUBMISSION_PENDING
+            or persisted.logical_request_id != command.logical_request_id
+            or persisted.attempt_history != command.attempt_history
+            or approval.intent_hash != command.intent_hash
+            or approval.environment != command.environment
+        ):
+            raise BrokerWriteDisabled("persisted_consumed_approval_and_send_claim_required")
+        with closing(self.store._connect()) as connection:
+            authority = connection.execute(
+                """
+                SELECT a.consumed_at, c.submission_claimed_at, c.approval_id, c.authorized_at
+                FROM command_authorizations c
+                LEFT JOIN approvals a ON a.approval_id = c.approval_id
+                WHERE c.command_id = ?
+                """,
+                (str(command.command_id),),
+            ).fetchone()
+            owner = connection.execute(
+                "SELECT command_id FROM broker_commands WHERE logical_request_id = ?",
+                (str(command.logical_request_id),),
+            ).fetchone()
+        if (
+            authority is None
+            or owner is None
+            or owner["command_id"] != str(command.command_id)
+            or not authority["consumed_at"]
+            or not authority["submission_claimed_at"]
+            or not authority["authorized_at"]
+            or str(authority["approval_id"]) != str(approval.approval_id)
+        ):
+            raise BrokerWriteDisabled("persisted_consumed_approval_and_send_claim_required")
 
     def submit_order(
         self, intent: OrderIntent, command: BrokerCommand
@@ -278,6 +336,7 @@ class EtoroDemoExecutionAdapter(EtoroDemoReadOnlyAdapter):
         }
         if payload_hash(payload) != command.payload_hash:
             raise BrokerWriteDisabled("command payload hash does not match submission payload")
+        self._require_persisted_approval_and_send_claim(command)
         accepted = self.execution_client.submit_open_order(
             payload,
             request_id=command.logical_request_id,
