@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, UTC
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from pathlib import Path
 
 import pandas as pd
@@ -233,20 +234,64 @@ def risk_priority_value(risk_decision):
     return 2
 
 
-def calculate_position_risk_fields(row, risk_budget_pct):
-    atr_pct = float(row["atr_pct"])
+def _float_noise(spelling):
+    token = spelling.strip().lower()
+    if token[:1] in {"+", "-"}:
+        token = token[1:]
+    coefficient = token.split("e", 1)[0]
+    if "." not in coefficient:
+        return False
+    fraction = coefficient.split(".", 1)[1]
+    return len(fraction) >= 10 and ("000000" in fraction or "999999" in fraction)
 
-    stop_loss_pct = round(atr_pct * 2, 2)
+
+def _finite_decimal(value, name):
+    """Finite decimal. Floats use their shortest spelling; binary residue is rejected."""
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{name} must be a finite decimal")
+    if isinstance(value, Decimal):
+        parsed = value
+        shown = format(parsed, "f")
+    elif isinstance(value, int):
+        parsed = Decimal(value)
+        shown = None
+    elif isinstance(value, float):
+        shown = str(value)
+        try:
+            parsed = Decimal(shown)
+        except InvalidOperation as exc:
+            raise ValueError(f"{name} must be a finite decimal") from exc
+    else:
+        shown = str(value).strip()
+        try:
+            parsed = Decimal(shown)
+        except InvalidOperation as exc:
+            raise ValueError(f"{name} must be a finite decimal") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{name} must be a finite decimal")
+    if shown is not None and _float_noise(shown):
+        raise ValueError(f"{name} contains binary float noise")
+    return parsed
+
+
+def calculate_position_risk_fields(row, risk_budget_pct):
+    atr_pct = _finite_decimal(row["atr_pct"], "atr_pct")
+    # ROUND_HALF_EVEN is the mode already used for fill-agent percents.
+    # Python's round() is the same mode, but it was applied to a binary float.
+    stop_loss_pct = (atr_pct * Decimal("2")).quantize(Decimal("0.01"), rounding=ROUND_HALF_EVEN)
 
     if stop_loss_pct <= 0:
-        raw_position_size_pct = 0.0
+        raw_position_size_pct = Decimal("0.00")
     else:
-        raw_position_size_pct = round((risk_budget_pct / stop_loss_pct) * 100, 2)
+        budget = _finite_decimal(risk_budget_pct, "risk_budget_pct")
+        raw_position_size_pct = (budget / stop_loss_pct * Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_EVEN
+        )
 
     return {
         "risk_budget_pct": risk_budget_pct,
-        "stop_loss_pct": stop_loss_pct,
-        "raw_position_size_pct": raw_position_size_pct,
+        "stop_loss_pct": float(stop_loss_pct),
+        "raw_position_size_pct": float(raw_position_size_pct),
     }
 
 
@@ -282,8 +327,15 @@ def apply_sector_limits(candidates_df, max_positions, max_positions_per_sector):
 
 def build_portfolio_orders(selected_df, governance, run_id):
     output_df = selected_df.copy()
-    default_take_profit_pct = float(governance.get("default_take_profit_pct", 12.0))
-    notional_portfolio_value = float(governance.get("notional_portfolio_value", 10000.0))
+    default_take_profit_pct = _finite_decimal(
+        governance.get("default_take_profit_pct", 12.0), "default_take_profit_pct"
+    )
+    notional_portfolio_value = _finite_decimal(
+        governance.get("notional_portfolio_value", 10000.0), "notional_portfolio_value"
+    )
+    hundred = Decimal("100")
+    price_quantum = Decimal("0.0001")
+    cent = Decimal("0.01")
 
     output_df["run_id"] = run_id
     output_df["internal_instrument_id"] = (
@@ -298,18 +350,42 @@ def build_portfolio_orders(selected_df, governance, run_id):
     output_df["execution_environment"] = "demo"
     output_df["order_type"] = "market"
     output_df["sizing_method"] = "fixed_notional"
-    output_df["entry_price"] = output_df["latest_close"].astype(float).round(4)
-    output_df["position_size_pct"] = output_df["scaled_target_allocation_pct"].astype(float).round(2)
-    output_df["capital_allocated"] = (
-        notional_portfolio_value * (output_df["position_size_pct"] / 100.0)
-    ).round(2)
+
+    entries = []
+    position_sizes = []
+    capitals = []
+    stop_prices = []
+    take_prices = []
+    for _, row in output_df.iterrows():
+        entry = _finite_decimal(row["latest_close"], "latest_close").quantize(
+            price_quantum, rounding=ROUND_HALF_EVEN
+        )
+        position_size = _finite_decimal(
+            row["scaled_target_allocation_pct"], "scaled_target_allocation_pct"
+        ).quantize(cent, rounding=ROUND_HALF_EVEN)
+        capital = (notional_portfolio_value * position_size / hundred).quantize(
+            cent, rounding=ROUND_HALF_EVEN
+        )
+        stop_pct = _finite_decimal(row["stop_loss_pct"], "stop_loss_pct")
+        # Subtract the stop distance from entry before adding the take-profit distance.
+        stop_price = (entry - (entry * stop_pct / hundred)).quantize(
+            price_quantum, rounding=ROUND_HALF_EVEN
+        )
+        take_price = (entry + (entry * default_take_profit_pct / hundred)).quantize(
+            price_quantum, rounding=ROUND_HALF_EVEN
+        )
+        entries.append(float(entry))
+        position_sizes.append(float(position_size))
+        capitals.append(float(capital))
+        stop_prices.append(float(stop_price))
+        take_prices.append(float(take_price))
+
+    output_df["entry_price"] = pd.Series(entries, index=output_df.index, dtype="float64")
+    output_df["position_size_pct"] = pd.Series(position_sizes, index=output_df.index, dtype="float64")
+    output_df["capital_allocated"] = pd.Series(capitals, index=output_df.index, dtype="float64")
     output_df["sizing_value"] = output_df["capital_allocated"]
-    output_df["stop_loss_price"] = (
-        output_df["entry_price"] * (1.0 - (output_df["stop_loss_pct"].astype(float) / 100.0))
-    ).round(4)
-    output_df["take_profit_price"] = (
-        output_df["entry_price"] * (1.0 + (default_take_profit_pct / 100.0))
-    ).round(4)
+    output_df["stop_loss_price"] = pd.Series(stop_prices, index=output_df.index, dtype="float64")
+    output_df["take_profit_price"] = pd.Series(take_prices, index=output_df.index, dtype="float64")
     output_df["recommendation_status"] = "ready_for_review"
     output_df["recommendation_notes"] = output_df["risk_notes"].fillna("").astype(str)
 
