@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from fractions import Fraction
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -488,13 +490,30 @@ def _read_existing_csv(path: str, columns: list[str]) -> pd.DataFrame:
 
 
 def _read_sqlite_table_if_available(table_name: str) -> pd.DataFrame:
-    """Read SQLite sidecar evidence only when the sidecar already exists."""
-    if not os.path.exists(sqlite_sidecar.SQLITE_DB_PATH):
+    """Read SQLite sidecar evidence only when that table is already there.
+
+    A missing sidecar, or a readable database with no such table, is empty
+    evidence. A sidecar that exists but cannot be read must raise so the
+    interrupted-fill guard cannot treat corruption as "no evidence".
+    """
+    path = sqlite_sidecar.SQLITE_DB_PATH
+    if not os.path.exists(path):
         return pd.DataFrame()
+
+    identifier = sqlite_sidecar._validated_identifier(table_name)
+    connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
     try:
-        return sqlite_sidecar.fetch_table_df(table_name)
-    except Exception:
-        return pd.DataFrame()
+        found = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (identifier,),
+        ).fetchone()
+        if found is None:
+            return pd.DataFrame()
+        cursor = connection.execute(f"SELECT * FROM {identifier}")
+        columns = [column[0] for column in cursor.description]
+        return pd.DataFrame(cursor.fetchall(), columns=columns)
+    finally:
+        connection.close()
 
 
 def _event_row_mentions_fill(row: pd.Series, fill_id: str) -> bool:
