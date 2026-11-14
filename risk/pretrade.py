@@ -55,6 +55,7 @@ class RiskLimits:
     approval_max_age_seconds: int
     regular_hours_only: bool
     allowed_asset_types: tuple[str, ...]
+    reapproval_price_band: Decimal
 
     @classmethod
     def load(cls, path: Path | str) -> "RiskLimits":
@@ -81,6 +82,7 @@ class RiskLimits:
             "approval_max_age_seconds",
             "regular_hours_only",
             "allowed_asset_types",
+            "reapproval_price_band",
         }
         if missing := sorted(required - set(raw)):
             raise RiskConfigurationError(f"risk configuration missing keys: {missing}")
@@ -110,6 +112,7 @@ class RiskLimits:
                 allowed_asset_types=tuple(
                     str(value).strip().lower() for value in raw["allowed_asset_types"]
                 ),
+                reapproval_price_band=Decimal(str(raw["reapproval_price_band"])),
             )
         except (TypeError, ValueError, ArithmeticError) as exc:
             raise RiskConfigurationError("risk configuration values are invalid") from exc
@@ -129,6 +132,10 @@ class RiskLimits:
             raise RiskConfigurationError("initial Demo scope requires leverage exactly 1")
         if limits.environment != Environment.DEMO:
             raise RiskConfigurationError("only Demo risk configuration is authorized")
+        if (not limits.reapproval_price_band.is_finite()
+                or limits.reapproval_price_band <= 0
+                or limits.reapproval_price_band > 1):
+            raise RiskConfigurationError("reapproval price band must be within (0, 1]")
         if min(
             limits.quote_max_age_seconds,
             limits.account_max_age_seconds,

@@ -217,6 +217,11 @@ class FiniteDemoOperator(AutonomousPilotOperator):
             "account_snapshot_id": account.source_hash, "risk_decision_id": str(decision.decision_id),
             "quote_id": quote.quote_id})
         mandate.validate(ledger=self.ledger, kill_switch=kill_switch, now=now, reviewed_commit=self.reviewed_commit)
+        if not callable(getattr(adapter, "rate_reader", None)):
+            raise SubmissionBlockedError("final_handoff_rate_read_required")
+        # The adapter reads the ask once more inside the five-second handoff,
+        # immediately before the POST, and applies this same band.
+        adapter.reapproval_price_band = self.limits.reapproval_price_band
         self.ledger.reserve_under_mandate(mandate, candidate, account, now)
         self.journal.record_dispatch(command_id)
         pending = self.coordinator.store.authorize_submission(command, intent, decision, approval,

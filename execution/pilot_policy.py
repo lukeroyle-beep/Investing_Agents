@@ -107,6 +107,21 @@ class PilotCatalog:
         return tuple(rows)
 
 
+def price_move_exceeds_band(preview_ask, new_ask, band):
+    """True when the refreshed ask leaves the approved ask by more than ``band``.
+
+    The move is ``abs(new - preview) / preview``. Equality with the band still
+    matches the approval. The comparison multiplies instead of dividing so the
+    Decimal values are not rounded.
+    """
+    preview = number(preview_ask, "preview_ask")
+    fresh = number(new_ask, "new_ask")
+    limit = number(band, "reapproval_price_band")
+    if preview <= 0 or fresh <= 0 or not limit.is_finite() or limit < 0:
+        raise PilotPolicyError("reapproval_price_band_unusable")
+    return (fresh - preview).copy_abs() > multiply(preview, limit)
+
+
 def preview_costs(preview):
     """Cash charge and conservative opening-cost reserve remain distinct.
 

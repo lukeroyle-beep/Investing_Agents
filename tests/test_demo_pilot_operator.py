@@ -180,6 +180,27 @@ def submit(f, *, account=None, quote=None, remaining=D(50)):
             ("weekly",), "synthetic-tool-evidence", "a" * 64))
 
 
+@pytest.mark.parametrize("bid,ask", [(D("100"), D("100")), (D("100"), D("100.50")), (D("99.50"), D("99.50"))])
+def test_refreshed_ask_within_band_sends(tmp_path, bid, ask):
+    f = workflow(tmp_path)
+    approve(f)
+    assert f.op.limits.reapproval_price_band == D("0.005")
+    quote = replace(f.quote, bid=bid, ask=ask, observed_at=f.host.now)
+    assert submit(f, quote=quote).state == CommandState.ACKNOWLEDGED
+    assert f.host.calls["place"] == 1
+
+
+@pytest.mark.parametrize("bid,ask", [(D("100"), D("100.51")), (D("99.49"), D("99.49"))])
+def test_refreshed_ask_outside_band_does_not_send(tmp_path, bid, ask):
+    f = workflow(tmp_path)
+    approve(f)
+    quote = replace(f.quote, bid=bid, ask=ask, observed_at=f.host.now)
+    with pytest.raises(SubmissionBlockedError, match="price_moved_outside_reapproval_band"):
+        submit(f, quote=quote)
+    assert f.host.calls["place"] == 0
+    assert not f.op.ledger.snapshot()["submissions"]
+
+
 def test_full_pilot_cycle_reconciles_actual_fees_cash_and_position_ids(tmp_path):
     f = workflow(tmp_path)
     assert f.command.state == CommandState.AWAITING_APPROVAL

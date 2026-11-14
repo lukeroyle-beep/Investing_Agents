@@ -331,6 +331,11 @@ def test_real_worker_completes_two_synthetic_instruments_and_journals(tmp_path, 
                     assert isinstance(payload["amount"], Decimal)
                     return args["cost_receipt"]
                 return args["eligibility_receipt"]
+            if path == "/api/v2/market-data/rates":
+                instrument_id = int(kwargs["query"]["instrumentIds"])
+                body = ("{\"results\":[{\"instrumentId\":%d,\"quoteType\":\"realtime\","
+                        "\"bid\":\"100\",\"ask\":\"100\"}]}" % instrument_id)
+                return {"result": {"body": body}}
             if path == "/api/v1/me":
                 if len(posts) > self.post_count:
                     # Account fixture represents a bounded six-second capture.
