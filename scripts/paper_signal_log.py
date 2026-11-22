@@ -1,6 +1,7 @@
 """Print the paper signal log and the horizon summary.
 
-Read only. This command fetches daily closes and does not place orders.
+Read only. This command fetches daily closes, including the Yahoo FX closes
+used for GBP scoring, and does not place orders.
 
     uv run --frozen python scripts/paper_signal_log.py
     uv run --frozen python scripts/paper_signal_log.py --markdown runtime/logs/paper_signal_report.md

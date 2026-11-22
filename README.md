@@ -300,10 +300,18 @@ subtract nothing.
 
 Horizons are 1, 3, 6, and 12 months. A horizon that has not reached a known
 close is pending and is not estimated. The benchmark is Yahoo `VWRL.L`, the
-London listing of the Vanguard FTSE All-World UCITS ETF. Returns stay in each
-listing's own quote. GBP or pence against a US dollar ticker is labelled
-`local_unhedged` and is not converted. The hit rules are printed at the bottom
-of the command output and next to the code in `shared/paper_signal_log.py`.
+London listing of the Vanguard FTSE All-World UCITS ETF. The score is in GBP.
+USD listings use the Yahoo close `GBPUSD=X` (USD per GBP). EUR listings use
+`EURGBP=X` (GBP per EUR). JPY listings use `GBPJPY=X` (JPY per GBP). `GBp`
+and `GBX` are pence and are divided by 100. A pound price against a pence
+feed is left unscored. The signal FX close is the last close strictly before
+the signal's UTC date. The outcome FX close is the first close on or after
+the horizon and before the evaluation date. A missing FX close is
+`fx_missing` and is not replaced with the local-currency return.
+`ticker_return_gbp` and `benchmark_return_gbp` are the GBP returns used for
+the excess. `ticker_return_local` and `benchmark_return_local` keep each
+listing's own quote. The hit rules are printed at the bottom of the command
+output and next to the code in `shared/paper_signal_log.py`.
 
 ## Testing and control coverage
 
