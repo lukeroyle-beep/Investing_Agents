@@ -1,0 +1,26 @@
+schema_version: "1"
+
+# Read-only paper signal log. Nothing in this configuration places, cancels,
+# or amends an order. Prices are read from the existing Yahoo Finance path.
+
+# London listing of the Vanguard FTSE All-World UCITS ETF (distributing).
+# Yahoo's symbol is VWRL.L. The listing is often quoted in pence (GBp/GBX).
+# Percentage returns are computed inside each listing's own quote and are not
+# converted into a common currency. See the report definitions.
+benchmark_ticker: "VWRL.L"
+benchmark_name: "Vanguard FTSE All-World UCITS ETF (LSE, Yahoo VWRL.L)"
+
+# Assumed round-trip spread plus fee, in basis points. This is not a measured
+# broker charge. 10 means 0.10% (10 / 10000). Buy and sell rules subtract it
+# from the side the signal chooses. Hold rules subtract nothing, because they
+# do not trade. The summary prints the value it used.
+cost_bps: "10"
+
+horizons_months: [1, 3, 6, 12]
+
+# After a horizon date, this many calendar days may pass without a new close
+# before a missing bar is reported as outcome_missing rather than pending.
+pending_session_lag_days: 7
+
+# Relative paths are resolved from the repository root, not the shell cwd.
+log_path: "runtime/logs/signal_log.jsonl"

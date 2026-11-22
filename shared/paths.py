@@ -164,6 +164,8 @@ PORTFOLIO_MONITOR_PATH = data_path("portfolio_monitor.csv")
 POSITION_ALERTS_PATH = data_path("position_alerts.csv")
 EXIT_ADVICE_PATH = data_path("exit_advice.csv")
 JOURNAL_PATH = data_path("journal.csv")
+PAPER_SIGNAL_LOG_PATH = runtime_path("logs", "signal_log.jsonl")
+PAPER_SIGNAL_CONFIG_PATH = config_path("paper_signal_log.yaml")
 
 # Lowercase aliases for direct file imports
 universe_snapshot_path = UNIVERSE_SNAPSHOT_PATH
