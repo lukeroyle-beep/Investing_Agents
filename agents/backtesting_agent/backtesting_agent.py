@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from math import isfinite, isnan
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 import pandas as pd
 
 from shared.market_data import (
+    FileMarketDataCache,
     MarketDataProvider,
     MarketDataResult,
+    YFinanceMarketDataProvider,
     append_market_data_health_artifact,
     fetch_price_history,
     market_data_is_actionable,
@@ -32,6 +36,7 @@ BACKTEST_EQUITY_CURVE_FILE = data_path("backtest_equity_curve.csv")
 BACKTEST_DRAWDOWN_FILE = data_path("backtest_drawdown.csv")
 BACKTEST_BENCHMARK_FILE = data_path("backtest_benchmark_comparison.csv")
 BACKTEST_REJECTED_FILE = data_path("backtest_rejected_trades.csv")
+BACKTEST_COVERAGE_FILE = data_path("backtest_universe_coverage.csv")
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -183,6 +188,8 @@ def download_price_history(
     end_date: str,
     market_data_provider: MarketDataProvider | None = None,
     health_results: list[MarketDataResult] | None = None,
+    *,
+    allow_stale: bool = False,
 ) -> pd.DataFrame:
     # auto_adjust rewrites earlier OHLC for dividends that had not yet been
     # paid. Yahoo's Close with auto_adjust off is already split-adjusted, and
@@ -199,12 +206,24 @@ def download_price_history(
     if health_results is not None:
         health_results.append(market_data)
 
-    if not market_data_is_actionable(market_data):
+    has_rows = market_data.data is not None and not market_data.data.empty
+    completed_listing = (
+        allow_stale
+        and has_rows
+        and not market_data.metadata.error
+    )
+    if not market_data_is_actionable(market_data) and not completed_listing:
         print(
             f"Skipping {ticker}: data is not actionable: "
             f"{market_data.metadata.reason or market_data.metadata.error}"
         )
         return pd.DataFrame()
+    if completed_listing and not market_data_is_actionable(market_data):
+        print(
+            f"{ticker}: history does not reach the latest session "
+            f"({market_data.metadata.reason or 'stale'}). "
+            "Kept for point-in-time coverage instead of being dropped."
+        )
 
     return _normalise_history_df(market_data.data, ticker)
 
@@ -485,17 +504,46 @@ def _as_utc(value: object) -> pd.Timestamp:
     return stamp.tz_convert("UTC")
 
 
-def configured_point_in_time_universe(config: dict[str, Any]) -> PointInTimeUniverse | None:
-    """Load an explicit membership table. Never synthesize one from current tickers."""
-    raw = config.get("point_in_time_universe_file")
-    if raw is None or not str(raw).strip():
+def point_in_time_universe_path(config: dict[str, Any]) -> Path | None:
+    """Explicit file only. INVESTING_POINT_IN_TIME_UNIVERSE overrides the config key."""
+    override = os.environ.get("INVESTING_POINT_IN_TIME_UNIVERSE", "").strip()
+    raw = override or str(config.get("point_in_time_universe_file") or "").strip()
+    if not raw:
         return None
-    path = Path(str(raw))
+    path = Path(raw)
     if not path.is_absolute():
         path = project_path(*path.parts)
+    return path
+
+
+def configured_point_in_time_universe(config: dict[str, Any]) -> PointInTimeUniverse | None:
+    """Load an explicit membership table. Never synthesize one from current tickers."""
+    path = point_in_time_universe_path(config)
+    if path is None:
+        return None
     if not path.is_file():
         raise StrategyValidationError(f"point-in-time universe file is missing: {path}")
     return PointInTimeUniverse.from_frame(pd.read_csv(path))
+
+
+def enforce_point_in_time_bounds(path: Path, start: str, end: str) -> None:
+    """Reject a window outside a sibling .bounds.yaml, when that file exists."""
+    sidecar = path.with_suffix(".bounds.yaml")
+    if not sidecar.is_file():
+        return
+    payload = load_yaml(sidecar)
+    valid_from = str(payload.get("valid_from") or "").strip()
+    valid_through = str(payload.get("valid_through") or "").strip()
+    if not valid_from or not valid_through:
+        raise StrategyValidationError(f"point-in-time bounds file is incomplete: {sidecar}")
+    if _as_utc(start).date() < _as_utc(valid_from).date():
+        raise StrategyValidationError(
+            f"backtest start {start} is before point-in-time membership is known ({valid_from})"
+        )
+    if _as_utc(end).date() > _as_utc(valid_through).date():
+        raise StrategyValidationError(
+            f"backtest end {end} is after point-in-time membership was retrieved ({valid_through})"
+        )
 
 
 def point_in_time_symbols(universe: PointInTimeUniverse, start: str, end: str = "") -> list[str]:
@@ -516,6 +564,195 @@ def point_in_time_symbols(universe: PointInTimeUniverse, start: str, end: str = 
     if not symbols:
         raise StrategyValidationError("point-in-time universe has no members in the backtest window")
     return symbols
+
+
+@dataclass(frozen=True)
+class PointInTimePriceCoverage:
+    """Every overlapping member, including those with no usable prices."""
+
+    rows: tuple[dict[str, str], ...]
+
+    def symbols(self, status: str) -> tuple[str, ...]:
+        return tuple(row["symbol"] for row in self.rows if row["status"] == status)
+
+    @property
+    def member_count(self) -> int:
+        return len(self.rows)
+
+    @property
+    def covered(self) -> tuple[str, ...]:
+        return self.symbols("covered")
+
+    @property
+    def missing(self) -> tuple[str, ...]:
+        return self.symbols("missing")
+
+    @property
+    def partial(self) -> tuple[str, ...]:
+        return self.symbols("partial")
+
+    @property
+    def unusable(self) -> tuple[str, ...]:
+        return self.symbols("unusable")
+
+    @property
+    def uncovered(self) -> tuple[str, ...]:
+        return tuple(row["symbol"] for row in self.rows if row["status"] != "covered")
+
+    @property
+    def covered_count(self) -> int:
+        return len(self.covered)
+
+    @property
+    def ratio(self) -> float:
+        if not self.rows:
+            return 0.0
+        return self.covered_count / self.member_count
+
+
+def universe_bias_label(
+    universe: PointInTimeUniverse | None,
+    coverage: PointInTimePriceCoverage | None = None,
+) -> str:
+    if universe is None:
+        return "survivor_biased_static"
+    if coverage is not None and coverage.uncovered:
+        return "point_in_time_incomplete_prices"
+    return "point_in_time"
+
+
+def format_price_coverage(coverage: PointInTimePriceCoverage, minimum: float) -> str:
+    lines = [
+        "Point-in-time price coverage: "
+        f"{coverage.covered_count}/{coverage.member_count} ({coverage.ratio:.2%}). "
+        f"Minimum {minimum:.2%}.",
+    ]
+    for status, label in (
+        ("missing", "No price history"),
+        ("partial", "Partial price history"),
+        ("unusable", "Unusable price history"),
+    ):
+        names = coverage.symbols(status)
+        if names:
+            lines.append(f"{label} ({len(names)}): {', '.join(names)}")
+    if coverage.uncovered:
+        lines.append(
+            "Uncovered members stay in this report. They are not treated as "
+            "never having belonged to the universe. Their returns are absent, "
+            "so survivorship bias remains."
+        )
+    return "\n".join(lines)
+
+
+def min_point_in_time_price_coverage(config: dict[str, Any]) -> float:
+    override = os.environ.get("INVESTING_MIN_POINT_IN_TIME_PRICE_COVERAGE", "").strip()
+    raw = override if override else config.get("min_point_in_time_price_coverage", 0.95)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise StrategyValidationError("min_point_in_time_price_coverage must be a number") from exc
+    if not 0.0 < value <= 1.0:
+        raise StrategyValidationError("min_point_in_time_price_coverage must be in (0, 1]")
+    return value
+
+
+def _membership_prices_unusable(
+    history: pd.DataFrame, required: set[pd.Timestamp],
+) -> str | None:
+    frame = history.copy()
+    frame["_session"] = pd.to_datetime(frame["Date"]).map(_naive_session)
+    selected = frame.loc[frame["_session"].isin(required), ["Open", "High", "Low", "Close"]]
+    numeric = selected.apply(pd.to_numeric, errors="coerce")
+    if (
+        numeric.isna().any().any()
+        or not all(isfinite(float(value)) and float(value) > 0 for value in numeric.to_numpy().flat)
+    ):
+        return "non-finite or non-positive prices during membership"
+    inconsistent = (
+        (numeric["High"] < numeric[["Open", "Close", "Low"]].max(axis=1))
+        | (numeric["Low"] > numeric[["Open", "Close", "High"]].min(axis=1))
+    )
+    if inconsistent.any():
+        return "inconsistent price ranges during membership"
+    return None
+
+
+def assess_point_in_time_price_coverage(
+    universe: PointInTimeUniverse,
+    histories: dict[str, pd.DataFrame],
+    sessions: pd.DatetimeIndex,
+    start: str,
+    end: str,
+    unusable: dict[str, str] | None = None,
+) -> PointInTimePriceCoverage:
+    """Score every point-in-time member. Missing prices stay visible."""
+    required = point_in_time_symbols(universe, start, end)
+    if len(sessions):
+        ordered, symbols = _membership_calendar(universe, sessions)
+    else:
+        ordered, symbols = [], {}
+    problems = unusable or {}
+    rows: list[dict[str, str]] = []
+    for ticker in required:
+        if ticker in problems:
+            rows.append({"symbol": ticker, "status": "unusable", "detail": problems[ticker]})
+            continue
+        history = histories.get(ticker)
+        if history is None or getattr(history, "empty", True):
+            rows.append({"symbol": ticker, "status": "missing", "detail": "no price history"})
+            continue
+        required_sessions = {session for session in ordered if ticker in symbols.get(session, ())}
+        if not required_sessions:
+            rows.append({
+                "symbol": ticker,
+                "status": "partial",
+                "detail": "no price-calendar sessions during membership",
+            })
+            continue
+        observed = {_naive_session(value) for value in pd.to_datetime(history["Date"])}
+        missing_sessions = required_sessions - observed
+        if missing_sessions:
+            sample = ", ".join(str(item.date()) for item in sorted(missing_sessions)[:5])
+            rows.append({
+                "symbol": ticker,
+                "status": "partial",
+                "detail": f"missing {len(missing_sessions)} membership sessions ({sample})",
+            })
+            continue
+        reason = _membership_prices_unusable(history, required_sessions)
+        if reason:
+            rows.append({"symbol": ticker, "status": "unusable", "detail": reason})
+            continue
+        rows.append({"symbol": ticker, "status": "covered", "detail": ""})
+    return PointInTimePriceCoverage(tuple(rows))
+
+
+def require_point_in_time_price_coverage(
+    coverage: PointInTimePriceCoverage, minimum: float,
+) -> None:
+    if coverage.member_count == 0:
+        raise StrategyValidationError("point-in-time universe has no members in the backtest window")
+    if coverage.ratio + 1e-12 < minimum:
+        raise StrategyValidationError(
+            "point-in-time price coverage "
+            f"{coverage.covered_count}/{coverage.member_count} ({coverage.ratio:.2%}) "
+            f"is below {minimum:.2%}.\n{format_price_coverage(coverage, minimum)}"
+        )
+
+
+def universe_priced_members(
+    universe: PointInTimeUniverse, covered: set[str],
+) -> PointInTimeUniverse:
+    symbols = universe.frame["symbol"].astype(str).str.strip()
+    kept = universe.frame.loc[symbols.isin(covered)].copy()
+    if kept.empty:
+        raise StrategyValidationError("point-in-time universe has no members with usable prices")
+    return PointInTimeUniverse.from_frame(kept)
+
+
+def _clip_history_to_sessions(history: pd.DataFrame, sessions: set[pd.Timestamp]) -> pd.DataFrame:
+    dates = pd.to_datetime(history["Date"]).map(_naive_session)
+    return history.loc[dates.isin(sessions)].reset_index(drop=True)
 
 
 def _membership_calendar(
@@ -909,6 +1146,8 @@ def record_immutable_experiment(
     histories: dict[str, pd.DataFrame],
     benchmark_history: dict[str, pd.DataFrame],
     universe: PointInTimeUniverse | None = None,
+    price_coverage: PointInTimePriceCoverage | None = None,
+    recorded_universe_checksum: str | None = None,
 ) -> str | None:
     """Save reproducible research evidence; this grants no execution authority."""
     if config.get("experiment_registry_enabled") is not True:
@@ -929,6 +1168,7 @@ def record_immutable_experiment(
         # A current ticker list is not rewritten into fake listing intervals.
         universe_identity = {
             "kind": "static_current_universe_unqualified",
+            "bias": "survivor_biased",
             "tickers": sorted(histories),
         }
         if "research_universe_checksum" in config:
@@ -937,9 +1177,13 @@ def record_immutable_experiment(
         point_in_time_universe_passed = False
         survivorship_checks_passed = False
     else:
-        universe_checksum = universe.checksum
+        universe_checksum = recorded_universe_checksum or universe.checksum
         point_in_time_universe_passed = True
-        survivorship_checks_passed = True
+        # A membership table does not remove survivorship bias while some
+        # members have no usable prices. Those names are reported, not ignored.
+        survivorship_checks_passed = not (
+            price_coverage is not None and price_coverage.uncovered
+        )
     costs = configured_costs(config)
     parameters = {
         key: config.get(key)
@@ -963,6 +1207,12 @@ def record_immutable_experiment(
         parameters["research_universe_version"] = config["research_universe_version"]
         parameters["research_universe_checksum"] = config["research_universe_checksum"]
         parameters["selected_tickers"] = config["tickers"]
+    if price_coverage is not None:
+        parameters["point_in_time_member_count"] = price_coverage.member_count
+        parameters["point_in_time_price_coverage_pct"] = round(price_coverage.ratio * 100, 4)
+        parameters["point_in_time_members_missing_prices"] = ",".join(price_coverage.missing)
+        parameters["point_in_time_members_partial_prices"] = ",".join(price_coverage.partial)
+        parameters["point_in_time_members_unusable_prices"] = ",".join(price_coverage.unusable)
     spec = ExperimentSpec.create(
         strategy_version=str(config.get("strategy_version", "unversioned")),
         data_snapshot_id=data_snapshot_id,
@@ -1039,13 +1289,18 @@ def run() -> None:
     benchmark_tickers = [str(t).strip().upper() for t in config.get("benchmark_tickers", ["SPY", "QQQ"]) if str(t).strip()]
     start_date = str(config.get("start_date", "2022-01-01")).strip()
     end_date = str(config.get("end_date", "")).strip()
+    universe_path = point_in_time_universe_path(config)
     universe = configured_point_in_time_universe(config)
+    membership_end = end_date or datetime.now(timezone.utc).date().isoformat()
+    price_coverage: PointInTimePriceCoverage | None = None
     if universe is not None:
         if "research_universe_checksum" in config:
             raise StrategyValidationError(
                 "selected research universe is current membership, not a point-in-time universe"
             )
-        tickers = point_in_time_symbols(universe, start_date, end_date)
+        if universe_path is not None:
+            enforce_point_in_time_bounds(universe_path, start_date, membership_end)
+        tickers = point_in_time_symbols(universe, start_date, membership_end)
         config = {**config, "tickers": tickers}
 
     initial_capital = safe_float(config.get("initial_capital"), 100000.0)
@@ -1058,44 +1313,125 @@ def run() -> None:
     strategy_history: dict[str, pd.DataFrame] = {}
     health_results: list[MarketDataResult] = []
     tickers_tested = 0
+    benchmark_history: dict[str, pd.DataFrame] = {}
+    price_provider = (
+        YFinanceMarketDataProvider(
+            retries=2,
+            cache=FileMarketDataCache(),
+            sleep_func=time.sleep,
+            backoff_func=lambda retry_count: float(2 ** (retry_count - 1)),
+        )
+        if universe is not None else None
+    )
+    unusable_prices: dict[str, str] = {}
+
+    def _download(ticker: str, *, allow_stale: bool) -> pd.DataFrame:
+        try:
+            return download_price_history(
+                ticker,
+                start_date,
+                end_date,
+                market_data_provider=price_provider,
+                health_results=health_results,
+                allow_stale=allow_stale,
+            )
+        except StrategyValidationError as exc:
+            if universe is None:
+                raise
+            unusable_prices[ticker] = str(exc)
+            print(f"{ticker}: unusable price history: {exc}")
+            return pd.DataFrame()
+
+    if universe is not None:
+        for benchmark_ticker in benchmark_tickers:
+            print(f"Benchmarking against {benchmark_ticker}...")
+            history_df = _download(benchmark_ticker, allow_stale=False)
+            if history_df.empty:
+                raise StrategyValidationError(f"missing benchmark history: {benchmark_ticker}")
+            benchmark_history[benchmark_ticker] = history_df
+        if "SPY" not in benchmark_history:
+            raise StrategyValidationError(
+                "SPY history is required to date the point-in-time session calendar"
+            )
+        calendar = history_sessions({"SPY": benchmark_history["SPY"]}, start_date, end_date)
+        calendar_sessions = {_naive_session(session) for session in calendar}
 
     for ticker in tickers:
         print(f"Backtesting {ticker}...")
-        history_df = download_price_history(
-            ticker,
-            start_date,
-            end_date,
-            health_results=health_results,
-        )
+        history_df = _download(ticker, allow_stale=universe is not None)
 
         if history_df.empty:
-            if universe is not None:
-                raise StrategyValidationError(f"{ticker}: point-in-time member has no price history")
-            print(f"Skipping {ticker}: insufficient history.")
+            if universe is None:
+                print(f"Skipping {ticker}: insufficient history.")
             continue
         if universe is None and len(history_df) < min_history_days:
             print(f"Skipping {ticker}: insufficient history.")
             continue
 
         strategy_history[ticker] = history_df.copy()
-
         tickers_tested += 1
+
+    replay_universe = universe
+    if universe is not None:
+        price_coverage = assess_point_in_time_price_coverage(
+            universe, strategy_history, calendar, start_date, membership_end, unusable_prices,
+        )
+        minimum_coverage = min_point_in_time_price_coverage(config)
+        coverage_text = format_price_coverage(price_coverage, minimum_coverage)
+        print(coverage_text)
+        write_csv_with_run_id(
+            pd.DataFrame(list(price_coverage.rows)),
+            BACKTEST_COVERAGE_FILE,
+            run_id=run_id,
+        )
+        require_point_in_time_price_coverage(price_coverage, minimum_coverage)
+        if price_coverage.uncovered:
+            print(
+                "WARNING: point-in-time price coverage is incomplete. "
+                "Survivorship bias remains for every uncovered member listed above."
+            )
+            replay_universe = universe_priced_members(universe, set(price_coverage.covered))
+            strategy_history = {
+                ticker: _clip_history_to_sessions(history, calendar_sessions)
+                for ticker, history in strategy_history.items()
+                if ticker in set(price_coverage.covered)
+            }
+        else:
+            strategy_history = {
+                ticker: _clip_history_to_sessions(history, calendar_sessions)
+                for ticker, history in strategy_history.items()
+            }
+        tickers_tested = price_coverage.covered_count
 
     sessions = history_sessions(strategy_history, start_date, end_date)
     replay = evaluate_partition(strategy_history, config, str(sessions[0].date()),
-                                str(sessions[-1].date()), universe=universe)
+                                str(sessions[-1].date()), universe=replay_universe)
     trades_df = replay.accepted_trades
     equity_df, drawdown_df = replay.equity_curve, replay.drawdown
     strategy_return_pct = safe_float(equity_df.iloc[-1]["cumulative_return_pct"], 0.0) if not equity_df.empty else 0.0
 
-    benchmark_history: dict[str, pd.DataFrame] = {}
-    for benchmark_ticker in benchmark_tickers:
-        print(f"Benchmarking against {benchmark_ticker}...")
-        benchmark_history[benchmark_ticker] = download_price_history(
-            benchmark_ticker,
-            start_date,
-            end_date,
-            health_results=health_results,
+    if universe is None:
+        for benchmark_ticker in benchmark_tickers:
+            print(f"Benchmarking against {benchmark_ticker}...")
+            benchmark_history[benchmark_ticker] = download_price_history(
+                benchmark_ticker,
+                start_date,
+                end_date,
+                health_results=health_results,
+            )
+        write_csv_with_run_id(
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": ticker,
+                        "status": "survivor_biased_static",
+                        "detail": "present-day ticker; delisted and removed names are absent",
+                    }
+                    for ticker in tickers
+                ]
+            ),
+            BACKTEST_COVERAGE_FILE,
+            run_id=run_id,
         )
     benchmark_df = build_benchmark_comparison(
         benchmark_history, strategy_return_pct, str(sessions[0].date()),
@@ -1115,6 +1451,22 @@ def run() -> None:
     summary_df["return_target_pct"] = None
     summary_df["accounting"] = "cash_plus_marked_positions"
     summary_df["data_qualification"] = "research_only_unqualified"
+    summary_df["universe_mode"] = universe_bias_label(universe, price_coverage)
+    summary_df["survivorship"] = summary_df["universe_mode"]
+    if price_coverage is None:
+        summary_df["point_in_time_members"] = len(tickers)
+        summary_df["point_in_time_members_with_prices"] = None
+        summary_df["point_in_time_price_coverage_pct"] = None
+        summary_df["point_in_time_members_missing_prices"] = ""
+        summary_df["point_in_time_members_partial_prices"] = ""
+        summary_df["point_in_time_members_unusable_prices"] = ""
+    else:
+        summary_df["point_in_time_members"] = price_coverage.member_count
+        summary_df["point_in_time_members_with_prices"] = price_coverage.covered_count
+        summary_df["point_in_time_price_coverage_pct"] = round(price_coverage.ratio * 100, 4)
+        summary_df["point_in_time_members_missing_prices"] = ",".join(price_coverage.missing)
+        summary_df["point_in_time_members_partial_prices"] = ",".join(price_coverage.partial)
+        summary_df["point_in_time_members_unusable_prices"] = ",".join(price_coverage.unusable)
     summary_df["start_date"] = str(sessions[0].date())
     summary_df["end_date"] = str(sessions[-1].date())
 
@@ -1133,7 +1485,9 @@ def run() -> None:
         trades_df=trades_df,
         histories=strategy_history,
         benchmark_history=benchmark_history,
-        universe=universe,
+        universe=replay_universe,
+        price_coverage=price_coverage,
+        recorded_universe_checksum=None if universe is None else universe.checksum,
     )
 
     total_trades = len(trades_df)
@@ -1146,6 +1500,13 @@ def run() -> None:
     print(f"Saved backtest drawdown to: {BACKTEST_DRAWDOWN_FILE}")
     print(f"Saved backtest benchmark comparison to: {BACKTEST_BENCHMARK_FILE}")
     print("\nRun summary:")
+    if universe is None:
+        print(
+            "Universe mode: survivor-biased static list. "
+            "Names that were later delisted, merged, or dropped are absent."
+        )
+    else:
+        print(f"Universe mode: {universe_bias_label(universe, price_coverage)}")
     print(f"Run ID: {run_id}")
     print(f"Tickers requested: {len(tickers)}")
     print(f"Tickers tested: {tickers_tested}")

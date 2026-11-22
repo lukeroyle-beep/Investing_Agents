@@ -54,6 +54,12 @@ index (`^VIX`). These are market proxies, not a feed of economic releases.
 
 It requests adjusted daily history from 1 January 2022, with no fixed end date,
 and compares against SPY and QQQ. SPY is the primary walk-forward benchmark.
+That 12-name replay is survivor-biased. Setting
+`point_in_time_universe_file` to `data_sources/sp500/point_in_time_membership.csv`
+replays S&P 500 membership, including names that later left the index. Price
+gaps for those names are counted and, below the configured coverage minimum,
+stop the run. See `data_sources/sp500/README.md`. The static 12-name list
+remains the default.
 Only six names overlap with the scanner list: AAPL, MSFT, NVDA, AMZN, GOOGL and
 META. Backtest success must therefore not be presented as validation of all 61
 scanner entries. Standard `run_pipeline.py` does not run Backtesting Agent.

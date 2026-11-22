@@ -4,9 +4,16 @@ enabled: true
 objective: virtual_functionality
 return_target_pct: null
 
-# Present-day names only. This repo has no listing or delisting intervals.
-# point_in_time_universe_file can supply a PointInTimeUniverse table; until
-# then this replay stays survivor-biased and survivorship stays unqualified.
+# Present-day names only. This replay is survivor-biased: names that were
+# delisted, merged, or dropped after the start date are absent.
+# Set point_in_time_universe_file to data_sources/sp500/point_in_time_membership.csv
+# (or export INVESTING_POINT_IN_TIME_UNIVERSE to that path) for S&P 500
+# membership. See data_sources/sp500/README.md for the source, the retrieval
+# date, and the bias that remains when Yahoo has no price for a member.
+# Below min_point_in_time_price_coverage the run stops and writes the coverage
+# report instead of a result that quietly omits those members.
+point_in_time_universe_file: ""
+min_point_in_time_price_coverage: 0.95
 tickers:
   - AAPL
   - MSFT

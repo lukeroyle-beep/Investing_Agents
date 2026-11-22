@@ -126,10 +126,13 @@ Reference fingerprints with the checked-in configuration:
   not calibrated eToro charges. Stress replay doubles configured costs.
   Financing, borrow costs, partial fills, liquidity and exchange lot/minimum
   order rules are not modelled.
-- Point-in-time universe membership, delistings, survivorship, corporate
-  actions, dividend treatment and official exchange calendars are not
-  qualified. The current historical-data source must not be treated as
-  investment-grade evidence solely because accounting checks pass.
+- The optional S&P 500 point-in-time file is a retrieved membership table,
+  not a qualified price panel. Members with no usable Yahoo history are
+  reported and, below the coverage minimum, stop the run. The default
+  12-name replay stays survivor-biased. Corporate actions, dividend
+  treatment and official exchange calendars are not qualified. The current
+  historical-data source must not be treated as investment-grade evidence
+  solely because accounting checks pass.
 - Existing advisory-promotion performance safeguards remain separate. Their
   presence does not introduce a return target for this functional milestone.
   Data and cost qualification flags remain false, and the validator explicitly
