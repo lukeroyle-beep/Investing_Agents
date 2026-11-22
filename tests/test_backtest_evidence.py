@@ -195,6 +195,7 @@ def test_agent_run_twice_reconciles_and_reuses_immutable_experiment(tmp_path, mo
     }
     for attribute, filename in output_names.items():
         monkeypatch.setattr(agent, attribute, tmp_path / "state" / filename)
+    monkeypatch.setattr(agent, "BACKTEST_COVERAGE_FILE", tmp_path / "state" / "backtest_universe_coverage.csv")
     run_ids = iter(("integration-first", "integration-second"))
     monkeypatch.setattr(agent, "get_or_create_run_id", lambda: next(run_ids))
     monkeypatch.setenv("INVESTING_CODE_REVISION", "synthetic-integration-revision")
@@ -223,6 +224,8 @@ def test_agent_run_twice_reconciles_and_reuses_immutable_experiment(tmp_path, mo
         assert (equity["equity"] - settings["initial_capital"]).tolist() == pytest.approx(
             (equity["realised_pnl"] + equity["unrealised_pnl"]).tolist(), abs=1e-7)
         assert summary["objective"] == "virtual_functionality_no_return_target"
+        assert summary["universe_mode"] == "survivor_biased_static"
+        assert summary["survivorship"] == "survivor_biased_static"
         assert pd.isna(summary["return_target_pct"])
         assert summary["run_id"] == run_id
         assert summary["total_trades"] == len(trades)

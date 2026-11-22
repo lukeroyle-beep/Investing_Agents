@@ -46,7 +46,9 @@ approval, durable single send, lookup recovery and Fill-owned Decimal economics.
 Its normal and crash-recovery exercises are synthetic; live submission remains
 blocked by account risk and missing authoritative source coverage. See
 [market coverage](docs/market_coverage.md) for the curated 61-instrument scanner
-and separate 12-stock backtest; neither is a whole-market scan.
+and separate 12-stock backtest; neither is a whole-market scan. The 12-stock
+replay is survivor-biased. An optional S&P 500 point-in-time file is described
+in `data_sources/sp500/README.md`.
 
 The [historical pilot checkpoint](docs/historical_pilot_milestone.md) validates
 saved eToro daily prices for the optional six-stock pilot and both benchmarks.
