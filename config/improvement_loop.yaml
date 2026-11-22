@@ -1,0 +1,64 @@
+# Read-only comparison. This file is not a strategy change.
+# The loop reads it, writes a report under runtime/reports/, and stops.
+# It does not edit config/backtesting.yaml, open a pull request, or send an order.
+
+schema_version: 1
+
+# Same membership table as the point-in-time backtest. Required.
+point_in_time_universe_file: data_sources/sp500/point_in_time_membership.csv
+
+# Window dates are sessions present in both of these, so the benchmark
+# comparison starts and ends on a day both have a bar. Coverage is still
+# scored on the SPY calendar, as the point-in-time backtest does.
+session_calendar_ticker: SPY
+excess_benchmark: VWRL.L
+
+# S&P 500 names in that table are Yahoo US listings. They are converted as
+# USD with GBPUSD=X (USD per 1 GBP; divide), the same pair the paper log uses.
+# One downloaded member is checked against Yahoo's currency. The rest use
+# this value and the report says so.
+member_quote_currency: USD
+
+# Yahoo's fast_info currency for VWRL.L is GBP, and the daily closes are
+# around 100 rather than around 10,000, so this feed is pounds rather than
+# pence. A mismatch with Yahoo fails the run.
+benchmark_currencies:
+  SPY: USD
+  VWRL.L: GBP
+
+# Local logs. A missing file is reported as "no data yet".
+# The demo trade log has no single path in the order module; this is where
+# the loop looks. It never calls the broker to find fills.
+demo_trade_log: runtime/logs/demo_trades.jsonl
+
+# Parameter variants of the moving-average signal already in the backtester.
+# Values are the variant. Anything omitted stays at config/backtesting.yaml.
+# The code refuses more than 8 variants including the baselines below.
+variants:
+  - id: current
+    parameters: {}
+  - id: slower_trend
+    parameters:
+      ma_fast_window: 50
+      ma_slow_window: 200
+      return_lookback_window: 120
+  - id: wider_exits
+    parameters:
+      stop_loss_pct: 15.0
+      take_profit_pct: 30.0
+      max_hold_days: 60
+  - id: tighter_exits
+    parameters:
+      stop_loss_pct: 5.0
+      take_profit_pct: 10.0
+      max_hold_days: 15
+
+baselines:
+  - id: buy_and_hold_spy
+    kind: buy_and_hold
+    ticker: SPY
+  - id: buy_and_hold_vwrl
+    kind: buy_and_hold
+    ticker: VWRL.L
+  - id: do_nothing
+    kind: do_nothing
