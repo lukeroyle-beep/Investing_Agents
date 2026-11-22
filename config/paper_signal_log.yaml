@@ -5,8 +5,10 @@ schema_version: "1"
 
 # London listing of the Vanguard FTSE All-World UCITS ETF (distributing).
 # Yahoo's symbol is VWRL.L. The listing is often quoted in pence (GBp/GBX).
-# Percentage returns are computed inside each listing's own quote and are not
-# converted into a common currency. See the report definitions.
+# Scoring is in GBP. Pence are divided by 100. USD uses Yahoo GBPUSD=X
+# (USD per GBP), EUR uses EURGBP=X (GBP per EUR), and JPY uses GBPJPY=X
+# (JPY per GBP). A missing FX close is flagged and is not left unconverted.
+# See the report definitions.
 benchmark_ticker: "VWRL.L"
 benchmark_name: "Vanguard FTSE All-World UCITS ETF (LSE, Yahoo VWRL.L)"
 

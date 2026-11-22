@@ -55,15 +55,23 @@ and is not repaired by rewriting the logged price.
 
 Currency
 --------
-Each return uses only that instrument's own quotes. No foreign-exchange rate
-is fetched and none is assumed. When the feed reports the same currency for
-the ticker and the benchmark, the basis is ``same_currency``. When both are
-reported and they differ, including GBX versus GBP, the basis is
-``local_unhedged``: the excess return includes whatever FX movement is already
-inside the two local quotes, and prices are not rescaled. When either currency
-is missing, the basis is ``currency_unconfirmed``. Those rows are still shown.
-A failed price read is ``data_feed_error`` or ``outcome_missing``. It is not
-omitted.
+The investor's results are in GBP. Excess and the hit use simple price
+returns after both the ticker and the benchmark have been turned into GBP.
+The listing's own return is still reported and is not the scored return.
+
+``GBP`` prices are already pounds. ``GBp`` and ``GBX`` are pence and are
+divided by 100. A logged pound price against a pence feed is
+``quote_currency_conflict`` and is not rescaled. USD uses the Yahoo close
+``GBPUSD=X`` (USD per 1 GBP; divide). EUR uses ``EURGBP=X`` (GBP per 1 EUR;
+multiply). JPY uses ``GBPJPY=X`` (JPY per 1 GBP; divide). Those closes come
+from the same daily history path as prices.
+
+The signal FX close is the last session strictly before the signal UTC date.
+The outcome FX close is the first session on or after the horizon and before
+the evaluation UTC date. If a required close is missing, the row is
+``fx_missing`` and is not scored in the local currency instead. A missing
+currency is ``currency_unconfirmed`` and is not scored. A failed price read
+is ``data_feed_error`` or ``outcome_missing`` and is not omitted.
 """
 
 from __future__ import annotations
@@ -145,6 +153,16 @@ EXIT_PRICE_SOURCE = "portfolio_monitor"
 EXIT_PRICE_FIELD = "current_price"
 EXIT_PRICE_VIA = "exit decision current_price taken from portfolio_monitor.csv"
 OUTCOME_PRICE_BASIS = "yfinance daily Close with auto_adjust false"
+REPORTING_CURRENCY = "GBP"
+# Yahoo "=X" close is quote currency per 1 unit of the base. GBPUSD=X is USD
+# per GBP (divide). EURGBP=X is GBP per EUR (multiply). GBPJPY=X is JPY per GBP
+# (divide). Pence are not an FX pair; GBp and GBX divide by 100.
+FX_TO_GBP: dict[str, tuple[str, str]] = {
+    "USD": ("GBPUSD=X", "divide"),
+    "EUR": ("EURGBP=X", "multiply"),
+    "JPY": ("GBPJPY=X", "divide"),
+}
+PENCE_PER_POUND = Decimal(100)
 
 DEFINITIONS = """\
 Paper signal scoring (read only; no order is sent).
@@ -165,10 +183,16 @@ Hold (advisory review, do not enter): no cost. Excess = benchmark return minus
 ticker return. Hit when excess >= 0, including a tie.
 Cost: the configured round-trip basis points, printed above. It is an
 assumption, not a measured fee. Hold rules apply 0.
-Currency: returns stay in each listing's own quote. Different currencies,
-including pence versus pounds, are local_unhedged and are not FX-converted.
-A missing currency is currency_unconfirmed. A failed price read is an error
-row, not a skipped row.
+Currency: excess is a GBP price return. GBP is pounds. GBp and GBX are pence
+and are divided by 100. A logged pound price against a pence feed is
+quote_currency_conflict and is not rescaled. USD uses Yahoo GBPUSD=X (USD per
+GBP; divide). EUR uses Yahoo EURGBP=X (GBP per EUR; multiply). JPY uses Yahoo
+GBPJPY=X (JPY per GBP; divide). Signal FX is the last close strictly before
+the signal UTC date. Outcome FX is the first close on or after the horizon
+and before the evaluation UTC date. Missing FX is fx_missing and is not filled
+with the local return. Local returns stay in the local columns. A missing
+currency is currency_unconfirmed and is not scored. A failed price read is an
+error row, not a skipped row.
 Outcome series: Yahoo Close with auto_adjust off, so a later dividend does not
 rewrite the bar. A split on or after the signal date flags the row instead of
 scoring it. Advisory prices were adjusted closes at signal time and are not
@@ -234,6 +258,8 @@ class HorizonOutcome:
     benchmark_outcome_session: str
     ticker_return: str
     benchmark_return: str
+    ticker_return_local: str
+    benchmark_return_local: str
     cost_applied_bps: str
     excess_return: str
     hit: str
@@ -254,9 +280,8 @@ class HorizonSummary:
     hit_rate: str
     mean_excess_return: str
     cost_bps: str
-    same_currency: int
-    local_unhedged: int
-    currency_unconfirmed: int
+    gbp: int
+    fx_missing: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,10 +431,26 @@ def _redact(value: str) -> str:
 
 
 def _currency_text(value: object) -> str:
-    text = _clean_text(value).upper()
-    if text in {"NAN", "NONE", "NAT", "<NA>"}:
+    """Currency code, keeping the pence marker in ``GBp`` and ``GBX``."""
+    text = _clean_text(value)
+    if text.upper() in {"NAN", "NONE", "NAT", "<NA>"}:
         return ""
-    return text
+    if text == "GBp" or text.upper() == "GBX":
+        return "GBp" if text == "GBp" else "GBX"
+    return text.upper()
+
+
+def _quote_unit(value: object) -> tuple[str, bool]:
+    """Major currency and whether the quote is pence.
+
+    ``GBp`` is pence. ``GBP`` is pounds. Upper-casing alone would hide that.
+    """
+    text = _currency_text(value)
+    if not text:
+        return "", False
+    if text in {"GBp", "GBX"}:
+        return "GBP", True
+    return text, False
 
 
 _universe_currencies: dict[str, str] | None = None
@@ -899,6 +940,8 @@ def _blank_outcome(record: Mapping[str, Any], horizon: int, horizon_day: date, *
         "benchmark_outcome_session": "",
         "ticker_return": "",
         "benchmark_return": "",
+        "ticker_return_local": "",
+        "benchmark_return_local": "",
         "cost_applied_bps": "",
         "excess_return": "",
         "hit": "",
@@ -908,14 +951,6 @@ def _blank_outcome(record: Mapping[str, Any], horizon: int, horizon_day: date, *
     }
     base.update(fields)
     return HorizonOutcome(**base)
-
-
-def _currency_basis(ticker_currency: str, benchmark_currency: str) -> str:
-    if not ticker_currency or not benchmark_currency:
-        return "currency_unconfirmed"
-    if ticker_currency == benchmark_currency:
-        return "same_currency"
-    return "local_unhedged"
 
 
 def _fetch_history(
@@ -970,14 +1005,16 @@ def evaluate_signals(
     evaluation_day = moment.date()
     lookup = currency_lookup or _default_currency
     histories: dict[str, PriceHistory] = {}
+    fetched_from: dict[str, date] = {}
     currencies: dict[str, tuple[str, str | None]] = {}
 
     def history_for(ticker: str, start: date) -> PriceHistory:
-        cached = histories.get(ticker)
-        if cached is not None:
-            return cached
+        previous = fetched_from.get(ticker)
+        if previous is not None and previous <= start:
+            return histories[ticker]
         loaded = _fetch_history(ticker, start, evaluation_day, provider)
         histories[ticker] = loaded
+        fetched_from[ticker] = start
         return loaded
 
     def currency_for(ticker: str) -> tuple[str, str | None]:
@@ -1014,6 +1051,13 @@ def evaluate_signals(
     if needs_fetch:
         benchmark_currency, benchmark_currency_error = currency_for(config.benchmark_ticker)
 
+    fx_start = earliest_start
+
+    def fx_history(pair: str) -> PriceHistory:
+        if fx_start is None:
+            return PriceHistory((), None, "FX window was not opened")
+        return history_for(pair, fx_start)
+
     for record, signal_day, horizons in prepared:
         if record.get("unscored_reason") == "short_not_scored":
             for months, horizon_day, state in horizons:
@@ -1040,7 +1084,11 @@ def evaluate_signals(
         )
         logged_currency = str(record.get("price_currency", ""))
         feed_currency, feed_currency_error = currency_for(str(record["ticker"])) if due else ("", None)
-        if logged_currency and feed_currency and logged_currency != feed_currency:
+        if (
+            logged_currency
+            and feed_currency
+            and _quote_unit(logged_currency) != _quote_unit(feed_currency)
+        ):
             feed_currency_error = (
                 f"quote_currency_conflict: logged {logged_currency} but the outcome feed "
                 f"reports {feed_currency}; row not scored and no rescaling was applied"
@@ -1073,6 +1121,7 @@ def evaluate_signals(
                 ticker_currency=ticker_currency,
                 benchmark_currency=benchmark_currency,
                 currency_note=feed_currency_error or benchmark_currency_error or "",
+                fx_history=fx_history,
             )
             outcomes.append(outcome)
 
@@ -1088,6 +1137,120 @@ def evaluate_signals(
     )
 
 
+def _session_still_pending(
+    history: PriceHistory,
+    horizon_day: date,
+    evaluation_day: date,
+    lag_days: int,
+) -> bool:
+    """True when a close on or after the horizon may still arrive."""
+    lag = timedelta(days=lag_days)
+    latest = history.bars[-1].session_date if history.bars else None
+    within_lag = evaluation_day - horizon_day <= lag
+    feed_is_current = latest is not None and evaluation_day - latest <= lag
+    # No known session on or after the horizon yet. A bar dated the
+    # evaluation day is not known. While the horizon is recent and the
+    # feed's latest session is recent, keep waiting instead of estimating.
+    return within_lag and (
+        latest is None or latest < horizon_day or latest >= evaluation_day
+    ) and (feed_is_current or latest is None or latest >= evaluation_day)
+
+
+def _to_gbp(local: Decimal, currency: str, fx_close: Decimal | None) -> Decimal:
+    """Listing quote to GBP. Pence divide by 100. FX close is the Yahoo rate."""
+    _major, pence = _quote_unit(currency)
+    amount = local / PENCE_PER_POUND if pence else local
+    if fx_close is not None:
+        _pair, direction = FX_TO_GBP[_quote_unit(currency)[0]]
+        amount = amount / fx_close if direction == "divide" else amount * fx_close
+    return amount.quantize(PRICE_QUANTUM, rounding=ROUND_HALF_EVEN)
+
+
+def _fx_clause(
+    currency: str,
+    signal_bar: CloseBar | None,
+    outcome_bar: CloseBar | None,
+    start_gbp: Decimal,
+    end_gbp: Decimal,
+) -> str:
+    major, pence = _quote_unit(currency)
+    parts: list[str] = []
+    if pence:
+        parts.append("GBp/100")
+    spec = FX_TO_GBP.get(major)
+    if spec is not None and signal_bar is not None and outcome_bar is not None:
+        pair, _direction = spec
+        parts.append(
+            f"{pair} {decimal_text(signal_bar.close)}@{signal_bar.session_date.isoformat()}"
+            f" -> {decimal_text(outcome_bar.close)}@{outcome_bar.session_date.isoformat()}"
+        )
+    parts.append(f"GBP {decimal_text(start_gbp)} -> {decimal_text(end_gbp)}")
+    return " ".join(parts)
+
+
+def _resolve_fx(
+    currency: str,
+    *,
+    label: str,
+    signal_day: date,
+    horizon_day: date,
+    evaluation_day: date,
+    lag_days: int,
+    fx_history: Callable[[str], PriceHistory],
+) -> tuple[str, str, CloseBar | None, CloseBar | None]:
+    """Return status, detail, signal close, outcome close.
+
+    Status is ``ok`` for GBP and for a pair with both closes. GBP has no bars.
+    """
+    major, _pence = _quote_unit(currency)
+    if major == "GBP":
+        return "ok", "", None, None
+    spec = FX_TO_GBP.get(major)
+    if spec is None:
+        return "fx_missing", f"no GBP FX pair for {major or label}", None, None
+    pair, _direction = spec
+    history = fx_history(pair)
+    if history.error:
+        return "fx_missing", f"{pair}: {history.error}", None, None
+    signal_bar = _last_close_before(history.bars, signal_day)
+    if signal_bar is None:
+        return (
+            "fx_missing",
+            f"no {pair} close with session date before the signal UTC date",
+            None,
+            None,
+        )
+    outcome_bar = _first_known_close(history.bars, horizon_day, evaluation_day)
+    if outcome_bar is None:
+        if _session_still_pending(history, horizon_day, evaluation_day, lag_days):
+            return "pending", f"awaiting_fx_close: {pair}", signal_bar, None
+        return "fx_missing", f"no {pair} close on or after the horizon", signal_bar, None
+    if signal_bar.close <= 0 or outcome_bar.close <= 0:
+        return "fx_missing", f"{pair} close is not positive", signal_bar, outcome_bar
+    return "ok", "", signal_bar, outcome_bar
+
+
+def _local_return_fields(
+    signal_price: Decimal,
+    ticker_outcome: CloseBar,
+    benchmark_entry: CloseBar,
+    benchmark_outcome: CloseBar,
+) -> dict[str, str]:
+    return {
+        "outcome_price": decimal_text(ticker_outcome.close),
+        "outcome_session": ticker_outcome.session_date.isoformat(),
+        "benchmark_entry_price": decimal_text(benchmark_entry.close),
+        "benchmark_outcome_price": decimal_text(benchmark_outcome.close),
+        "benchmark_outcome_session": benchmark_outcome.session_date.isoformat(),
+        "ticker_return_local": decimal_text(
+            _quantize_return(_simple_return(signal_price, ticker_outcome.close))
+        ),
+        "benchmark_return_local": decimal_text(
+            _quantize_return(_simple_return(benchmark_entry.close, benchmark_outcome.close))
+        ),
+    }
+
+
 def _score_due_horizon(
     *,
     record: Mapping[str, Any],
@@ -1101,6 +1264,7 @@ def _score_due_horizon(
     ticker_currency: str,
     benchmark_currency: str,
     currency_note: str,
+    fx_history: Callable[[str], PriceHistory],
 ) -> HorizonOutcome:
     common = {
         "benchmark_ticker": config.benchmark_ticker,
@@ -1212,12 +1376,91 @@ def _score_due_horizon(
             benchmark_entry_price=decimal_text(benchmark_entry.close),
             **common,
         )
-    ticker_gross = _simple_return(signal_price, ticker_outcome.close)
-    benchmark_gross = _simple_return(benchmark_entry.close, benchmark_outcome.close)
+    local_fields = _local_return_fields(
+        signal_price, ticker_outcome, benchmark_entry, benchmark_outcome
+    )
+    if not ticker_currency or not benchmark_currency:
+        detail = "currency is missing; no FX rate was assumed"
+        if currency_note:
+            detail = f"{detail}; {currency_note}"
+        return _blank_outcome(
+            record,
+            months,
+            horizon_day,
+            status="currency_unconfirmed",
+            detail=detail,
+            currency_basis="currency_unconfirmed",
+            **local_fields,
+            **common,
+        )
+    ticker_fx = _resolve_fx(
+        ticker_currency,
+        label=str(record["ticker"]),
+        signal_day=signal_day,
+        horizon_day=horizon_day,
+        evaluation_day=evaluation_day,
+        lag_days=config.pending_session_lag_days,
+        fx_history=fx_history,
+    )
+    benchmark_fx = _resolve_fx(
+        benchmark_currency,
+        label=config.benchmark_ticker,
+        signal_day=signal_day,
+        horizon_day=horizon_day,
+        evaluation_day=evaluation_day,
+        lag_days=config.pending_session_lag_days,
+        fx_history=fx_history,
+    )
+    for status, detail, _signal_bar, _outcome_bar in (ticker_fx, benchmark_fx):
+        if status == "ok":
+            continue
+        return _blank_outcome(
+            record,
+            months,
+            horizon_day,
+            status=status,
+            detail=detail,
+            currency_basis="fx_missing" if status == "fx_missing" else "",
+            **local_fields,
+            **common,
+        )
+    ticker_signal_fx = ticker_fx[2].close if ticker_fx[2] is not None else None
+    ticker_outcome_fx = ticker_fx[3].close if ticker_fx[3] is not None else None
+    benchmark_signal_fx = benchmark_fx[2].close if benchmark_fx[2] is not None else None
+    benchmark_outcome_fx = benchmark_fx[3].close if benchmark_fx[3] is not None else None
+    signal_gbp = _to_gbp(signal_price, ticker_currency, ticker_signal_fx)
+    outcome_gbp = _to_gbp(ticker_outcome.close, ticker_currency, ticker_outcome_fx)
+    benchmark_entry_gbp = _to_gbp(benchmark_entry.close, benchmark_currency, benchmark_signal_fx)
+    benchmark_outcome_gbp = _to_gbp(
+        benchmark_outcome.close, benchmark_currency, benchmark_outcome_fx
+    )
+    if signal_gbp <= 0 or benchmark_entry_gbp <= 0:
+        return _blank_outcome(
+            record,
+            months,
+            horizon_day,
+            status="fx_missing",
+            detail="GBP price is not positive",
+            currency_basis="fx_missing",
+            **local_fields,
+            **common,
+        )
+    ticker_gross = _simple_return(signal_gbp, outcome_gbp)
+    benchmark_gross = _simple_return(benchmark_entry_gbp, benchmark_outcome_gbp)
     cost_rate = config.cost_bps / Decimal(10000)
     excess, cost_applied, hit = _score_excess(rule, ticker_gross, benchmark_gross, cost_rate)
-    basis = _currency_basis(ticker_currency, benchmark_currency)
-    detail_parts = [basis]
+    detail_parts = [
+        "gbp",
+        "ticker " + _fx_clause(ticker_currency, ticker_fx[2], ticker_fx[3], signal_gbp, outcome_gbp),
+        "benchmark "
+        + _fx_clause(
+            benchmark_currency,
+            benchmark_fx[2],
+            benchmark_fx[3],
+            benchmark_entry_gbp,
+            benchmark_outcome_gbp,
+        ),
+    ]
     if split_note:
         detail_parts.append(split_note)
     if currency_note:
@@ -1228,17 +1471,13 @@ def _score_due_horizon(
         horizon_day,
         status="scored",
         detail="; ".join(detail_parts),
-        outcome_price=decimal_text(ticker_outcome.close),
-        outcome_session=ticker_outcome.session_date.isoformat(),
-        benchmark_entry_price=decimal_text(benchmark_entry.close),
-        benchmark_outcome_price=decimal_text(benchmark_outcome.close),
-        benchmark_outcome_session=benchmark_outcome.session_date.isoformat(),
         ticker_return=decimal_text(_quantize_return(ticker_gross)),
         benchmark_return=decimal_text(_quantize_return(benchmark_gross)),
         cost_applied_bps=decimal_text((cost_applied * Decimal(10000)).normalize()),
         excess_return=decimal_text(excess),
         hit="hit" if hit else "miss",
-        currency_basis=basis,
+        currency_basis="gbp",
+        **local_fields,
         **common,
     )
 
@@ -1255,7 +1494,6 @@ def _missing_outcome(
     benchmark_outcome: CloseBar | None,
     common: dict[str, str],
 ) -> HorizonOutcome:
-    lag = timedelta(days=config.pending_session_lag_days)
     missing_names = []
     pending = True
     for label, history, found in (
@@ -1265,18 +1503,9 @@ def _missing_outcome(
         if found is not None:
             continue
         missing_names.append(label)
-        latest = history.bars[-1].session_date if history.bars else None
-        within_lag = evaluation_day - horizon_day <= lag
-        feed_is_current = latest is not None and evaluation_day - latest <= lag
-        # No known session on or after the horizon yet. A bar dated the
-        # evaluation day is not known. While the horizon is recent and the
-        # feed's latest session is recent, keep waiting instead of estimating.
-        still_waiting = within_lag and (
-            latest is None
-            or latest < horizon_day
-            or latest >= evaluation_day
-        ) and (feed_is_current or latest is None or latest >= evaluation_day)
-        if not still_waiting:
+        if not _session_still_pending(
+            history, horizon_day, evaluation_day, config.pending_session_lag_days
+        ):
             pending = False
     status = "pending" if pending else "outcome_missing"
     detail = (
@@ -1331,11 +1560,8 @@ def _summarize(
         hit_rate=hit_rate,
         mean_excess_return=mean_excess,
         cost_bps=decimal_text(cost_bps),
-        same_currency=sum(1 for row in scored_rows if row.currency_basis == "same_currency"),
-        local_unhedged=sum(1 for row in scored_rows if row.currency_basis == "local_unhedged"),
-        currency_unconfirmed=sum(
-            1 for row in scored_rows if row.currency_basis == "currency_unconfirmed"
-        ),
+        gbp=sum(1 for row in scored_rows if row.currency_basis == "gbp"),
+        fx_missing=sum(1 for row in rows if row.status == "fx_missing"),
     )
 
 
@@ -1351,6 +1577,10 @@ def format_report(records: list[Mapping[str, Any]], evaluation: Evaluation) -> s
         "0 bps on hold. Not a measured broker fee."
     )
     lines.append(f"Outcome price basis: {evaluation.outcome_price_basis}")
+    lines.append(
+        f"Reporting currency: {REPORTING_CURRENCY}. Excess and hit use GBP price returns. "
+        "ticker_return_local and benchmark_return_local stay in the listing quote."
+    )
     lines.append("")
     lines.append("Log")
     if not records:
@@ -1379,8 +1609,9 @@ def format_report(records: list[Mapping[str, Any]], evaluation: Evaluation) -> s
     lines.append("")
     lines.append("Outcomes")
     lines.append(
-        "ticker | signal | horizon | status | hit | excess | ticker_return | "
-        "benchmark_return | currency_basis | detail"
+        "ticker | signal | horizon | status | hit | excess | ticker_return_gbp | "
+        "benchmark_return_gbp | ticker_return_local | benchmark_return_local | "
+        "currency_basis | detail"
     )
     if not evaluation.outcomes:
         lines.append("(no outcomes)")
@@ -1396,6 +1627,8 @@ def format_report(records: list[Mapping[str, Any]], evaluation: Evaluation) -> s
                     row.excess_return or "-",
                     row.ticker_return or "-",
                     row.benchmark_return or "-",
+                    row.ticker_return_local or "-",
+                    row.benchmark_return_local or "-",
                     row.currency_basis or "-",
                     row.detail,
                 ]
@@ -1405,7 +1638,7 @@ def format_report(records: list[Mapping[str, Any]], evaluation: Evaluation) -> s
     lines.append("Summary by horizon")
     lines.append(
         "horizon | group | signals | pending | flagged | scored | hits | "
-        "hit_rate | mean_excess | same_ccy | unhedged | ccy_unconfirmed | cost_bps"
+        "hit_rate | mean_excess_gbp | gbp | fx_missing | cost_bps"
     )
     for row in evaluation.summaries:
         lines.append(
@@ -1420,9 +1653,8 @@ def format_report(records: list[Mapping[str, Any]], evaluation: Evaluation) -> s
                     str(row.hits),
                     row.hit_rate,
                     row.mean_excess_return,
-                    str(row.same_currency),
-                    str(row.local_unhedged),
-                    str(row.currency_unconfirmed),
+                    str(row.gbp),
+                    str(row.fx_missing),
                     row.cost_bps,
                 ]
             )
