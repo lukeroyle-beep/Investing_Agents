@@ -26,6 +26,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Mapping
@@ -39,13 +40,19 @@ from brokers.etoro.redaction import redact_text
 from execution.accounting import _sum as exact_sum
 from execution.domain import DomainValidationError, Environment, _aware_utc, decimal_text
 from execution.fill_ingestion import stage_broker_executions
-from execution.market_session import DEFAULT_CALENDAR_PATH, _NEW_YORK, _validate_calendar
 from execution.pilot_policy import multiply, preview_costs, price_move_exceeds_band
 from risk.kill_switch import KillSwitch, KillSwitchError
 from risk.pretrade import RiskLimits
+from shared.freshness import ExchangeCalendar, FreshnessError, load_freshness_config
 
 
 logger = logging.getLogger("execution.demo_orders")
+_NEW_YORK = ZoneInfo("America/New_York")
+_CASH_OPEN = time(9, 30)
+# ExchangeCalendar implements the XNYS holiday and early-close rules used by
+# freshness. It does not carry a second exchange's schedule.
+_SUPPORTED_CALENDAR = "XNYS"
+_SUPPORTED_TIMEZONE = "America/New_York"
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "demo_orders.yaml"
 DEMO_ORDER_ALLOWLIST = frozenset({
@@ -281,29 +288,44 @@ def _exact_money(value: object, name: str) -> Decimal:
     return value
 
 
-def regular_session_reason(now: datetime) -> str | None:
-    """None when the reviewed Nasdaq 2026 regular session is open.
+def _session_calendar(calendar: ExchangeCalendar | None) -> ExchangeCalendar:
+    """The freshness XNYS calendar, or the injected one when it is that calendar."""
+    if calendar is None:
+        config = load_freshness_config()
+        if config.calendar != _SUPPORTED_CALENDAR or config.timezone != _SUPPORTED_TIMEZONE:
+            raise FreshnessError("calendar_not_covered")
+        calendar = ExchangeCalendar(name=config.calendar, timezone=config.timezone)
+    if calendar.name != _SUPPORTED_CALENDAR or calendar.timezone != _SUPPORTED_TIMEZONE:
+        raise FreshnessError("calendar_not_covered")
+    return calendar
 
-    The symbol allowlist on the pilot session helper does not include the
-    demo order instrument, so the clock comes from the same calendar file
-    and checksum without that symbol gate. An unreadable calendar, a date
-    outside 2026, or a closed session fails closed.
+
+def regular_session_reason(
+    now: datetime, calendar: ExchangeCalendar | None = None
+) -> str | None:
+    """None when the XNYS cash session is open.
+
+    Holidays and early closes come from ``ExchangeCalendar``, the same rule
+    calendar freshness uses. It has no year table to expire. A calendar this
+    process cannot apply returns ``calendar_not_covered`` and sends nothing.
+    The cash open is 09:30 America/New_York, which is the open that calendar's
+    16:00 and 13:00 closes belong to. The result is not a halt feed.
     """
     try:
         moment = _aware_utc(now, "now")
     except (DomainValidationError, TypeError, ValueError):
         return "timezone_unconfirmed"
-    day = moment.astimezone(_NEW_YORK).date()
     try:
-        holidays, early = _validate_calendar(DEFAULT_CALENDAR_PATH.read_bytes())
-    except Exception:
-        return "market_calendar_unconfirmed"
-    if day.year != 2026 or day.weekday() >= 5 or day in holidays:
-        return "market_closed" if day.year == 2026 else "market_calendar_unconfirmed"
-    opens_at = datetime.combine(day, time(9, 30), _NEW_YORK).astimezone(timezone.utc)
-    closes_at = datetime.combine(
-        day, early.get(day, time(16)), _NEW_YORK
-    ).astimezone(timezone.utc)
+        session = _session_calendar(calendar)
+        day = moment.astimezone(session.tz).date()
+        if not session.is_session(day):
+            return "market_closed"
+        opens_at = datetime.combine(day, _CASH_OPEN, session.tz)
+        closes_at = session.session_close(day)
+        if closes_at.tzinfo is None or opens_at >= closes_at:
+            return "calendar_not_covered"
+    except (FreshnessError, OSError, ValueError, OverflowError, KeyError):
+        return "calendar_not_covered"
     if not opens_at <= moment < closes_at:
         return "market_closed"
     return None

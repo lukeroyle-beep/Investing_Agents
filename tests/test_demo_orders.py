@@ -29,10 +29,12 @@ from execution.demo_orders import (
     demo_execution_shape,
     demo_order_endpoint,
     place_demo_order,
+    regular_session_reason,
 )
 from execution.domain import Environment
 from risk.kill_switch import RESET_ACKNOWLEDGEMENT, KillSwitch
 from risk.pretrade import RiskLimits
+from shared.freshness import ExchangeCalendar
 from shared.paths import EXECUTION_CONFIG_PATH, RISK_CONFIG_PATH, config_path
 
 
@@ -297,7 +299,9 @@ def test_missing_or_inexact_evidence_fails_closed(tmp_path, overrides, reason):
     (datetime(2026, 1, 1, 15, 0, tzinfo=timezone.utc), "market_closed"),
     (datetime(2026, 11, 23, 21, 30, tzinfo=timezone.utc), "market_closed"),
     (datetime(2026, 11, 23, 15, 0), "timezone_unconfirmed"),
-    (datetime(2027, 11, 23, 15, 0, tzinfo=timezone.utc), "market_calendar_unconfirmed"),
+    (datetime(2027, 1, 1, 15, 0, tzinfo=timezone.utc), "market_closed"),
+    # Day after Thanksgiving 2027 is an early close. 18:00 UTC is 13:00 New York.
+    (datetime(2027, 11, 26, 18, 0, tzinfo=timezone.utc), "market_closed"),
 ])
 def test_closed_or_unconfirmed_session_sends_nothing(tmp_path, now, reason):
     boundary = _Boundary()
@@ -305,6 +309,28 @@ def test_closed_or_unconfirmed_session_sends_nothing(tmp_path, now, reason):
     assert result.reason == reason
     assert boundary.reads == 0
     assert boundary.calls == []
+
+
+def test_rule_calendar_still_opens_a_session_a_year_ahead(tmp_path):
+    """A 2026 snapshot must not become a silent refusal on the next New Year.
+
+    4 Jan 2027 and 3 Jan 2028 are Mondays after the New Year holiday, inside
+    the cash session. Both resolve as open. An unsupported calendar name
+    fails closed instead of guessing.
+    """
+    for moment in (
+        datetime(2027, 1, 4, 15, 0, tzinfo=timezone.utc),
+        datetime(2028, 1, 3, 15, 0, tzinfo=timezone.utc),
+    ):
+        assert regular_session_reason(moment) is None
+        boundary = _Boundary()
+        result = _place(tmp_path, _attempt(), boundary, now=moment)
+        assert result.sent is True
+        assert result.reason != "calendar_not_covered"
+        assert boundary.calls
+    assert regular_session_reason(
+        NOW, ExchangeCalendar(name="XLON", timezone="Europe/London")
+    ) == "calendar_not_covered"
 
 
 def test_kill_switch_blocks_before_any_broker_call(tmp_path):
