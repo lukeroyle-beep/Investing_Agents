@@ -477,6 +477,160 @@ uses an immutable attribution ledger, supported MCP evidence and exact human
 order approval. The existing strict policy and default write settings remain
 unchanged. A pilot implementation or preview does not establish a confirmed fill.
 
+## Mac mini market-hours schedule
+
+A LaunchAgent can run `run_pipeline.py` on the owner's Mac mini during the NYSE
+regular session. It is shipped **disabled**. Merging this repository does not
+install the agent, load it, or run the pipeline. Broker, governance, and
+scheduled-Demo preparation flags stay off; the schedule does not change them.
+Order placement remains gated by those existing flags.
+
+Two switches have to be on before a pipeline run starts:
+
+- `host_schedule.enabled` in `config/scheduler.yaml` (default `false`)
+- the LaunchAgent loaded with `launchctl bootstrap` (the installer does not do this)
+
+`launchd` only fires on a fixed interval (`host_schedule.interval_seconds`,
+default 900). The wrapper then checks `America/New_York` and the repository's
+XNYS calendar (weekends, holidays, early closes) and exits when the session is
+closed. London wall time is not used, because the US and UK change clocks on
+different dates. A lock at `runtime/control/schedule.lock` skips an overlapping
+run. The same lock is used by scheduled Demo preparation.
+
+Logs go to `runtime/logs/host_schedule/` (rotated) and, once installed, to
+`runtime/logs/launchd.stdout.log` and `runtime/logs/launchd.stderr.log`. Those
+paths are gitignored. Secret values are never written to them.
+
+This agent runs in the GUI session (`gui/$UID`). The owner must be logged in
+(the screen may be locked). It does not start at the login window. After a
+reboot, automatic login is what keeps it running unattended. A locked login
+keychain fails closed: the pipeline does not start.
+
+### Install
+
+From the repository root, after `uv sync --frozen`:
+
+```bash
+bash scripts/install_launch_agent.sh
+```
+
+The script renders `scheduler/launchd/com.investing-agents.pipeline.plist.template`
+into `~/Library/LaunchAgents/com.investing-agents.pipeline.plist` using the
+current interval and the virtualenv Python. It boots out a previous job with
+the same label if one was loaded. It does not bootstrap the new job.
+`RunAtLoad` is false. Re-run the installer after changing
+`interval_seconds` or moving the repository.
+
+### Add credential names
+
+`host_schedule.secrets` lists environment variable names and Keychain
+coordinates. It ships empty. When the broker connector's variable names are
+known, add them. Do not put secret values in the yaml file.
+
+```yaml
+secrets:
+  - env: REPLACE_WITH_BROKER_ENV_VAR
+    service: investing-agents-demo
+    account: REPLACE_WITH_KEYCHAIN_ACCOUNT
+```
+
+Create the Keychain item in the login keychain. The command prompts for the
+secret so it is not stored in shell history:
+
+```bash
+security add-generic-password \
+  -s "investing-agents-demo" \
+  -a "REPLACE_WITH_KEYCHAIN_ACCOUNT" \
+  -U
+```
+
+The wrapper reads it with `security find-generic-password -s <service> -a <account> -w`
+and exports it only into the `run_pipeline.py` child process.
+`security ... -w` prints the secret; do not redirect that output into the repository.
+
+### File alternative
+
+Set `secrets_source: file` to read `runtime/secrets/launchd.env` instead of the
+Keychain. That path is gitignored. The wrapper refuses the file unless it is a
+regular file and no group or world permission bit is set (`chmod 600`).
+
+```bash
+mkdir -p runtime/secrets
+install -m 600 /dev/null runtime/secrets/launchd.env
+```
+
+Edit the file locally so each configured name has one `KEY=value` line, then
+confirm the mode:
+
+```bash
+chmod 600 runtime/secrets/launchd.env
+stat -f '%Lp' runtime/secrets/launchd.env
+```
+
+`stat` should print `600`. A group-readable or world-readable file is not loaded.
+
+### Enable
+
+1. Set `host_schedule.enabled: true` in `config/scheduler.yaml`.
+2. Load the agent:
+
+```bash
+launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.investing-agents.pipeline.plist"
+```
+
+The first fire is on the interval, not at load. To exercise the gate once by hand:
+
+```bash
+.venv/bin/python scripts/run_host_schedule.py
+```
+
+That command still exits immediately while the switch is off or the NYSE session
+is closed. It does not turn broker writes on.
+
+### Disable
+
+Stop launchd without deleting the plist:
+
+```bash
+launchctl bootout gui/$(id -u)/com.investing-agents.pipeline
+```
+
+Setting `host_schedule.enabled: false` also makes a loaded agent exit without
+running the pipeline. Use both when you want it fully stopped.
+
+### Status
+
+```bash
+.venv/bin/python scripts/scheduler_status.py
+```
+
+This prints whether `launchctl print` sees the agent, the enable switch,
+scheduled-Demo and broker-submission flags, the last run time and exit code,
+the last error, the next expected fire (estimated from the interval, in UTC and
+New York time), and whether the lock is held. Equivalent direct check:
+
+```bash
+launchctl print "gui/$(id -u)/com.investing-agents.pipeline"
+```
+
+### Uninstall
+
+```bash
+bash scripts/uninstall_launch_agent.sh
+```
+
+This boots the job out and deletes the plist. It does not edit
+`config/scheduler.yaml`. Set `host_schedule.enabled: false` yourself if you
+had turned it on. A leftover `runtime/control/schedule.lock` means a run was
+still holding the lock or was killed. Confirm no pipeline process is running
+before removing that file; do not delete it while a run is active.
+
+### Recover a stuck lock
+
+The lock fails closed. Status shows the pid. If that pid is not running, remove
+`runtime/control/schedule.lock` only after you have confirmed the pipeline is
+not still running.
+
 ## Disclaimer
 
 This repository is for portfolio analysis, governance, and advisory workflow development.

@@ -215,9 +215,15 @@ with a new request ID. Broker-confirmed fills enter `broker_fills.csv` as
 non-economic staging evidence, then Fill Agent applies each execution identity
 at most once.
 
-Scheduled Demo preparation is disabled in `config/scheduler.yaml` and has no
-broker-submit capability. Its approval waits expire after five minutes. Check
-Gate C evidence with:
+Scheduled Demo preparation is disabled in `config/scheduler.yaml` (`enabled: false`)
+and has no broker-submit capability. Its approval waits expire after five minutes.
+
+The Mac mini LaunchAgent is a separate switch, `host_schedule.enabled`, also
+defaulting to false. It runs `run_pipeline.py` on a fixed interval during NYSE
+hours and does not change broker, governance, or Demo-preparation flags. Install
+and enable steps are in the README section "Mac mini market-hours schedule".
+
+Check Gate C evidence with:
 
 ```bash
 uv run --frozen python tools/demo_qualification_status.py

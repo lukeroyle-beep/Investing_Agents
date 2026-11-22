@@ -9,6 +9,27 @@ per_order_human_approval_required: true
 approval_ttl_seconds: 300
 heartbeat_interval_seconds: 60
 
+# Mac mini LaunchAgent. Independent of `enabled` above, which gates scheduled
+# Demo preparation in scripts/run_scheduled_demo.py. This switch does not grant
+# broker submission and the installer does not load the agent.
+host_schedule:
+  enabled: false
+  interval_seconds: 900
+  label: com.investing-agents.pipeline
+  # keychain uses `security find-generic-password`. file reads secrets_file.
+  secrets_source: keychain
+  secrets_file: runtime/secrets/launchd.env
+  log_dir: runtime/logs/host_schedule
+  log_max_bytes: 1048576
+  log_max_files: 40
+  # Names only. Add one entry per credential variable once the broker
+  # connector's names are known. Never put secret values in this file.
+  # secrets:
+  #   - env: REPLACE_WITH_BROKER_ENV_VAR
+  #     service: investing-agents-demo
+  #     account: REPLACE_WITH_KEYCHAIN_ACCOUNT
+  secrets: []
+
 qualification:
   minimum_trading_sessions: 30
   minimum_approved_mutation_cycles: 20
