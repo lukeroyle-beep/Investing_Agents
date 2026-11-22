@@ -15,6 +15,7 @@ from shared.io_utils import (
     write_csv_with_run_id,
 )
 from shared.paths import ADVISORY_TRADES_PATH, PORTFOLIO_ORDERS_PATH, config_path, data_path
+from shared.paper_signal_log import log_advisory_view
 from shared.run_context import get_or_create_run_id
 from shared.schemas import validate_advisory_trades
 
@@ -228,6 +229,16 @@ def run() -> None:
                 "advice_generated_at": utc_now_iso(),
                 "run_id": run_id,
             }
+        )
+        log_advisory_view(
+            ticker=ticker,
+            advice_status=advice_status,
+            direction=direction,
+            price=entry_price,
+            currency=row.get("currency", ""),
+            rationale=output_rows[-1]["advice_notes"],
+            signalled_at=output_rows[-1]["advice_generated_at"],
+            run_id=run_id,
         )
 
     out_df = pd.DataFrame(output_rows)

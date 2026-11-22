@@ -19,6 +19,7 @@ from shared.portfolio_state_helpers import (
     normalise_position_status,
     parse_boolean_flag,
 )
+from shared.paper_signal_log import log_exit_view
 from shared.run_context import get_or_create_run_id
 from shared.schemas import (
     validate_exit_advice,
@@ -324,8 +325,20 @@ def run_exit_agent() -> None:
         return
 
     decisions = [exit_decision_for_row(row) for _, row in state_df.iterrows()]
-    for decision in decisions:
+    for decision, (_, row) in zip(decisions, state_df.iterrows()):
         decision["run_id"] = run_id
+        log_exit_view(
+            ticker=str(decision["ticker"]),
+            exit_action=decision["exit_action"],
+            status=decision["status"],
+            exit_reason=decision["exit_reason"],
+            position_side=row.get("side", ""),
+            price=decision.get("current_price"),
+            rationale=decision.get("reason", ""),
+            signalled_at=str(decision["generated_at"]),
+            run_id=run_id,
+            position_id=str(decision["position_id"]),
+        )
     out_df = pd.DataFrame(decisions)
     out_df = validate_exit_advice(out_df, keep_extra_columns=False)
     write_csv(out_df, EXIT_ADVICE_PATH)

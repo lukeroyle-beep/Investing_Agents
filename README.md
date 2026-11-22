@@ -271,6 +271,40 @@ The engine retains portfolio performance memory across runs, including:
 
 This creates a persistent operating record rather than a single-run snapshot.
 
+## Paper signal log
+
+Advisory and exit views that are already a buy, sell, or hold are appended to
+`runtime/logs/signal_log.jsonl`. The log does not place or cancel orders. A
+blocked advisory row, an exit review, a raise-stop, and an already-closed stub
+are not recorded. Re-running the same view for the same run keeps the first
+line.
+
+Print the log, each horizon, and the summary:
+
+```bash
+uv run --frozen python scripts/paper_signal_log.py
+```
+
+Write the same report as Markdown:
+
+```bash
+uv run --frozen python scripts/paper_signal_log.py --markdown runtime/logs/paper_signal_report.md
+```
+
+`--as-of 2026-11-22T00:00:00+00:00` fixes the evaluation clock. `--log` and
+`--config` override `config/paper_signal_log.yaml`. The cost assumption is
+`cost_bps` in that file (default 10 basis points, a round-trip spread plus
+fee, not a measured broker charge). The summary prints the value it applied.
+Buy and sell rules subtract it from the side the signal chooses. Hold rules
+subtract nothing.
+
+Horizons are 1, 3, 6, and 12 months. A horizon that has not reached a known
+close is pending and is not estimated. The benchmark is Yahoo `VWRL.L`, the
+London listing of the Vanguard FTSE All-World UCITS ETF. Returns stay in each
+listing's own quote. GBP or pence against a US dollar ticker is labelled
+`local_unhedged` and is not converted. The hit rules are printed at the bottom
+of the command output and next to the code in `shared/paper_signal_log.py`.
+
 ## Testing and control coverage
 
 The current test and validation layer covers the most important control surfaces, including:
