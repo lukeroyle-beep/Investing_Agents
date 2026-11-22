@@ -33,6 +33,7 @@ from shared.run_finalizer import FINALIZATION_RECORD_FILE, FINALIZATION_RECORD_V
 from shared.sqlite_sidecar import replace_cash_state_rows, replace_portfolio_state_rows
 from shared.run_context import RUN_ID_ENV_VAR
 from shared.runtime_bootstrap import BOOTSTRAP_RUN_ID, bootstrap_runtime
+from tests.helpers import install_example_fresh_marks
 from shared.schemas import (
     validate_lifecycle_integrity_report,
     validate_portfolio_state,
@@ -256,7 +257,7 @@ def test_pipeline_smoke_control_integrity(isolated_workspace, monkeypatch) -> No
     monkeypatch.setenv(RUN_ID_ENV_VAR, PIPELINE_RUN_ID)
     monkeypatch.setattr(fill_agent, "current_run_id", lambda: PIPELINE_RUN_ID)
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: PIPELINE_RUN_ID)
-    monkeypatch.setattr(position_tracking_agent, "get_latest_price", lambda ticker, fallback_price: float(fallback_price))
+    install_example_fresh_marks(monkeypatch, 200.0)
 
     pipeline_steps = [
         ("Fill Agent", "agents.fill_agent.fill_agent"),

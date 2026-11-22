@@ -1,0 +1,3 @@
+ticker,name,asset_class,region,exchange,source,index_membership,currency,sector,notes
+AAPL,Example Appl,equity,US,NASDAQ,example,,USD,Information Technology,EXAMPLE DATA not a market export
+AZN.L,Example Aztra,equity,UK,London Stock Exchange,example,,GBX,Health Care,EXAMPLE DATA London listing quoted in pence

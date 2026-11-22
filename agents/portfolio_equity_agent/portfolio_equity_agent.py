@@ -140,6 +140,20 @@ def build_performance_summary(history_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _reject_unusable_marks(state_df: pd.DataFrame) -> None:
+    if "mark_status" not in state_df.columns:
+        return
+    active = state_df[state_df["status"].astype(str).isin(ACTIVE_POSITION_STATUSES)]
+    status = active["mark_status"].fillna("").astype(str).str.strip().str.lower()
+    bad = active.loc[status.isin({"stale", "error"})]
+    if bad.empty:
+        return
+    ids = ", ".join(bad["position_id"].astype(str).tolist())
+    raise RuntimeError(
+        f"Portfolio equity refused marks that are stale or errored: {ids}"
+    )
+
+
 def run_portfolio_equity_agent() -> None:
     run_id = get_or_create_run_id()
 
@@ -152,6 +166,7 @@ def run_portfolio_equity_agent() -> None:
         keep_extra_columns=False,
     )
     state_df = merge_authoritative_monitor(state_df, monitor_df)
+    _reject_unusable_marks(state_df)
 
     cash_state_df = read_cash_state()
 

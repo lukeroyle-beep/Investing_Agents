@@ -9,6 +9,7 @@ from agents.position_tracking_agent import position_tracking_agent
 from tests.helpers import (
     cash_ledger_frame,
     cash_state_frame,
+    install_example_fresh_marks,
     open_position_row,
     portfolio_monitor_row,
     processed_fills_frame,
@@ -50,11 +51,7 @@ def test_position_tracking_agent_does_not_mutate_economic_inputs(
     data_dir = isolated_workspace / "data"
     before = write_economic_inputs(data_dir)
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_TRACKING_TEST")
-    monkeypatch.setattr(
-        position_tracking_agent,
-        "get_latest_price",
-        lambda ticker, fallback_price: 111.0,
-    )
+    install_example_fresh_marks(monkeypatch, 111.0)
 
     position_tracking_agent.run_position_tracking_agent()
 

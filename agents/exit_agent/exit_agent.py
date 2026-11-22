@@ -141,6 +141,33 @@ def exit_decision_for_row(row: pd.Series) -> dict[str, Any]:
     exit_flag = parse_boolean_flag(row.get("exit_flag"))
     existing_exit_reason = str(row.get("exit_reason") if not pd.isna(row.get("exit_reason")) else "").strip()
 
+    mark_status = str(row.get("mark_status", "") or "").strip().lower()
+    if mark_status in {"stale", "error"}:
+        detail = str(row.get("mark_reason", "") or "").strip()
+        if mark_status == "stale":
+            reason = "Mark is stale and was not used for stop or target checks."
+            exit_reason = "stale_mark"
+        else:
+            reason = "Mark is errored and was not used for stop or target checks."
+            exit_reason = "mark_error"
+        if detail:
+            reason = f"{reason} {detail}"
+        return {
+            "position_id": position_id,
+            "ticker": ticker,
+            "exit_action": "review",
+            "reason": reason,
+            "status": "review_required",
+            "exit_reason": exit_reason,
+            "current_price": current_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "pnl_abs": pnl_abs,
+            "pnl_pct": pnl_pct,
+            "generated_at": utc_now_iso(),
+            "run_id": "",
+        }
+
     if exit_flag:
         return {
             "position_id": position_id,

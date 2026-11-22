@@ -15,6 +15,14 @@ MARK_TO_MARKET_COLUMNS = [
     "lowest_price_since_entry",
 ]
 
+MARK_METADATA_COLUMNS = [
+    "price_as_of",
+    "mark_source",
+    "mark_status",
+    "mark_reason",
+    "listing_currency",
+]
+
 _CONTEXT_COLUMNS = [
     "ticker",
     "side",
@@ -87,6 +95,8 @@ def merge_authoritative_monitor(
     merged = state.copy()
     for column in MARK_TO_MARKET_COLUMNS:
         merged[column] = pd.NA
+    for column in MARK_METADATA_COLUMNS:
+        merged[column] = ""
 
     monitor_by_id = monitor.set_index("position_id", drop=False)
     for index, state_row in merged.iterrows():
@@ -96,5 +106,10 @@ def merge_authoritative_monitor(
         monitor_row = monitor_by_id.loc[position_id]
         for column in MARK_TO_MARKET_COLUMNS:
             merged.at[index, column] = monitor_row[column]
+        for column in MARK_METADATA_COLUMNS:
+            value = monitor_row[column] if column in monitor_row.index else ""
+            if pd.isna(value):
+                value = ""
+            merged.at[index, column] = value
 
     return merged
