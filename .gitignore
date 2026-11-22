@@ -30,6 +30,10 @@ Thumbs.db
 # Runtime state, run artifacts, caches, logs, and local backups
 /runtime/
 
+# LaunchAgent secret values. /runtime/ already ignores this path; the extra
+# rule keeps the file ignored if the broader runtime rule is ever narrowed.
+/runtime/secrets/
+
 # Legacy runtime location retained only for operator-led migrations. Sanitized
 # examples and test inputs belong under tests/fixtures/ instead.
 /data/
