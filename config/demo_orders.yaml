@@ -1,0 +1,29 @@
+schema_version: "1.0"
+
+# PROPOSAL — confirm these limits in review before enabling anything.
+# demo_order_placement_enabled ships false. Leaving it false keeps the
+# previous behaviour: this path does not read the broker and does not send.
+# Turning it on is not by itself permission to trade. The runtime guard
+# still requires an allowlisted demo endpoint, a demo account confirmed
+# from eToro, a disengaged kill switch, a Nasdaq regular session, a price
+# inside the existing reapproval band, and a fee-inclusive size inside the
+# limits below. Real-money routes are not configured here.
+demo_order_placement_enabled: false
+environment: demo
+
+# Names only. This file never contains key values. The order path does not
+# read these variables; the existing demo write client does, and only after
+# config/brokers/etoro_demo_write.yaml is also enabled by the owner.
+credential_environment_variables:
+  api_key: ETORO_DEMO_WRITE_API_KEY
+  user_key: ETORO_DEMO_WRITE_USER_KEY
+
+# Binding position cap is the tighter of the equity fraction and the
+# absolute USD cap. Size includes the order amount plus upfront fees from
+# the existing fee model. Equality with the cap is still inside the limit.
+max_position_equity_fraction: "0.01"
+max_position_notional_usd: "100"
+max_open_positions: 3
+# Reaching this fraction of equity engages the kill switch and blocks new
+# orders until the next America/New_York date. It does not close positions.
+max_daily_loss_fraction: "0.005"
