@@ -151,6 +151,24 @@ def event_log_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return validate_event_log(df, keep_extra_columns=False)
 
 
+def install_example_fresh_marks(monkeypatch, price: float) -> None:
+    """Replace live marks with an example fresh print. Not a market export."""
+    from agents.position_tracking_agent import position_tracking_agent
+
+    def _resolve(ticker: str, **_kwargs: Any):
+        return position_tracking_agent.PositionMark(
+            status="fresh",
+            price=float(price),
+            price_as_of="2026-04-24T00:00:00+00:00",
+            source="example",
+            reason="example fresh mark",
+            listing_currency="USD",
+            provider_symbol=str(ticker).upper(),
+        )
+
+    monkeypatch.setattr(position_tracking_agent, "resolve_position_mark", _resolve)
+
+
 def event_log_row(
     *,
     event_id: str,

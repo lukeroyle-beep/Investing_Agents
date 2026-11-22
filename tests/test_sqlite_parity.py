@@ -11,7 +11,7 @@ from agents.portfolio_equity_agent import portfolio_equity_agent
 from agents.position_tracking_agent import position_tracking_agent
 from shared.sqlite_parity import format_parity_report, validate_sqlite_dual_write_parity
 from shared.sqlite_sidecar import get_connection, initialise_db
-from tests.helpers import cash_state_frame, write_csv
+from tests.helpers import cash_state_frame, install_example_fresh_marks, write_csv
 
 
 def _patch_reconciliation_paths(isolated_workspace, monkeypatch) -> None:
@@ -55,11 +55,7 @@ def test_sqlite_parity_passes_for_dual_written_outputs(isolated_workspace, monke
     monkeypatch.setattr(fill_agent, "current_run_id", lambda: "RUN_PARITY_FILL")
     monkeypatch.setattr(portfolio_equity_agent, "get_or_create_run_id", lambda: "RUN_PARITY_FILL")
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_PARITY_FILL")
-    monkeypatch.setattr(
-        position_tracking_agent,
-        "get_latest_price",
-        lambda ticker, fallback_price: float(fallback_price),
-    )
+    install_example_fresh_marks(monkeypatch, 100.0)
 
     pd.DataFrame(
         [

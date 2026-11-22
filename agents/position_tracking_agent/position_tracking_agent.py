@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from agents.shared.event_log import append_artifact_written_event
+from shared import market_data
+from shared.freshness import (
+    OUTCOME_FRESH,
+    OUTCOME_FUTURE,
+    OUTCOME_STALE,
+    assess_freshness,
+    summarize_provider_error,
+)
 from shared.io_utils import read_csv_with_schema, write_managed_csv_with_schema
+from shared.market_data import MarketDataProvider, _to_utc_iso
 from shared.paths import DATA_DIR as RUNTIME_STATE_DIR
+from shared.paths import project_path
 from shared.portfolio_state_helpers import (
     ACTIVE_POSITION_STATUSES,
     CLOSED_POSITION_STATUS,
@@ -30,6 +43,24 @@ STATE_PATH = os.path.join(DATA_DIR, "portfolio_state.csv")
 MONITOR_PATH = os.path.join(DATA_DIR, "portfolio_monitor.csv")
 ALERTS_PATH = os.path.join(DATA_DIR, "position_alerts.csv")
 AGENT_NAME = "Position Tracking Agent"
+UNIVERSE_PATH = project_path("data_sources", "stock_universe.csv")
+_PRICE_QUANTUM = Decimal("0.0001")
+_MONEY_QUANTUM = Decimal("0.01")
+_PERCENT_QUANTUM = Decimal("0.0001")
+_HISTORY_LOOKBACK_DAYS = 21
+_MARK_DATA_KIND = "daily_research_price"
+_UNUSABLE_MARK_STATUSES = {"stale", "error"}
+
+
+@dataclass(frozen=True)
+class PositionMark:
+    status: str
+    price: float | None
+    price_as_of: str
+    source: str
+    reason: str
+    listing_currency: str
+    provider_symbol: str
 
 
 def utc_now_iso() -> str:
@@ -86,19 +117,310 @@ def ensure_alerts_file() -> pd.DataFrame:
     return df
 
 
-def get_latest_price(ticker: str, fallback_price: Optional[float]) -> float:
-    """
-    Placeholder pricing hook.
+def _decimal(value: object, field: str) -> Decimal:
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(f"{field} must be a finite decimal") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{field} must be a finite decimal")
+    return parsed
 
-    Current behaviour:
-    - uses existing current_price if present
-    - otherwise falls back to entry_price logic in caller
 
-    Replace this function later with your real market data source.
+def _quantize(value: Decimal, quantum: Decimal) -> Decimal:
+    return value.quantize(quantum, rounding=ROUND_HALF_EVEN)
+
+
+def round_mark_price(value: object) -> float:
+    """Round a mark to the advisory price scale with half-even money rounding."""
+    return float(_quantize(_decimal(value, "price"), _PRICE_QUANTUM))
+
+
+def _normalise_currency(value: object) -> str:
+    """Map feed and listing codes onto one unit. GBp is pence, the same unit as GBX.
+
+    Uppercasing first would turn GBp into GBP and treat a London pence quote as pounds.
     """
-    if fallback_price is None or pd.isna(fallback_price):
-        raise ValueError(f"No fallback price available for {ticker}")
-    return float(fallback_price)
+    text = str(value or "").strip()
+    if text in {"GBp", "GBX", "GBx"} or text.lower() == "gbx":
+        return "GBX"
+    if text.lower() == "gbp":
+        return "GBP"
+    return text.upper()
+
+
+def load_listing_map(
+    path: str | os.PathLike[str] | None = None,
+) -> dict[str, dict[str, str]]:
+    source = Path(path) if path is not None else UNIVERSE_PATH
+    frame = pd.read_csv(source, dtype=str, keep_default_na=False)
+    missing = {"ticker", "currency"} - set(frame.columns)
+    if missing:
+        raise ValueError(f"stock universe is missing columns: {sorted(missing)}")
+    listings: dict[str, dict[str, str]] = {}
+    for row in frame.to_dict(orient="records"):
+        symbol = str(row["ticker"]).strip()
+        key = symbol.upper()
+        if not key:
+            continue
+        if key in listings:
+            raise ValueError(f"stock universe has duplicate ticker {key}")
+        listings[key] = {
+            "ticker": symbol,
+            "currency": _normalise_currency(row.get("currency", "")),
+        }
+    return listings
+
+
+def _history_window(now: datetime) -> tuple[str, str]:
+    day = now.astimezone(timezone.utc).date()
+    start = (day - timedelta(days=_HISTORY_LOOKBACK_DAYS)).isoformat()
+    # Yahoo's end is exclusive. The next UTC date includes the run's session
+    # and does not request a later one.
+    end = (day + timedelta(days=1)).isoformat()
+    return start, end
+
+
+def _close_series(data: pd.DataFrame) -> pd.Series:
+    if data is None or data.empty:
+        return pd.Series(dtype="float64")
+    close: object
+    if "Close" in data.columns:
+        close = data["Close"]
+    elif isinstance(data.columns, pd.MultiIndex) and "Close" in data.columns.get_level_values(0):
+        close = data["Close"]
+    else:
+        return pd.Series(dtype="float64")
+    if isinstance(close, pd.DataFrame):
+        if close.shape[1] == 0:
+            return pd.Series(dtype="float64")
+        close = close.iloc[:, 0]
+    series = pd.to_numeric(close, errors="coerce").dropna()
+    if not isinstance(series.index, pd.DatetimeIndex):
+        series.index = pd.to_datetime(series.index)
+    return series.sort_index()
+
+
+def _read_quote_currency(provider: object, symbol: str) -> tuple[str | None, str | None]:
+    factory = getattr(provider, "ticker_factory", None)
+    if not callable(factory):
+        return None, None
+    try:
+        instrument = factory(symbol)
+        fast_info = getattr(instrument, "fast_info", None)
+        raw = None
+        if fast_info is not None:
+            getter = getattr(fast_info, "get", None)
+            if callable(getter):
+                raw = getter("currency")
+            else:
+                raw = fast_info["currency"]
+        if raw is None or str(raw).strip() == "":
+            info = getattr(instrument, "info", None)
+            if isinstance(info, dict):
+                raw = info.get("currency")
+        if raw is None or str(raw).strip() == "":
+            return None, None
+        return str(raw).strip(), None
+    except Exception as exc:
+        return None, summarize_provider_error(exc)
+
+
+def _currency_note(
+    listing_currency: str,
+    raw_quote: str | None,
+    quote_error: str | None,
+) -> tuple[str, str]:
+    """Return ('ok', note) or ('error', reason). Never rescales pence into pounds."""
+    if quote_error:
+        return (
+            "ok",
+            f"quote currency unavailable ({quote_error}); listing currency "
+            f"{listing_currency} used with no unit conversion",
+        )
+    if raw_quote is None:
+        return (
+            "ok",
+            f"quote currency unavailable; listing currency {listing_currency} "
+            "used with no unit conversion",
+        )
+    quote = _normalise_currency(raw_quote)
+    if quote != listing_currency:
+        return (
+            "error",
+            f"quote currency {raw_quote} does not match listing currency "
+            f"{listing_currency}; price was not converted",
+        )
+    if raw_quote != listing_currency:
+        return (
+            "ok",
+            f"quote currency {raw_quote} matches listing currency {listing_currency}; "
+            "no unit conversion",
+        )
+    return "ok", f"quote currency {listing_currency}; no unit conversion"
+
+
+def _select_usable_bar(
+    data: pd.DataFrame,
+    *,
+    now: datetime,
+    source: str,
+    retrieved_at: str,
+) -> tuple[Decimal, str, object] | None:
+    chosen: tuple[Decimal, str, object] | None = None
+    for timestamp, raw_price in _close_series(data).items():
+        as_of = _to_utc_iso(timestamp)
+        if not as_of:
+            continue
+        try:
+            observed = _decimal(raw_price, "price")
+        except ValueError:
+            continue
+        if observed <= 0:
+            continue
+        assessment = assess_freshness(
+            source=source,
+            data_kind=_MARK_DATA_KIND,
+            observation_time=as_of,
+            retrieval_time=retrieved_at,
+            now=now,
+        )
+        if assessment.freshness_outcome == OUTCOME_FUTURE:
+            continue
+        chosen = (observed, as_of, assessment)
+    return chosen
+
+
+def resolve_position_mark(
+    ticker: str,
+    *,
+    provider: MarketDataProvider | None = None,
+    universe_path: str | os.PathLike[str] | None = None,
+    now: datetime | None = None,
+    listings: dict[str, dict[str, str]] | None = None,
+) -> PositionMark:
+    """Latest daily close from the shared read-only market-data provider.
+
+    The print has to be at or before ``now``. Freshness uses the configured
+    daily-price policy and the exchange calendar. A stale or failed print is
+    returned with an explicit status and is not rewritten into a fresh price.
+    """
+    run_now = now or datetime.now(timezone.utc)
+    if run_now.tzinfo is None:
+        raise ValueError("run time must be timezone-aware")
+    run_now = run_now.astimezone(timezone.utc)
+    symbol = str(ticker).strip().upper()
+    table = listings if listings is not None else load_listing_map(universe_path)
+    listing = table.get(symbol)
+    if listing is None:
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            source="",
+            reason=f"unknown symbol: {symbol} is not in stock_universe.csv",
+            listing_currency="",
+            provider_symbol="",
+        )
+
+    listing_currency = listing["currency"]
+    provider_symbol = listing["ticker"]
+    if not listing_currency:
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            source="",
+            reason=f"listing currency is missing for {provider_symbol}",
+            listing_currency="",
+            provider_symbol=provider_symbol,
+        )
+
+    resolved_provider = provider if provider is not None else market_data._default_provider
+    start, end = _history_window(run_now)
+    result = market_data.fetch_price_history(
+        provider_symbol,
+        period="1mo",
+        interval="1d",
+        auto_adjust=True,
+        provider=resolved_provider,
+        start=start,
+        end=end,
+    )
+    source = result.metadata.source or ""
+    base = dict(
+        listing_currency=listing_currency,
+        provider_symbol=provider_symbol,
+        source=source,
+    )
+    if result.metadata.error:
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            reason=summarize_provider_error(result.metadata.error),
+            **base,
+        )
+
+    selected = _select_usable_bar(
+        result.data,
+        now=run_now,
+        source=source or "market_data",
+        retrieved_at=result.metadata.fetched_at or run_now.isoformat(),
+    )
+    if selected is None:
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            reason=f"{provider_symbol} returned no price at or before the run time",
+            **base,
+        )
+
+    observed, as_of, assessment = selected
+    if assessment.freshness_outcome == OUTCOME_FRESH and assessment.actionable:
+        status = "fresh"
+    elif assessment.freshness_outcome == OUTCOME_STALE:
+        status = "stale"
+    else:
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            reason=assessment.reason or "mark failed the freshness check",
+            **base,
+        )
+
+    raw_quote, quote_error = _read_quote_currency(resolved_provider, provider_symbol)
+    currency_status, currency_note = _currency_note(listing_currency, raw_quote, quote_error)
+    if currency_status == "error":
+        return PositionMark(
+            status="error",
+            price=None,
+            price_as_of="",
+            reason=currency_note,
+            **base,
+        )
+
+    reason = assessment.reason or ""
+    if currency_note:
+        reason = f"{reason}; {currency_note}" if reason else currency_note
+    return PositionMark(
+        status=status,
+        price=float(_quantize(observed, _PRICE_QUANTUM)),
+        price_as_of=as_of,
+        reason=reason,
+        **base,
+    )
+
+
+def get_latest_price(ticker: str, fallback_price: Optional[float] = None) -> float:
+    """Return a fresh mark, or raise. A missing feed is not filled with ``fallback_price``."""
+    del fallback_price
+    mark = resolve_position_mark(ticker)
+    if mark.status != "fresh" or mark.price is None:
+        raise ValueError(f"No fresh mark for {ticker}: {mark.status}: {mark.reason}")
+    return float(mark.price)
 
 
 def calculate_long_pnl(
@@ -106,11 +428,17 @@ def calculate_long_pnl(
     entry_price: float,
     current_price: float,
 ) -> tuple[float, float, float]:
-    market_value = quantity * current_price
-    pnl_abs = (current_price - entry_price) * quantity
-    cost_basis = quantity * entry_price
-    pnl_pct = (pnl_abs / cost_basis * 100.0) if cost_basis > 0 else 0.0
-    return market_value, pnl_abs, pnl_pct
+    quantity_d = _decimal(quantity, "quantity")
+    entry_d = _decimal(entry_price, "entry_price")
+    price_d = _quantize(_decimal(current_price, "current_price"), _PRICE_QUANTUM)
+    market_value = _quantize(quantity_d * price_d, _MONEY_QUANTUM)
+    pnl_abs = _quantize((price_d - entry_d) * quantity_d, _MONEY_QUANTUM)
+    cost_basis = quantity_d * entry_d
+    if cost_basis <= 0:
+        pnl_pct = Decimal(0)
+    else:
+        pnl_pct = _quantize((pnl_abs / cost_basis) * Decimal(100), _PERCENT_QUANTUM)
+    return float(market_value), float(pnl_abs), float(pnl_pct)
 
 
 def calculate_short_pnl(quantity: float, entry_price: float, current_price: float) -> tuple[float, float, float]:
@@ -119,11 +447,17 @@ def calculate_short_pnl(quantity: float, entry_price: float, current_price: floa
     - market_value here is stored as current notional exposure
     - pnl_abs rises as price falls
     """
-    market_value = quantity * current_price
-    pnl_abs = (entry_price - current_price) * quantity
-    initial_notional = quantity * entry_price
-    pnl_pct = (pnl_abs / initial_notional * 100.0) if initial_notional > 0 else 0.0
-    return market_value, pnl_abs, pnl_pct
+    quantity_d = _decimal(quantity, "quantity")
+    entry_d = _decimal(entry_price, "entry_price")
+    price_d = _quantize(_decimal(current_price, "current_price"), _PRICE_QUANTUM)
+    market_value = _quantize(quantity_d * price_d, _MONEY_QUANTUM)
+    pnl_abs = _quantize((entry_d - price_d) * quantity_d, _MONEY_QUANTUM)
+    initial_notional = quantity_d * entry_d
+    if initial_notional <= 0:
+        pnl_pct = Decimal(0)
+    else:
+        pnl_pct = _quantize((pnl_abs / initial_notional) * Decimal(100), _PERCENT_QUANTUM)
+    return float(market_value), float(pnl_abs), float(pnl_pct)
 
 
 def append_alert(
@@ -190,10 +524,31 @@ def _numeric_value(*values: object) -> float | None:
     return None
 
 
+def _text_field(row: pd.Series, name: str) -> str:
+    if name not in row.index:
+        return ""
+    value = row.get(name)
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _same_price(left: object, right: object) -> bool:
+    return _quantize(_decimal(left, "price"), _PRICE_QUANTUM) == _quantize(
+        _decimal(right, "price"),
+        _PRICE_QUANTUM,
+    )
+
+
 def process_active_position(
     row: pd.Series,
     run_id: str,
     previous_monitor_row: pd.Series | None = None,
+    *,
+    provider: MarketDataProvider | None = None,
+    universe_path: str | os.PathLike[str] | None = None,
+    now: datetime | None = None,
+    listings: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, object]:
     validate_tracking_inputs(row)
 
@@ -207,12 +562,49 @@ def process_active_position(
         if previous_monitor_row is not None
         else pd.Series(dtype=object)
     )
-    fallback_price = _numeric_value(
+    stored_price = _numeric_value(
         previous_monitor_row.get("current_price"),
         row.get("current_price"),
         entry_price,
     )
-    latest_price = get_latest_price(ticker, fallback_price)
+    mark = resolve_position_mark(
+        ticker,
+        provider=provider,
+        universe_path=universe_path,
+        now=now,
+        listings=listings,
+    )
+    price_as_of = mark.price_as_of
+    mark_source = mark.source
+    mark_status = mark.status
+    mark_reason = mark.reason
+    listing_currency = mark.listing_currency
+
+    if mark.status == "fresh" and mark.price is not None:
+        latest_price = round_mark_price(mark.price)
+    elif mark.status == "stale" and mark.price is not None:
+        latest_price = round_mark_price(mark.price)
+    else:
+        if stored_price is None:
+            raise ValueError(
+                f"No price available for {ticker}: {mark.reason or mark.status}"
+            )
+        latest_price = round_mark_price(stored_price)
+        mark_status = "error"
+        mark_reason = (
+            f"{mark.reason}; last stored price retained and flagged"
+            if mark.reason
+            else "last stored price retained and flagged"
+        )
+        previous_current = _numeric_value(previous_monitor_row.get("current_price"))
+        if previous_current is not None and _same_price(latest_price, previous_current):
+            price_as_of = _text_field(previous_monitor_row, "price_as_of")
+            mark_source = _text_field(previous_monitor_row, "mark_source")
+        else:
+            price_as_of = ""
+            mark_source = ""
+        if not listing_currency:
+            listing_currency = _text_field(previous_monitor_row, "listing_currency")
 
     if side == "long":
         market_value, pnl_abs, pnl_pct = calculate_long_pnl(quantity, entry_price, latest_price)
@@ -227,6 +619,12 @@ def process_active_position(
         previous_monitor_row.get("lowest_price_since_entry"),
         row.get("lowest_price_since_entry"),
     )
+    if mark_status == "fresh":
+        highest = latest_price if previous_high is None else max(previous_high, latest_price)
+        lowest = latest_price if previous_low is None else min(previous_low, latest_price)
+    else:
+        highest = previous_high if previous_high is not None else latest_price
+        lowest = previous_low if previous_low is not None else latest_price
 
     return {
         "position_id": str(row["position_id"]),
@@ -239,19 +637,25 @@ def process_active_position(
         "market_value": market_value,
         "pnl_abs": pnl_abs,
         "pnl_pct": pnl_pct,
-        "highest_price_since_entry": (
-            latest_price if previous_high is None else max(previous_high, latest_price)
-        ),
-        "lowest_price_since_entry": (
-            latest_price if previous_low is None else min(previous_low, latest_price)
-        ),
+        "highest_price_since_entry": highest,
+        "lowest_price_since_entry": lowest,
         "marked_at": utc_now_iso(),
+        "price_as_of": price_as_of,
+        "mark_source": mark_source,
+        "mark_status": mark_status,
+        "mark_reason": mark_reason,
+        "listing_currency": listing_currency,
         "run_id": run_id,
     }
 
 
-def run_position_tracking_agent() -> None:
+def run_position_tracking_agent(
+    provider: MarketDataProvider | None = None,
+    universe_path: str | os.PathLike[str] | None = None,
+    now: datetime | None = None,
+) -> None:
     run_id = current_run_id()
+    run_now = now or datetime.now(timezone.utc)
 
     state_df = read_portfolio_state()
     previous_monitor_df = read_portfolio_monitor()
@@ -309,6 +713,11 @@ def run_position_tracking_agent() -> None:
     active_count = 0
     exit_required_count = 0
     alert_count = 0
+    listings = (
+        load_listing_map(universe_path)
+        if state_df["status"].map(normalise_position_status).isin(ACTIVE_POSITION_STATUSES).any()
+        else {}
+    )
 
     for _, row in state_df.iterrows():
         status = normalise_position_status(row.get("status"))
@@ -323,9 +732,25 @@ def run_position_tracking_agent() -> None:
                 previous_monitor_row=previous_by_position_id.get(
                     str(row["position_id"])
                 ),
+                provider=provider,
+                universe_path=universe_path,
+                now=run_now,
+                listings=listings,
             )
 
             output_rows.append(updated_row)
+
+            if str(updated_row["mark_status"]) in _UNUSABLE_MARK_STATUSES:
+                alerts_df = append_alert(
+                    alerts_df=alerts_df,
+                    run_id=run_id,
+                    position_id=str(updated_row["position_id"]),
+                    ticker=str(updated_row["ticker"]),
+                    status=str(updated_row["status"]),
+                    alert_type=str(updated_row["mark_status"]),
+                    message=str(updated_row["mark_reason"]),
+                )
+                alert_count += 1
 
             if original_status == "exit_required":
                 exit_required_count += 1

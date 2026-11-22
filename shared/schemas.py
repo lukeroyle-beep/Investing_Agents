@@ -185,11 +185,19 @@ PORTFOLIO_STATE_SCHEMA = _schema_spec_from_registry(
 PORTFOLIO_MONITOR_SCHEMA = _schema_spec_from_registry(
     file_name="portfolio_monitor.csv",
     name="portfolio_monitor",
-    uppercase_columns=["ticker"],
-    lowercase_columns=["side", "status"],
+    uppercase_columns=["ticker", "listing_currency"],
+    lowercase_columns=["side", "status", "mark_status"],
     allowed_values={
         "side": ALLOWED_SIDE_VALUES,
         "status": ALLOWED_POSITION_STATUS_VALUES,
+        "mark_status": {"fresh", "stale", "error"},
+    },
+    default_values={
+        "price_as_of": "",
+        "mark_source": "",
+        "mark_status": "",
+        "mark_reason": "",
+        "listing_currency": "",
     },
 )
 
@@ -424,8 +432,13 @@ def _apply_defaults(df: pd.DataFrame, spec: SchemaSpec) -> pd.DataFrame:
     output_df = df.copy()
 
     for col, default in spec.default_values.items():
-        if col in output_df.columns:
-            output_df[col] = output_df[col].fillna(default)
+        if col not in output_df.columns:
+            continue
+        # A blank timestamp or code is a string. An all-empty CSV column is
+        # inferred as float, and filling that with "" is only a warning today.
+        if isinstance(default, str) and pd.api.types.is_numeric_dtype(output_df[col]):
+            output_df[col] = output_df[col].astype("object")
+        output_df[col] = output_df[col].fillna(default)
 
     return output_df
 
@@ -488,8 +501,12 @@ def _coerce_text(df: pd.DataFrame, spec: SchemaSpec) -> pd.DataFrame:
     output_df = df.copy()
 
     for col in spec.text_columns:
-        if col in output_df.columns:
-            output_df[col] = output_df[col].fillna("").astype(str).str.strip()
+        if col not in output_df.columns:
+            continue
+        series = output_df[col]
+        if pd.api.types.is_numeric_dtype(series):
+            series = series.astype("object")
+        output_df[col] = series.fillna("").astype(str).str.strip()
 
     return output_df
 

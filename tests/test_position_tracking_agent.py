@@ -6,6 +6,7 @@ from agents.position_tracking_agent import position_tracking_agent
 from shared.schemas import validate_portfolio_monitor, validate_portfolio_state
 from tests.helpers import (
     closed_position_row,
+    install_example_fresh_marks,
     open_position_row,
     portfolio_monitor_row,
     write_csv,
@@ -23,7 +24,7 @@ def test_position_tracking_writes_monitor_without_rewriting_canonical_state(
 
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_TRACKING_TEST")
     monkeypatch.setattr(position_tracking_agent, "utc_now_iso", lambda: "2026-03-28T12:00:00+00:00")
-    monkeypatch.setattr(position_tracking_agent, "get_latest_price", lambda ticker, fallback_price: 111.0)
+    install_example_fresh_marks(monkeypatch, 111.0)
 
     raw_state = pd.DataFrame(
         [
@@ -91,11 +92,7 @@ def test_position_tracking_monitor_excludes_closed_rows_and_preserves_state_byte
 
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_TRACKING_TEST")
     monkeypatch.setattr(position_tracking_agent, "utc_now_iso", lambda: "2026-03-28T12:00:00+00:00")
-    monkeypatch.setattr(
-        position_tracking_agent,
-        "get_latest_price",
-        lambda ticker, fallback_price: float(fallback_price),
-    )
+    install_example_fresh_marks(monkeypatch, 105.0)
 
     starting_df = validate_portfolio_state(
         pd.DataFrame(
@@ -149,7 +146,7 @@ def test_position_tracking_carries_forward_monitor_high_low_marks(
 
     monkeypatch.setattr(position_tracking_agent, "current_run_id", lambda: "RUN_NEXT")
     monkeypatch.setattr(position_tracking_agent, "utc_now_iso", lambda: "2026-03-28T12:00:00+00:00")
-    monkeypatch.setattr(position_tracking_agent, "get_latest_price", lambda ticker, fallback_price: 110.0)
+    install_example_fresh_marks(monkeypatch, 110.0)
 
     position_tracking_agent.run_position_tracking_agent()
 

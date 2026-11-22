@@ -201,7 +201,7 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
     register(
         FileSchemaRegistryEntry(
             file_name="portfolio_monitor.csv",
-            schema_version="1.0",
+            schema_version="1.1",
             owner_agent="Position Tracking Agent",
             required_columns=[
                 "position_id",
@@ -217,6 +217,11 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
                 "highest_price_since_entry",
                 "lowest_price_since_entry",
                 "marked_at",
+                "price_as_of",
+                "mark_source",
+                "mark_status",
+                "mark_reason",
+                "listing_currency",
                 "run_id",
             ],
             column_aliases={
@@ -238,6 +243,11 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
                 "highest_price_since_entry": "float",
                 "lowest_price_since_entry": "float",
                 "marked_at": "datetime",
+                "price_as_of": "string",
+                "mark_source": "string",
+                "mark_status": "string",
+                "mark_reason": "string",
+                "listing_currency": "string",
                 "run_id": "string",
             },
             nullability={
@@ -254,6 +264,11 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
                 "highest_price_since_entry": False,
                 "lowest_price_since_entry": False,
                 "marked_at": False,
+                "price_as_of": True,
+                "mark_source": True,
+                "mark_status": True,
+                "mark_reason": True,
+                "listing_currency": True,
                 "run_id": False,
             },
             canonical_column_order=[
@@ -270,6 +285,11 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
                 "highest_price_since_entry",
                 "lowest_price_since_entry",
                 "marked_at",
+                "price_as_of",
+                "mark_source",
+                "mark_status",
+                "mark_reason",
+                "listing_currency",
                 "run_id",
             ],
             write_mode="full_rewrite_read_model",
@@ -277,6 +297,7 @@ def _build_registry() -> dict[str, FileSchemaRegistryEntry]:
             mutability_rules={
                 "read_model": "Position Tracking regenerates this projection from Fill-owned portfolio_state.csv and prior monitor marks.",
                 "no_economic_authority": "Copied quantity, entry price, side, and status are read-only context and never mutate canonical holdings.",
+                "mark_metadata": "price_as_of and mark_source describe the print. mark_status stale or error is not an actionable mark.",
             },
         )
     )
